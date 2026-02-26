@@ -1,9 +1,10 @@
 import streamlit as st
+
+# 1. INITIALIZE MASTER PAGE CONFIG (Must be the absolute first Streamlit command)
+st.set_page_config(page_title="AMC COE ERP", layout="wide", page_icon="🏛️")
+
 from utils import init_db, global_cycle_selector
 from auth import login_form, logout
-
-# 1. INITIALIZE MASTER PAGE CONFIG (Must be first)
-st.set_page_config(page_title="AMC COE ERP", layout="wide", page_icon="🏛️")
 
 # 2. SECURE GATEKEEPER
 # If the user is not logged in, show the form and STOP running the rest of the app.
@@ -35,8 +36,7 @@ pre_exam_page = st.Page("coe_control.py", title="4. Pre-Exam (Docs)", icon="🖨
 exam_day_page = st.Page("coe_exam_day.py", title="5. Exam Day Logistics", icon="🚀")
 results_page = st.Page("coe_results.py", title="6. Results & Grading", icon="🏆")
 
-# 5. BUILD NAVIGATION MENU (With Basic Role Logic)
-# If you want to hide setup from non-admins later, you can do it here!
+# 5. BUILD NAVIGATION MENU
 pages = {
     "📅 Exam Management": [lifecycle_page, registration_page],
     "🚀 Operations": [pre_exam_page, exam_day_page, results_page]
