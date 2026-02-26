@@ -43,9 +43,10 @@ def login_form():
                             st.rerun()
                         else:
                             st.error("Login successful, but your email is not registered in the Staff Master database. Contact Admin.")
-                    
+                
                 except Exception as e:
-                    st.error(f"Login Failed: Invalid Email or Password.")
+                    # 🚨 CHANGED: This will now print the EXACT error from Supabase
+                    st.error(f"RAW SUPABASE ERROR: {e}")
         
     return False
 
