@@ -15,7 +15,7 @@ from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.utils import ImageReader
 
 # ==========================================
@@ -25,7 +25,6 @@ LOGO_FILENAME = "College_logo.png"
 supabase = init_db()
 
 # --- GLOBAL CONTEXT ---
-# Pulls the active cycle directly from the session state managed by app.py
 selected_cycle_id = st.session_state.get('active_cycle_id')
 
 def generate_dummy_ids(count):
@@ -203,27 +202,80 @@ def gen_posters(df, date, session):
     return buf.getvalue()
 
 def gen_form_b(df, date, session):
-    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=75)
-    elements = []; styles = getSampleStyleSheet()
+    """Generates Form B strictly matching the DOCX Format layout"""
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=75, leftMargin=40, rightMargin=40, bottomMargin=40)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Custom Styles for Form B
+    title_style = ParagraphStyle('Title', parent=styles['Heading3'], alignment=TA_CENTER, fontName='Helvetica-Bold')
+    meta_style = ParagraphStyle('Meta', parent=styles['Normal'], fontSize=10, leading=14)
     
     for (room, code), group in df.groupby(['RoomNo', 'Subject Code']):
-        elements.append(Paragraph(f"<b>FORM B - ATTENDANCE SHEET ({room})</b>", styles['Heading2']))
-        elements.append(Paragraph(f"Date: {date} | Session: {session} | Course: {code}", styles['Normal']))
+        # Find course name safely
+        course_name = group['Subject Name'].iloc[0] if 'Subject Name' in group.columns else code
+        
+        # 1. Main Headings
+        elements.append(Paragraph("FORM - B", title_style))
+        elements.append(Paragraph("ATTENDANCE SHEET", title_style))
         elements.append(Spacer(1, 10))
         
-        data = [['Seat', 'USN', 'Booklet No.', 'Signature']]
+        # 2. Metadata Grid (Room, Date, Session, Subject)
+        meta_data = [
+            [Paragraph(f"<b>Room No:</b> {room}", meta_style), Paragraph(f"<b>Date:</b> {date}", meta_style)],
+            [Paragraph(f"<b>Course Code:</b> {code}", meta_style), Paragraph(f"<b>Time/Session:</b> {session}", meta_style)],
+            [Paragraph(f"<b>Course Name:</b> {course_name}", meta_style), ""]
+        ]
+        meta_table = Table(meta_data, colWidths=[3.2*inch, 3.2*inch])
+        meta_table.setStyle(TableStyle([
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 6)
+        ]))
+        elements.append(meta_table)
+        elements.append(Spacer(1, 15))
+        
+        # 3. Main Attendance Table (With generous spacing for writing)
+        table_data = [['Sl. No.', 'USN', 'Answer Booklet No.', 'Signature of the Candidate']]
         for _, r in group.sort_values('SeatNo').iterrows():
-            data.append([str(r['SeatNo']), r['USN'], "", ""])
+            table_data.append([str(r['SeatNo']), r['USN'], "", ""])
             
-        t = Table(data, colWidths=[0.8*inch, 2*inch, 1.5*inch, 2.5*inch])
-        t.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('BACKGROUND', (0,0), (-1,0), colors.lightgrey)]))
-        elements.append(t); elements.append(PageBreak())
+        t = Table(table_data, colWidths=[0.8*inch, 1.8*inch, 2*inch, 2.2*inch])
+        t.setStyle(TableStyle([
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            # Give plenty of room for writing in the actual cells
+            ('TOPPADDING', (0,1), (-1,-1), 12),
+            ('BOTTOMPADDING', (0,1), (-1,-1), 12),
+        ]))
+        elements.append(t)
+        elements.append(Spacer(1, 30))
+        
+        # 4. Invigilator Footer Section
+        total_students = len(group)
+        footer_data = [
+            [Paragraph(f"<b>Total No. of Students Allocated:</b> {total_students}", meta_style), ""],
+            [Paragraph("<b>Total No. of Students Present:</b> _________", meta_style), Paragraph("<b>Signature of Room Invigilator</b>", meta_style)],
+            [Paragraph("<b>Total No. of Students Absent:</b> _________", meta_style), Paragraph("<b>Name:</b> ____________________", meta_style)],
+            ["", Paragraph("<b>Dept:</b> ____________________", meta_style)]
+        ]
+        footer_table = Table(footer_data, colWidths=[3.2*inch, 3.2*inch])
+        footer_table.setStyle(TableStyle([
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+        ]))
+        elements.append(footer_table)
+        elements.append(PageBreak())
         
     doc.build(elements, onFirstPage=draw_header, onLaterPages=draw_header)
     return buf.getvalue()
 
 def gen_form_a(df, date, session):
-    """Generates the Absentee Summary & Bundle Dispatch Form (DEPARTMENT/BRANCH WISE)"""
     buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=75)
     elements = []; styles = getSampleStyleSheet()
     
@@ -334,7 +386,6 @@ def gen_marks_bundles(df):
     key_log = []
     
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Evaluator Bundles generated Room & Subject-wise in chunks of 20
         for (room, cc), group in df.groupby(['RoomNo', 'Subject Code']):
             group = group.sort_values('SeatNo').reset_index(drop=True)
             n_chunks = math.ceil(len(group) / 20)
