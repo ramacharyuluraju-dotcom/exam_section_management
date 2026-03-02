@@ -5,11 +5,13 @@ import datetime
 import hashlib
 import os
 import concurrent.futures
+from PIL import Image  # Added to handle WebP conversion
 from utils import init_db
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.platypus import Table, TableStyle, Paragraph, Image
+from reportlab.platypus import Table, TableStyle, Paragraph
+# Removed ReportLab's Image class as we use ImageReader directly for better compatibility
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.utils import ImageReader
 
@@ -17,7 +19,7 @@ from reportlab.lib.utils import ImageReader
 # 1. SETUP
 # ==========================================
 LOGO_FILENAME = "College_logo.png"       
-NAAC_FILENAME = "NAAC_A_Logo.jpg"       
+NAAC_FILENAME = "NAAC_A_Logo.jpg"        
 WATERMARK_FILENAME = "AMC_watermark.png" 
 supabase = init_db()
 
@@ -57,7 +59,7 @@ def fetch_all_records(table, columns="*", filter_col=None, filter_val=None):
     return rows
 
 # ==========================================
-# 2. HIGH-SPEED PHOTO LOGIC
+# 2. HIGH-SPEED PHOTO LOGIC (WebP Fix)
 # ==========================================
 
 def fetch_complete_bucket_map(bucket_name):
@@ -78,21 +80,44 @@ def fetch_complete_bucket_map(bucket_name):
 def download_photo_worker(args):
     usn, file_map = args
     clean_usn = usn.strip().upper()
-    filename = file_map.get(clean_usn)
-    if not filename: filename = f"{clean_usn}.jpg"
-    try:
-        res = supabase.storage.from_("StakeHolders_Photos").download(filename)
-        if res: return usn, io.BytesIO(res)
-    except:
+    
+    # Try exact map match first, then fallback to common extensions including webp
+    possible_filenames = []
+    if file_map.get(clean_usn):
+        possible_filenames.append(file_map[clean_usn])
+    else:
+        possible_filenames.extend([f"{clean_usn}.webp", f"{clean_usn}.jpg", f"{clean_usn}.png", f"{clean_usn}.jpeg"])
+        
+    for fname in possible_filenames:
         try:
-            res = supabase.storage.from_("StakeHolders_Photos").download(f"{clean_usn}.png")
-            if res: return usn, io.BytesIO(res)
-        except: pass
+            res = supabase.storage.from_("StakeHolders_Photos").download(fname)
+            if res:
+                # FIX: Convert WebP or RGBA into standard JPEG so ReportLab doesn't crash
+                img = Image.open(io.BytesIO(res))
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                clean_io = io.BytesIO()
+                img.save(clean_io, format='JPEG', quality=95)
+                clean_io.seek(0)
+                return usn, clean_io
+        except:
+            pass
+            
     return usn, None
 
 # ==========================================
 # 3. DATA FETCHING UTILS (CYCLE AWARE)
 # ==========================================
+
+def fetch_branches_map():
+    """Fetches branch data to dynamically assign PG/UG and Degree Types"""
+    branch_map = {}
+    try:
+        res = supabase.table("master_branches").select("branch_code, program_type, degree_type").execute()
+        for r in res.data:
+            branch_map[r['branch_code']] = r
+    except: pass
+    return branch_map
 
 def fetch_timetable_map(target_cycle_id):
     tt_map = {}
@@ -130,6 +155,18 @@ def fetch_course_eligibility_map():
     except: pass
     return eligibility_map
 
+def sort_subjects_by_timetable(subs, timetable_map):
+    """Sorts the subject list chronologically based on timetable dates"""
+    def get_date(sub):
+        date_str = timetable_map.get(sub['code'], {}).get('date', 'TBD')
+        if date_str == 'TBD' or not date_str:
+            return datetime.datetime(2099, 1, 1) # Push unscheduled to the bottom
+        try:
+            return datetime.datetime.strptime(date_str, "%d-%m-%Y")
+        except:
+            return datetime.datetime(2099, 1, 1)
+    return sorted(subs, key=get_date)
+
 # ==========================================
 # 4. PDF ENGINE (EXACT ORIGINAL LAYOUT)
 # ==========================================
@@ -150,7 +187,7 @@ def draw_header(c, w, y_start, assets):
     c.line(30, y_start - 50, w - 30, y_start - 50)
     return y_start - 70
 
-def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycle_name, photo_bytes_io):
+def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycle_name, photo_bytes_io, prog_type):
     if assets.get("watermark"):
         c.saveState(); c.setFillAlpha(0.08)
         c.drawImage(ImageReader(assets["watermark"]), w/2 - 175, h/2 - 175, width=350, height=350, mask='auto', preserveAspectRatio=True)
@@ -166,17 +203,11 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     y -= 5
 
     branch_code = get_branch_code(student['usn'])
-    if photo_bytes_io:
-        p_img = Image(photo_bytes_io, width=60, height=75)
-    else:
-        p_img = Paragraph("PHOTO", getSampleStyleSheet()['Normal'])
-
-    name_para = Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal'])
-
+    
     s_data = [
-        ["USN", student['usn'], "Student Name", name_para, p_img],
-        ["Branch Code", branch_code, "Student Type", "UG", ""],
-        ["Semester", "1", "", "", ""]
+        ["USN", student['usn'], "Student Name", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal']), ""],
+        ["Branch Code", branch_code, "Student Type", prog_type, ""],
+        ["Semester", str(student.get('current_sem', '1')), "", "", ""]
     ]
     
     t1 = Table(s_data, colWidths=[85, 85, 80, 205, 80], rowHeights=28)
@@ -194,7 +225,16 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
         ('ALIGN', (4,0), (4,2), 'CENTER'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), 
     ]))
-    t1.wrapOn(c, w, h); t1.drawOn(c, 30, y - 90); y -= 110
+    t1.wrapOn(c, w, h); t1.drawOn(c, 30, y - 90)
+    
+    # Draw photo over the spanned cell
+    if photo_bytes_io:
+        c.drawImage(ImageReader(photo_bytes_io), 475, y - 85, width=60, height=75, preserveAspectRatio=True)
+    else:
+        c.setFont("Helvetica", 9)
+        c.drawString(485, y - 50, "PHOTO")
+        
+    y -= 110
     
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, f"Application ID: {app_id}")
@@ -245,7 +285,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     p = Paragraph(decl, getSampleStyleSheet()['Normal']); p.wrapOn(c, w - 60, 50); p.drawOn(c, 30, y - 25)
     c.setFont("Helvetica-Bold", 9); c.drawRightString(w - 30, y - 50, "Signature of the Candidate")
 
-def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, assets, cycle_name, photo_bytes_io, timetable_map, eligibility_map):
+def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, assets, cycle_name, photo_bytes_io, timetable_map, eligibility_map, deg_type):
     if assets.get("watermark"):
         c.saveState(); c.setFillAlpha(0.08)
         mid_y = y_start - 200
@@ -254,19 +294,13 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
 
     y = draw_header(c, w, y_start, assets)
     c.setFont("Helvetica-Bold", 11)
-    c.drawCentredString(w/2, y - 10, f"Admission Ticket for B.E. Examination - {cycle_name}")
+    c.drawCentredString(w/2, y - 10, f"Admission Ticket for {deg_type} Examination - {cycle_name}")
     c.setFont("Helvetica-Bold", 9)
     c.drawRightString(w - 40, y - 10, f"[{section}]")
     y -= 25 
 
-    if photo_bytes_io:
-        p_img = Image(photo_bytes_io, width=60, height=70)
-    else:
-        p_img = Paragraph("PHOTO", getSampleStyleSheet()['Normal'])
-
-    name_para = Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal'])
     h_data = [
-        ["USN:", student['usn'], "Name:", name_para],
+        ["USN:", student['usn'], "Name:", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal'])],
         ["App ID:", app_id, "Date:", datetime.date.today().strftime('%d-%m-%Y')],
         ["Center:", "AMC ENGINEERING COLLEGE", "", ""]
     ]
@@ -282,7 +316,9 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ('ALIGN', (1,0), (1,-1), 'LEFT'),
         ('ALIGN', (3,0), (3,-1), 'LEFT'),
     ]))
-    master_data = [[t_text, p_img]]
+    
+    # We leave an empty string cell for the photo span
+    master_data = [[t_text, ""]]
     t_master = Table(master_data, colWidths=[465, 70])
     t_master.setStyle(TableStyle([
         ('VALIGN', (0,0), (-1,-1), 'TOP'),
@@ -292,6 +328,14 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ('RIGHTPADDING', (0,0), (-1,-1), 0),
     ]))
     t_master.wrapOn(c, w, 500); _, h_mast = t_master.wrap(w, 500); t_master.drawOn(c, 30, y - h_mast)
+    
+    # Draw Photo
+    if photo_bytes_io:
+        c.drawImage(ImageReader(photo_bytes_io), 498, y - h_mast + 2, width=65, height=75, preserveAspectRatio=True)
+    else:
+        c.setFont("Helvetica", 9)
+        c.drawString(510, y - h_mast + 35, "PHOTO")
+        
     y -= (h_mast + 5)
 
     c.setFont("Helvetica-Bold", 9); c.drawString(30, y, "Exam Schedule:"); y -= 8
@@ -362,14 +406,12 @@ with tabs[1]:
             photo_file_map = fetch_complete_bucket_map("StakeHolders_Photos")
             timetable_map = fetch_timetable_map(selected_cycle_id)
             eligibility_map = fetch_course_eligibility_map()
+            branch_map = fetch_branches_map()
             
             fee_res = supabase.table("master_fees").select("*").execute()
             fees = {f['fee_type']: f['amount'] for f in fee_res.data}
 
-            # Fetch students
             all_students = fetch_all_records("master_students")
-            
-            # FIXED: Fetch ALL registrations for the specific cycle using the updated fetch_all_records
             all_regs = fetch_all_records("course_registrations", "usn, course_code, master_courses(title)", "cycle_id", selected_cycle_id)
             
             course_map = {}
@@ -377,7 +419,6 @@ with tabs[1]:
                 usn = r['usn']
                 if usn not in course_map: course_map[usn] = []
                 
-                # Safely get title (handles if master_courses join is empty)
                 title = r.get('master_courses', {}).get('title', "Unknown Title") if r.get('master_courses') else "Unknown Title"
                 course_map[usn].append({"code": r['course_code'], "title": title})
                 
@@ -409,12 +450,21 @@ with tabs[1]:
                     subs = course_map.get(u, [])
                     photo_stream = batch_photos.get(u)
                     
+                    # Sort Subjects Chronologically
+                    subs = sort_subjects_by_timetable(subs, timetable_map)
+                    
+                    # Fetch Dynamic PG/UG and Degree strings
+                    bc = get_branch_code(u)
+                    b_info = branch_map.get(bc, {"program_type": "UG", "degree_type": "B.E."})
+                    prog_type = b_info.get("program_type", "UG")
+                    deg_type = b_info.get("degree_type", "B.E.")
+                    
                     app_id = generate_app_id(u, selected_cycle_id)
-                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream)
+                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type)
                     c.showPage()
-                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map)
+                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
                     c.setDash(4, 4); c.line(20, A4[1]/2, A4[0]-20, A4[1]/2); c.setDash([])
-                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 20, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map)
+                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 20, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
                     c.showPage()
                 
                 progress_bar.progress(min((i + BATCH_SIZE) / total, 1.0))
@@ -426,7 +476,11 @@ with tabs[1]:
 
 with tabs[2]:
     st.write("### Single Student Generator")
-    target_usn = st.text_input("Enter USN to Generate:").strip().upper()
+    st.info("Enter USN to pull the correct branch details, sort timetable, and download WebP photo.")
+    
+    col1, col2 = st.columns([3, 1])
+    target_usn = col1.text_input("Enter USN to Generate:").strip().upper()
+    
     if target_usn and st.button("Generate Document"):
         with st.spinner("Fetching Data..."):
             try:
@@ -441,6 +495,7 @@ with tabs[2]:
                 _, photo_stream = download_photo_worker((target_usn, {}))
                 timetable_map = fetch_timetable_map(selected_cycle_id)
                 eligibility_map = fetch_course_eligibility_map()
+                branch_map = fetch_branches_map()
 
                 stu_res = supabase.table("master_students").select("*").eq("usn", target_usn).execute()
                 if not stu_res.data:
@@ -448,7 +503,6 @@ with tabs[2]:
                     st.stop()
                 stu = stu_res.data[0]
 
-                # --- IMPORTANT: Filter by USN and the SIDEBAR selected cycle_id ---
                 sub_res = supabase.table("course_registrations")\
                     .select("course_code, master_courses(title)")\
                     .eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
@@ -457,6 +511,15 @@ with tabs[2]:
                 for r in sub_res.data:
                     title = r.get('master_courses', {}).get('title', "Unknown Title") if r.get('master_courses') else "Unknown Title"
                     subs.append({"code": r['course_code'], "title": title})
+                    
+                # Sort Chronologically
+                subs = sort_subjects_by_timetable(subs, timetable_map)
+                
+                # Fetch Dynamic strings
+                bc = get_branch_code(target_usn)
+                b_info = branch_map.get(bc, {"program_type": "UG", "degree_type": "B.E."})
+                prog_type = b_info.get("program_type", "UG")
+                deg_type = b_info.get("degree_type", "B.E.")
                     
                 fee_res = supabase.table("master_fees").select("*").execute()
                 fees = {f['fee_type']: f['amount'] for f in fee_res.data}
@@ -467,11 +530,11 @@ with tabs[2]:
                     buf = io.BytesIO(); c = canvas.Canvas(buf, pagesize=A4)
                     app_id = generate_app_id(target_usn, selected_cycle_id)
                     
-                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream)
+                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type)
                     c.showPage()
-                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map)
+                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
                     c.setDash(4, 4); c.line(20, A4[1]/2, A4[0]-20, A4[1]/2); c.setDash([])
-                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 20, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map)
+                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 20, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
                     c.showPage(); c.save()
                     
                     st.download_button(f"📥 Download Docs for {target_usn}", buf.getvalue(), f"{target_usn}_ExamDocs.pdf")
