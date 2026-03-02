@@ -4,14 +4,14 @@ import io
 import datetime
 import hashlib
 import os
+import re
 import concurrent.futures
-from PIL import Image  # Added to handle WebP conversion
+from PIL import Image as PILImage  # Aliased to prevent conflict with ReportLab
 from utils import init_db
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.platypus import Table, TableStyle, Paragraph
-# Removed ReportLab's Image class as we use ImageReader directly for better compatibility
+from reportlab.platypus import Table, TableStyle, Paragraph, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.utils import ImageReader
 
@@ -34,8 +34,12 @@ if not selected_cycle_id:
     st.stop()
 
 def get_branch_code(usn):
+    # Smart VTU Branch Extraction (Handles 2, 3, or 4 letter codes gracefully)
     try:
-        if len(usn) > 7: return usn[5:7].upper()
+        if len(usn) > 5:
+            match = re.search(r'[A-Za-z]+', usn[5:])
+            if match:
+                return match.group(0).upper()
     except: pass
     return "GEN"
 
@@ -59,7 +63,7 @@ def fetch_all_records(table, columns="*", filter_col=None, filter_val=None):
     return rows
 
 # ==========================================
-# 2. HIGH-SPEED PHOTO LOGIC (WebP Fix)
+# 2. HIGH-SPEED PHOTO LOGIC
 # ==========================================
 
 def fetch_complete_bucket_map(bucket_name):
@@ -81,7 +85,6 @@ def download_photo_worker(args):
     usn, file_map = args
     clean_usn = usn.strip().upper()
     
-    # Try exact map match first, then fallback to common extensions including webp
     possible_filenames = []
     if file_map.get(clean_usn):
         possible_filenames.append(file_map[clean_usn])
@@ -92,8 +95,7 @@ def download_photo_worker(args):
         try:
             res = supabase.storage.from_("StakeHolders_Photos").download(fname)
             if res:
-                # FIX: Convert WebP or RGBA into standard JPEG so ReportLab doesn't crash
-                img = Image.open(io.BytesIO(res))
+                img = PILImage.open(io.BytesIO(res))
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
                 clean_io = io.BytesIO()
@@ -106,11 +108,10 @@ def download_photo_worker(args):
     return usn, None
 
 # ==========================================
-# 3. DATA FETCHING UTILS (CYCLE AWARE)
+# 3. DATA FETCHING UTILS
 # ==========================================
 
 def fetch_branches_map():
-    """Fetches branch data to dynamically assign PG/UG and Degree Types"""
     branch_map = {}
     try:
         res = supabase.table("master_branches").select("branch_code, program_type, degree_type").execute()
@@ -156,11 +157,10 @@ def fetch_course_eligibility_map():
     return eligibility_map
 
 def sort_subjects_by_timetable(subs, timetable_map):
-    """Sorts the subject list chronologically based on timetable dates"""
     def get_date(sub):
         date_str = timetable_map.get(sub['code'], {}).get('date', 'TBD')
         if date_str == 'TBD' or not date_str:
-            return datetime.datetime(2099, 1, 1) # Push unscheduled to the bottom
+            return datetime.datetime(2099, 1, 1)
         try:
             return datetime.datetime.strptime(date_str, "%d-%m-%Y")
         except:
@@ -204,8 +204,17 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
 
     branch_code = get_branch_code(student['usn'])
     
+    # PERFECTLY CENTERED PHOTO INSIDE THE TABLE
+    if photo_bytes_io:
+        photo_bytes_io.seek(0)
+        p_img = RLImage(photo_bytes_io, width=65, height=75)
+        p_img.hAlign = 'CENTER'
+        p_img.vAlign = 'MIDDLE'
+    else:
+        p_img = Paragraph("<para align=center>PHOTO</para>", getSampleStyleSheet()['Normal'])
+    
     s_data = [
-        ["USN", student['usn'], "Student Name", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal']), ""],
+        ["USN", student['usn'], "Student Name", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal']), p_img],
         ["Branch Code", branch_code, "Student Type", prog_type, ""],
         ["Semester", str(student.get('current_sem', '1')), "", "", ""]
     ]
@@ -220,20 +229,12 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
         ('BACKGROUND', (2,0), (2,-1), colors.lightgrey), 
         ('SPAN', (4,0), (4,2)), 
         ('VALIGN', (4,0), (4,2), 'MIDDLE'),
+        ('ALIGN', (4,0), (4,2), 'CENTER'),
         ('ALIGN', (1,0), (1,2), 'LEFT'),
         ('ALIGN', (3,0), (3,2), 'LEFT'), 
-        ('ALIGN', (4,0), (4,2), 'CENTER'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), 
     ]))
-    t1.wrapOn(c, w, h); t1.drawOn(c, 30, y - 90)
-    
-    # Draw photo over the spanned cell
-    if photo_bytes_io:
-        c.drawImage(ImageReader(photo_bytes_io), 475, y - 85, width=60, height=75, preserveAspectRatio=True)
-    else:
-        c.setFont("Helvetica", 9)
-        c.drawString(485, y - 50, "PHOTO")
-        
+    t1.wrapOn(c, w, h); t1.drawOn(c, 30, y - 84) # 3 rows * 28 = 84 height
     y -= 110
     
     c.setFont("Helvetica-Bold", 10)
@@ -283,7 +284,21 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Declaration:"); y -= 15
     decl = "The subjects listed in this application are the only subjects I wish to apply for this Examination. I understand this application overrides any previous submission."
     p = Paragraph(decl, getSampleStyleSheet()['Normal']); p.wrapOn(c, w - 60, 50); p.drawOn(c, 30, y - 25)
-    c.setFont("Helvetica-Bold", 9); c.drawRightString(w - 30, y - 50, "Signature of the Candidate")
+    
+    y -= 50
+    c.setFont("Helvetica-Bold", 9); c.drawRightString(w - 30, y, "Signature of the Candidate")
+    
+    # ADDED CONTACT DETAILS
+    c.setFont("Helvetica", 8)
+    
+    # Safely extract and format phone/email without Pandas errors
+    phone = str(student.get('phone', '')).replace('nan', '').strip()
+    email = str(student.get('email', '')).replace('nan', '').strip()
+    if not phone: phone = "__________________"
+    if not email: email = "__________________"
+    
+    c.drawRightString(w - 30, y - 12, f"Contact No: {phone}")
+    c.drawRightString(w - 30, y - 24, f"Email ID: {email}")
 
 def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, assets, cycle_name, photo_bytes_io, timetable_map, eligibility_map, deg_type):
     if assets.get("watermark"):
@@ -317,25 +332,25 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ('ALIGN', (3,0), (3,-1), 'LEFT'),
     ]))
     
-    # We leave an empty string cell for the photo span
-    master_data = [[t_text, ""]]
+    # PERFECTLY CENTERED HALL TICKET PHOTO
+    if photo_bytes_io:
+        photo_bytes_io.seek(0)
+        p_img2 = RLImage(photo_bytes_io, width=58, height=72)
+        p_img2.hAlign = 'CENTER'
+        p_img2.vAlign = 'MIDDLE'
+    else:
+        p_img2 = Paragraph("<para align=center>PHOTO</para>", getSampleStyleSheet()['Normal'])
+
+    master_data = [[t_text, p_img2]]
     t_master = Table(master_data, colWidths=[465, 70])
     t_master.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ('ALIGN', (1,0), (1,0), 'RIGHT'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('ALIGN', (1,0), (1,0), 'CENTER'),
         ('GRID', (1,0), (1,0), 0.5, colors.black),
         ('LEFTPADDING', (0,0), (-1,-1), 0),
         ('RIGHTPADDING', (0,0), (-1,-1), 0),
     ]))
     t_master.wrapOn(c, w, 500); _, h_mast = t_master.wrap(w, 500); t_master.drawOn(c, 30, y - h_mast)
-    
-    # Draw Photo
-    if photo_bytes_io:
-        c.drawImage(ImageReader(photo_bytes_io), 498, y - h_mast + 2, width=65, height=75, preserveAspectRatio=True)
-    else:
-        c.setFont("Helvetica", 9)
-        c.drawString(510, y - h_mast + 35, "PHOTO")
-        
     y -= (h_mast + 5)
 
     c.setFont("Helvetica-Bold", 9); c.drawString(30, y, "Exam Schedule:"); y -= 8
@@ -431,7 +446,6 @@ with tabs[1]:
             final_pdf_buffer = io.BytesIO(); c = canvas.Canvas(final_pdf_buffer, pagesize=A4)
             total = len(usns)
             
-            # --- PARALLEL BATCH PROCESSING ---
             BATCH_SIZE = 50 
             for i in range(0, total, BATCH_SIZE):
                 batch_usns = usns[i : i + BATCH_SIZE]
@@ -450,10 +464,8 @@ with tabs[1]:
                     subs = course_map.get(u, [])
                     photo_stream = batch_photos.get(u)
                     
-                    # Sort Subjects Chronologically
                     subs = sort_subjects_by_timetable(subs, timetable_map)
                     
-                    # Fetch Dynamic PG/UG and Degree strings
                     bc = get_branch_code(u)
                     b_info = branch_map.get(bc, {"program_type": "UG", "degree_type": "B.E."})
                     prog_type = b_info.get("program_type", "UG")
@@ -512,10 +524,8 @@ with tabs[2]:
                     title = r.get('master_courses', {}).get('title', "Unknown Title") if r.get('master_courses') else "Unknown Title"
                     subs.append({"code": r['course_code'], "title": title})
                     
-                # Sort Chronologically
                 subs = sort_subjects_by_timetable(subs, timetable_map)
                 
-                # Fetch Dynamic strings
                 bc = get_branch_code(target_usn)
                 b_info = branch_map.get(bc, {"program_type": "UG", "degree_type": "B.E."})
                 prog_type = b_info.get("program_type", "UG")
