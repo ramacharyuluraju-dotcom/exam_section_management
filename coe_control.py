@@ -34,7 +34,7 @@ if not selected_cycle_id:
     st.stop()
 
 def get_branch_code(usn):
-    # Smart VTU Branch Extraction (Handles 2, 3, or 4 letter codes gracefully)
+    # Fallback only - we now prefer the database branch_code
     try:
         if len(usn) > 5:
             match = re.search(r'[A-Za-z]+', usn[5:])
@@ -71,17 +71,14 @@ def fetch_complete_bucket_map(bucket_name):
     limit = 1000; offset = 0
     while True:
         try:
-            # FIX: Use empty string "" instead of None for the path to avoid API quirks
             files = supabase.storage.from_(bucket_name).list("", options={"limit": limit, "offset": offset})
             if not files: break
             
             for f in files:
                 fname = f.get('name', '')
-                # Skip hidden Supabase files or empty folders
                 if not fname or fname == '.emptyFolderPlaceholder': 
                     continue
                 
-                # Get exact filename ignoring any accidental subfolders
                 basename = os.path.basename(fname)
                 key = os.path.splitext(basename)[0].upper().strip()
                 file_map[key] = fname
@@ -95,29 +92,31 @@ def download_photo_worker(args):
     usn, file_map = args
     clean_usn = usn.strip().upper()
     
-    possible_filenames = []
     # 1. Try exact map match first
     if clean_usn in file_map:
-        possible_filenames.append(file_map[clean_usn])
-    else:
-        # 2. Brute force all case-sensitive combinations if map fails
-        for ext in ['.webp', '.WEBP', '.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG']:
-            possible_filenames.append(f"{clean_usn}{ext}")
-        
-    for fname in possible_filenames:
         try:
-            res = supabase.storage.from_("StakeHolders_Photos").download(fname)
+            res = supabase.storage.from_("StakeHolders_Photos").download(file_map[clean_usn])
             if res:
                 img = PILImage.open(io.BytesIO(res))
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
+                if img.mode != 'RGB': img = img.convert('RGB')
                 clean_io = io.BytesIO()
                 img.save(clean_io, format='JPEG', quality=95)
                 clean_io.seek(0)
                 return usn, clean_io
-        except Exception:
-            # If download fails, silently try the next filename in the list
-            pass
+        except: pass
+
+    # 2. Hard Brute-Force Fallback (Bypasses list API quirks)
+    for ext in ['.webp', '.jpg', '.jpeg', '.png', '.JPG', '.PNG']:
+        try:
+            res = supabase.storage.from_("StakeHolders_Photos").download(f"{clean_usn}{ext}")
+            if res:
+                img = PILImage.open(io.BytesIO(res))
+                if img.mode != 'RGB': img = img.convert('RGB')
+                clean_io = io.BytesIO()
+                img.save(clean_io, format='JPEG', quality=95)
+                clean_io.seek(0)
+                return usn, clean_io
+        except: pass
             
     return usn, None
 
@@ -201,7 +200,7 @@ def draw_header(c, w, y_start, assets):
     c.line(30, y_start - 50, w - 30, y_start - 50)
     return y_start - 70
 
-def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycle_name, photo_bytes_io, prog_type):
+def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycle_name, photo_bytes_io, prog_type, db_branch_code):
     if assets.get("watermark"):
         c.saveState(); c.setFillAlpha(0.08)
         c.drawImage(ImageReader(assets["watermark"]), w/2 - 175, h/2 - 175, width=350, height=350, mask='auto', preserveAspectRatio=True)
@@ -215,8 +214,6 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, "Student Details")
     y -= 5
-
-    branch_code = get_branch_code(student['usn'])
     
     # PERFECTLY CENTERED PHOTO INSIDE THE TABLE
     if photo_bytes_io:
@@ -229,7 +226,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     
     s_data = [
         ["USN", student['usn'], "Student Name", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal']), p_img],
-        ["Branch Code", branch_code, "Student Type", prog_type, ""],
+        ["Branch Code", db_branch_code, "Student Type", prog_type, ""],
         ["Semester", str(student.get('current_sem', '1')), "", "", ""]
     ]
     
@@ -248,7 +245,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
         ('ALIGN', (3,0), (3,2), 'LEFT'), 
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), 
     ]))
-    t1.wrapOn(c, w, h); t1.drawOn(c, 30, y - 84) # 3 rows * 28 = 84 height
+    t1.wrapOn(c, w, h); t1.drawOn(c, 30, y - 84)
     y -= 110
     
     c.setFont("Helvetica-Bold", 10)
@@ -302,7 +299,6 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     y -= 50
     c.setFont("Helvetica-Bold", 9); c.drawRightString(w - 30, y, "Signature of the Candidate")
     
-    # ADDED CONTACT DETAILS
     c.setFont("Helvetica", 8)
     phone = str(student.get('phone', '')).replace('nan', '').strip()
     email = str(student.get('email', '')).replace('nan', '').strip()
@@ -344,7 +340,6 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ('ALIGN', (3,0), (3,-1), 'LEFT'),
     ]))
     
-    # PERFECTLY CENTERED HALL TICKET PHOTO
     if photo_bytes_io:
         photo_bytes_io.seek(0)
         p_img2 = RLImage(photo_bytes_io, width=58, height=72)
@@ -464,8 +459,8 @@ with tabs[1]:
                 status.text(f"Processing Batch {i//BATCH_SIZE + 1} ({min(i+BATCH_SIZE, total)}/{total} students)...")
                 
                 batch_photos = {}
-                # FIX: Reduced max_workers to 5 to prevent Supabase Rate Limiting / dropping connections
-                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                # FIX: Very low max workers to prevent Supabase from blocking the connection
+                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                     futures = {executor.submit(download_photo_worker, (u, photo_file_map)): u for u in batch_usns}
                     for future in concurrent.futures.as_completed(futures):
                         u, p_stream = future.result()
@@ -479,17 +474,22 @@ with tabs[1]:
                     
                     subs = sort_subjects_by_timetable(subs, timetable_map)
                     
-                    bc = get_branch_code(u)
-                    b_info = branch_map.get(bc, {"program_type": "UG", "degree_type": "B.E."})
+                    # FIX: We now use the EXACT branch code saved in the database
+                    db_branch_code = stu.get('branch_code', get_branch_code(u))
+                    
+                    b_info = branch_map.get(db_branch_code, {"program_type": "UG", "degree_type": "B.E."})
                     prog_type = b_info.get("program_type", "UG")
                     deg_type = b_info.get("degree_type", "B.E.")
                     
                     app_id = generate_app_id(u, selected_cycle_id)
-                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type)
+                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code)
                     c.showPage()
+                    
                     draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
                     c.setDash(4, 4); c.line(20, A4[1]/2, A4[0]-20, A4[1]/2); c.setDash([])
-                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 20, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
+                    
+                    # FIX: Lowered starting point by 15 pixels to clear the scissor line
+                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 35, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
                     c.showPage()
                 
                 progress_bar.progress(min((i + BATCH_SIZE) / total, 1.0))
@@ -501,7 +501,6 @@ with tabs[1]:
 
 with tabs[2]:
     st.write("### Single Student Generator")
-    st.info("Enter USN to pull the correct branch details, sort timetable, and download WebP photo.")
     
     col1, col2 = st.columns([3, 1])
     target_usn = col1.text_input("Enter USN to Generate:").strip().upper()
@@ -539,8 +538,10 @@ with tabs[2]:
                     
                 subs = sort_subjects_by_timetable(subs, timetable_map)
                 
-                bc = get_branch_code(target_usn)
-                b_info = branch_map.get(bc, {"program_type": "UG", "degree_type": "B.E."})
+                # FIX: We now use the EXACT branch code saved in the database
+                db_branch_code = stu.get('branch_code', get_branch_code(target_usn))
+                
+                b_info = branch_map.get(db_branch_code, {"program_type": "UG", "degree_type": "B.E."})
                 prog_type = b_info.get("program_type", "UG")
                 deg_type = b_info.get("degree_type", "B.E.")
                     
@@ -553,11 +554,14 @@ with tabs[2]:
                     buf = io.BytesIO(); c = canvas.Canvas(buf, pagesize=A4)
                     app_id = generate_app_id(target_usn, selected_cycle_id)
                     
-                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type)
+                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code)
                     c.showPage()
+                    
                     draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
                     c.setDash(4, 4); c.line(20, A4[1]/2, A4[0]-20, A4[1]/2); c.setDash([])
-                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 20, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
+                    
+                    # FIX: Lowered starting point by 15 pixels to clear the scissor line
+                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 35, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
                     c.showPage(); c.save()
                     
                     st.download_button(f"📥 Download Docs for {target_usn}", buf.getvalue(), f"{target_usn}_ExamDocs.pdf")
