@@ -34,7 +34,6 @@ if not selected_cycle_id:
     st.stop()
 
 def get_branch_code(usn):
-    # Fallback only - we now prefer the database branch_code
     try:
         if len(usn) > 5:
             match = re.search(r'[A-Za-z]+', usn[5:])
@@ -80,7 +79,8 @@ def fetch_complete_bucket_map(bucket_name):
                     continue
                 
                 basename = os.path.basename(fname)
-                key = os.path.splitext(basename)[0].upper().strip()
+                # Hyper-Aggressive Strip: Removes all spaces, dashes, etc., for a guaranteed match
+                key = re.sub(r'[^A-Z0-9]', '', os.path.splitext(basename)[0].upper())
                 file_map[key] = fname
                 
             if len(files) < limit: break
@@ -90,7 +90,8 @@ def fetch_complete_bucket_map(bucket_name):
 
 def download_photo_worker(args):
     usn, file_map = args
-    clean_usn = usn.strip().upper()
+    # Hyper-Aggressive Strip on the USN side as well
+    clean_usn = re.sub(r'[^A-Z0-9]', '', usn.upper())
     
     # 1. Try exact map match first
     if clean_usn in file_map:
@@ -105,8 +106,8 @@ def download_photo_worker(args):
                 return usn, clean_io
         except: pass
 
-    # 2. Hard Brute-Force Fallback (Bypasses list API quirks)
-    for ext in ['.webp', '.jpg', '.jpeg', '.png', '.JPG', '.PNG']:
+    # 2. Hard Brute-Force Fallback 
+    for ext in ['.webp', '.jpg', '.jpeg', '.png', '.WEBP', '.JPG', '.PNG']:
         try:
             res = supabase.storage.from_("StakeHolders_Photos").download(f"{clean_usn}{ext}")
             if res:
@@ -215,7 +216,6 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     c.drawString(30, y, "Student Details")
     y -= 5
     
-    # PERFECTLY CENTERED PHOTO INSIDE THE TABLE
     if photo_bytes_io:
         photo_bytes_io.seek(0)
         p_img = RLImage(photo_bytes_io, width=65, height=75)
@@ -308,7 +308,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     c.drawRightString(w - 30, y - 12, f"Contact No: {phone}")
     c.drawRightString(w - 30, y - 24, f"Email ID: {email}")
 
-def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, assets, cycle_name, photo_bytes_io, timetable_map, eligibility_map, deg_type):
+def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, assets, cycle_name, photo_bytes_io, timetable_map, eligibility_map, header_branch):
     if assets.get("watermark"):
         c.saveState(); c.setFillAlpha(0.08)
         mid_y = y_start - 200
@@ -317,7 +317,10 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
 
     y = draw_header(c, w, y_start, assets)
     c.setFont("Helvetica-Bold", 11)
-    c.drawCentredString(w/2, y - 10, f"Admission Ticket for {deg_type} Examination - {cycle_name}")
+    
+    # FIX: Strictly injects the Branch Code right into the title natively (e.g. "LVS" or "MCA")
+    c.drawCentredString(w/2, y - 10, f"Admission Ticket for {header_branch} Examination - {cycle_name}")
+    
     c.setFont("Helvetica-Bold", 9)
     c.drawRightString(w - 40, y - 10, f"[{section}]")
     y -= 25 
@@ -459,8 +462,7 @@ with tabs[1]:
                 status.text(f"Processing Batch {i//BATCH_SIZE + 1} ({min(i+BATCH_SIZE, total)}/{total} students)...")
                 
                 batch_photos = {}
-                # FIX: Very low max workers to prevent Supabase from blocking the connection
-                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                     futures = {executor.submit(download_photo_worker, (u, photo_file_map)): u for u in batch_usns}
                     for future in concurrent.futures.as_completed(futures):
                         u, p_stream = future.result()
@@ -474,22 +476,23 @@ with tabs[1]:
                     
                     subs = sort_subjects_by_timetable(subs, timetable_map)
                     
-                    # FIX: We now use the EXACT branch code saved in the database
                     db_branch_code = stu.get('branch_code', get_branch_code(u))
                     
-                    b_info = branch_map.get(db_branch_code, {"program_type": "UG", "degree_type": "B.E."})
+                    b_info = branch_map.get(db_branch_code, {"program_type": "UG"})
                     prog_type = b_info.get("program_type", "UG")
-                    deg_type = b_info.get("degree_type", "B.E.")
                     
                     app_id = generate_app_id(u, selected_cycle_id)
                     draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code)
                     c.showPage()
                     
-                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
-                    c.setDash(4, 4); c.line(20, A4[1]/2, A4[0]-20, A4[1]/2); c.setDash([])
+                    # Top Ticket
+                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code)
                     
-                    # FIX: Lowered starting point by 15 pixels to clear the scissor line
-                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 35, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
+                    # FIX: Raised scissor line by 20 pixels to give the College Copy room to breathe
+                    c.setDash(4, 4); c.line(20, (A4[1]/2) + 20, A4[0]-20, (A4[1]/2) + 20); c.setDash([])
+                    
+                    # FIX: Lowered College Copy start by 15 pixels so logos don't touch the scissor line, and footer won't drop off the page
+                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code)
                     c.showPage()
                 
                 progress_bar.progress(min((i + BATCH_SIZE) / total, 1.0))
@@ -538,12 +541,10 @@ with tabs[2]:
                     
                 subs = sort_subjects_by_timetable(subs, timetable_map)
                 
-                # FIX: We now use the EXACT branch code saved in the database
                 db_branch_code = stu.get('branch_code', get_branch_code(target_usn))
                 
-                b_info = branch_map.get(db_branch_code, {"program_type": "UG", "degree_type": "B.E."})
+                b_info = branch_map.get(db_branch_code, {"program_type": "UG"})
                 prog_type = b_info.get("program_type", "UG")
-                deg_type = b_info.get("degree_type", "B.E.")
                     
                 fee_res = supabase.table("master_fees").select("*").execute()
                 fees = {f['fee_type']: f['amount'] for f in fee_res.data}
@@ -557,11 +558,14 @@ with tabs[2]:
                     draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code)
                     c.showPage()
                     
-                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
-                    c.setDash(4, 4); c.line(20, A4[1]/2, A4[0]-20, A4[1]/2); c.setDash([])
+                    # Top Ticket
+                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code)
                     
-                    # FIX: Lowered starting point by 15 pixels to clear the scissor line
-                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 35, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, deg_type)
+                    # Raised scissor line
+                    c.setDash(4, 4); c.line(20, (A4[1]/2) + 20, A4[0]-20, (A4[1]/2) + 20); c.setDash([])
+                    
+                    # Lowered College Copy
+                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code)
                     c.showPage(); c.save()
                     
                     st.download_button(f"📥 Download Docs for {target_usn}", buf.getvalue(), f"{target_usn}_ExamDocs.pdf")
