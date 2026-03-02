@@ -44,8 +44,11 @@ with tabs[0]:
         if st.form_submit_button("💾 Save Institutional DNA"):
             settings = {'college_name': name, 'university': univ, 'scheme_type': scheme, 'address': addr}
             data = [{'setting_key': k, 'setting_value': v} for k, v in settings.items()]
-            supabase.table("global_settings").upsert(data).execute()
-            st.success("Global Settings Updated!")
+            try:
+                supabase.table("global_settings").upsert(data).execute()
+                st.success("Global Settings Updated!")
+            except Exception as e:
+                st.error(f"🚨 RAW DATABASE ERROR: {e}")
 
 # ==========================================
 # 1. INFRASTRUCTURE (ROOMS)
@@ -88,7 +91,7 @@ with tabs[1]:
             if "master_rooms_bench_type_check" in error_msg:
                 st.error("❌ Database rejected the 'bench_type'. Allowed values are only: 'Single', 'Double', 'Gallery'.")
             else:
-                st.error(f"❌ Upload Failed: {error_msg}")
+                st.error(f"🚨 RAW DATABASE ERROR: {error_msg}")
 
 # ==========================================
 # 2. STAKEHOLDERS (STAFF/FACULTY)
@@ -104,8 +107,11 @@ with tabs[2]:
             df = pd.read_csv(f_staff)
             expected = ['staff_id', 'name', 'role', 'dept', 'is_evaluator', 'phone', 'email']
             data = clean_data_for_db(df, expected)
-            supabase.table("master_stakeholders").upsert(data).execute()
-            st.success("Stakeholders Registered!")
+            try:
+                supabase.table("master_stakeholders").upsert(data).execute()
+                st.success("✅ Stakeholders Registered!")
+            except Exception as e:
+                st.error(f"🚨 RAW DATABASE ERROR: {e}")
 
     with m_t2:
         with st.form("staff_individual"):
@@ -121,12 +127,18 @@ with tabs[2]:
             c1, c2, c3 = st.columns(3)
             if c1.form_submit_button("💾 Add/Update Staff"):
                 s_data = {"staff_id": s_id, "name": s_name, "role": s_role, "dept": s_dept, "phone": s_phone, "email": s_email, "is_evaluator": s_eval}
-                supabase.table("master_stakeholders").upsert(s_data).execute()
-                st.success(f"Staff {s_id} updated.")
+                try:
+                    supabase.table("master_stakeholders").upsert(s_data).execute()
+                    st.success(f"✅ Staff {s_id} updated.")
+                except Exception as e:
+                    st.error(f"🚨 RAW DATABASE ERROR: {e}")
             
             if c3.form_submit_button("🗑️ Delete Staff"):
-                supabase.table("master_stakeholders").delete().eq("staff_id", s_id).execute()
-                st.warning(f"Staff {s_id} removed.")
+                try:
+                    supabase.table("master_stakeholders").delete().eq("staff_id", s_id).execute()
+                    st.warning(f"Staff {s_id} removed.")
+                except Exception as e:
+                    st.error(f"🚨 RAW DATABASE ERROR: {e}")
 
 # ==========================================
 # 3. ACADEMIC MASTER
@@ -148,11 +160,18 @@ with tabs[3]:
             c1, c2, c3 = st.columns(3)
             if c1.form_submit_button("💾 Save/Update Branch"):
                 b_data = {"branch_code": b_code, "branch_name": b_name, "program_type": p_type, "degree_type": d_type, "dept_name": dept_n}
-                supabase.table("master_branches").upsert(b_data).execute()
-                st.success(f"Branch {b_code} Saved.")
+                try:
+                    supabase.table("master_branches").upsert(b_data).execute()
+                    st.success(f"✅ Branch {b_code} Saved.")
+                except Exception as e:
+                    st.error(f"🚨 RAW DATABASE ERROR: {e}")
+                    
             if c3.form_submit_button("🗑️ Delete Branch"):
-                supabase.table("master_branches").delete().eq("branch_code", b_code).execute()
-                st.warning(f"Branch {b_code} deleted.")
+                try:
+                    supabase.table("master_branches").delete().eq("branch_code", b_code).execute()
+                    st.warning(f"Branch {b_code} deleted.")
+                except Exception as e:
+                    st.error(f"🚨 RAW DATABASE ERROR: {e}")
 
     with ac_t2:
         st.subheader("Student Admissions")
@@ -164,8 +183,12 @@ with tabs[3]:
                 df = pd.read_csv(f_stu).rename(columns={'name': 'full_name', 'sem': 'current_sem'})
                 expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'section', 'email', 'phone', 'dob', 'contact', 'status']
                 data = clean_data_for_db(df, expected, numeric_cols=['current_sem'])
-                supabase.table("master_students").upsert(data).execute()
-                st.success("Students loaded.")
+                try:
+                    supabase.table("master_students").upsert(data).execute()
+                    st.success("✅ Students loaded.")
+                except Exception as e:
+                    st.error(f"🚨 RAW DATABASE ERROR: {e}")
+                    
         with s_m2:
             with st.form("stu_manual"):
                 col1, col2 = st.columns(2)
@@ -173,12 +196,20 @@ with tabs[3]:
                 st_name = col2.text_input("Full Name")
                 st_bc = col1.text_input("Branch Code")
                 st_sem = col2.number_input("Current Sem", 1, 8, 1)
+                
                 if st.form_submit_button("💾 Add/Update Student"):
-                    supabase.table("master_students").upsert({"usn": st_usn, "full_name": st_name, "branch_code": st_bc, "current_sem": st_sem}).execute()
-                    st.success("Student updated.")
+                    try:
+                        supabase.table("master_students").upsert({"usn": st_usn, "full_name": st_name, "branch_code": st_bc, "current_sem": st_sem}).execute()
+                        st.success("✅ Student updated.")
+                    except Exception as e:
+                        st.error(f"🚨 RAW DATABASE ERROR: {e}")
+                        
                 if st.form_submit_button("🗑️ Delete Student"):
-                    supabase.table("master_students").delete().eq("usn", st_usn).execute()
-                    st.warning("Student removed.")
+                    try:
+                        supabase.table("master_students").delete().eq("usn", st_usn).execute()
+                        st.warning("Student removed.")
+                    except Exception as e:
+                        st.error(f"🚨 RAW DATABASE ERROR: {e}")
 
     with ac_t3:
         st.subheader("Course Scheme Repository")
@@ -188,11 +219,23 @@ with tabs[3]:
             f_sch = st.file_uploader("Upload Scheme CSV", type='csv')
             if f_sch and st.button("Save Full Scheme"):
                 df = pd.read_csv(f_sch).rename(columns={'course_title': 'title'})
+                
+                # Pre-clean NaN values so JSON doesn't crash before it even reaches DB
+                if 'is_lab' in df.columns:
+                    df['is_lab'] = df['is_lab'].fillna(False)
+                df = df.where(pd.notnull(df), None)
+                
                 expected = ['course_code', 'title', 'branch_code', 'semester_id', 'credits', 'max_cie', 'max_see', 'is_lab', 'is_integrated', 'type', 'course_type', 'is_elective', 'l_hours', 't_hours', 'p_hours', 'saae_hours', 'exam_duration_hours', 'total_marks']
                 nums = ['semester_id', 'credits', 'max_cie', 'max_see', 'total_marks', 'l_hours', 't_hours', 'p_hours', 'saae_hours', 'exam_duration_hours']
                 data = clean_data_for_db(df, expected, numeric_cols=nums)
-                supabase.table("master_courses").upsert(data).execute()
-                st.success("Scheme Updated Successfully.")
+                
+                try:
+                    supabase.table("master_courses").upsert(data).execute()
+                    st.success("✅ Scheme Updated Successfully.")
+                except Exception as e:
+                    # This will print the exact DB complaint (e.g., missing Foreign Key)
+                    st.error(f"🚨 RAW DATABASE ERROR: {e}")
+                    
         with c_m2:
             with st.form("course_manual"):
                 col1, col2 = st.columns(2)
@@ -201,9 +244,17 @@ with tabs[3]:
                 cbc = col1.text_input("Branch Code")
                 cs = col2.number_input("Semester ID", 1, 8, 1)
                 ccr = col1.number_input("Credits", 0, 5, 4)
+                
                 if st.form_submit_button("💾 Add/Update Course"):
-                    supabase.table("master_courses").upsert({"course_code": cc, "title": ct, "branch_code": cbc, "semester_id": cs, "credits": ccr}).execute()
-                    st.success("Course saved.")
+                    try:
+                        supabase.table("master_courses").upsert({"course_code": cc, "title": ct, "branch_code": cbc, "semester_id": cs, "credits": ccr}).execute()
+                        st.success("✅ Course saved.")
+                    except Exception as e:
+                        st.error(f"🚨 RAW DATABASE ERROR: {e}")
+                        
                 if st.form_submit_button("🗑️ Delete Course"):
-                    supabase.table("master_courses").delete().eq("course_code", cc).execute()
-                    st.warning("Course removed.")
+                    try:
+                        supabase.table("master_courses").delete().eq("course_code", cc).execute()
+                        st.warning("Course removed.")
+                    except Exception as e:
+                        st.error(f"🚨 RAW DATABASE ERROR: {e}")
