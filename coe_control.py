@@ -63,7 +63,7 @@ def fetch_all_records(table, columns="*", filter_col=None, filter_val=None):
     return rows
 
 # ==========================================
-# 2. HIGH-SPEED PHOTO LOGIC
+# 2. BULLETPROOF PHOTO LOGIC
 # ==========================================
 
 def fetch_complete_bucket_map(bucket_name):
@@ -71,11 +71,21 @@ def fetch_complete_bucket_map(bucket_name):
     limit = 1000; offset = 0
     while True:
         try:
-            files = supabase.storage.from_(bucket_name).list(path=None, options={"limit": limit, "offset": offset})
+            # FIX: Use empty string "" instead of None for the path to avoid API quirks
+            files = supabase.storage.from_(bucket_name).list("", options={"limit": limit, "offset": offset})
             if not files: break
+            
             for f in files:
-                key = os.path.splitext(f['name'])[0].upper().strip()
-                file_map[key] = f['name']
+                fname = f.get('name', '')
+                # Skip hidden Supabase files or empty folders
+                if not fname or fname == '.emptyFolderPlaceholder': 
+                    continue
+                
+                # Get exact filename ignoring any accidental subfolders
+                basename = os.path.basename(fname)
+                key = os.path.splitext(basename)[0].upper().strip()
+                file_map[key] = fname
+                
             if len(files) < limit: break
             offset += limit
         except: break
@@ -86,10 +96,13 @@ def download_photo_worker(args):
     clean_usn = usn.strip().upper()
     
     possible_filenames = []
-    if file_map.get(clean_usn):
+    # 1. Try exact map match first
+    if clean_usn in file_map:
         possible_filenames.append(file_map[clean_usn])
     else:
-        possible_filenames.extend([f"{clean_usn}.webp", f"{clean_usn}.jpg", f"{clean_usn}.png", f"{clean_usn}.jpeg"])
+        # 2. Brute force all case-sensitive combinations if map fails
+        for ext in ['.webp', '.WEBP', '.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG']:
+            possible_filenames.append(f"{clean_usn}{ext}")
         
     for fname in possible_filenames:
         try:
@@ -102,7 +115,8 @@ def download_photo_worker(args):
                 img.save(clean_io, format='JPEG', quality=95)
                 clean_io.seek(0)
                 return usn, clean_io
-        except:
+        except Exception:
+            # If download fails, silently try the next filename in the list
             pass
             
     return usn, None
@@ -290,8 +304,6 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     
     # ADDED CONTACT DETAILS
     c.setFont("Helvetica", 8)
-    
-    # Safely extract and format phone/email without Pandas errors
     phone = str(student.get('phone', '')).replace('nan', '').strip()
     email = str(student.get('email', '')).replace('nan', '').strip()
     if not phone: phone = "__________________"
@@ -452,7 +464,8 @@ with tabs[1]:
                 status.text(f"Processing Batch {i//BATCH_SIZE + 1} ({min(i+BATCH_SIZE, total)}/{total} students)...")
                 
                 batch_photos = {}
-                with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+                # FIX: Reduced max_workers to 5 to prevent Supabase Rate Limiting / dropping connections
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                     futures = {executor.submit(download_photo_worker, (u, photo_file_map)): u for u in batch_usns}
                     for future in concurrent.futures.as_completed(futures):
                         u, p_stream = future.result()
@@ -504,7 +517,7 @@ with tabs[2]:
                         if res: system_assets[k] = io.BytesIO(res)
                     except: pass
                 
-                _, photo_stream = download_photo_worker((target_usn, {}))
+                _, photo_stream = download_photo_worker((target_usn, fetch_complete_bucket_map("StakeHolders_Photos")))
                 timetable_map = fetch_timetable_map(selected_cycle_id)
                 eligibility_map = fetch_course_eligibility_map()
                 branch_map = fetch_branches_map()
