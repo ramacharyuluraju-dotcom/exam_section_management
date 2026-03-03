@@ -79,7 +79,6 @@ def fetch_complete_bucket_map(bucket_name):
                     continue
                 
                 basename = os.path.basename(fname)
-                # Hyper-Aggressive Strip: Removes all spaces, dashes, etc., for a guaranteed match
                 key = re.sub(r'[^A-Z0-9]', '', os.path.splitext(basename)[0].upper())
                 file_map[key] = fname
                 
@@ -90,10 +89,8 @@ def fetch_complete_bucket_map(bucket_name):
 
 def download_photo_worker(args):
     usn, file_map = args
-    # Hyper-Aggressive Strip on the USN side as well
     clean_usn = re.sub(r'[^A-Z0-9]', '', usn.upper())
     
-    # 1. Try exact map match first
     if clean_usn in file_map:
         try:
             res = supabase.storage.from_("StakeHolders_Photos").download(file_map[clean_usn])
@@ -106,7 +103,6 @@ def download_photo_worker(args):
                 return usn, clean_io
         except: pass
 
-    # 2. Hard Brute-Force Fallback 
     for ext in ['.webp', '.jpg', '.jpeg', '.png', '.WEBP', '.JPG', '.PNG']:
         try:
             res = supabase.storage.from_("StakeHolders_Photos").download(f"{clean_usn}{ext}")
@@ -128,7 +124,8 @@ def download_photo_worker(args):
 def fetch_branches_map():
     branch_map = {}
     try:
-        res = supabase.table("master_branches").select("branch_code, program_type, degree_type").execute()
+        # Added branch_name to the fetch list
+        res = supabase.table("master_branches").select("branch_code, program_type, degree_type, branch_name").execute()
         for r in res.data:
             branch_map[r['branch_code']] = r
     except: pass
@@ -201,7 +198,7 @@ def draw_header(c, w, y_start, assets):
     c.line(30, y_start - 50, w - 30, y_start - 50)
     return y_start - 70
 
-def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycle_name, photo_bytes_io, prog_type, db_branch_code):
+def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycle_name, photo_bytes_io, prog_type, db_branch_code, branch_name_str):
     if assets.get("watermark"):
         c.saveState(); c.setFillAlpha(0.08)
         c.drawImage(ImageReader(assets["watermark"]), w/2 - 175, h/2 - 175, width=350, height=350, mask='auto', preserveAspectRatio=True)
@@ -224,10 +221,11 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     else:
         p_img = Paragraph("<para align=center>PHOTO</para>", getSampleStyleSheet()['Normal'])
     
+    # FIXED: Interchanged Semester and Branch Code, added Programme to the empty space
     s_data = [
         ["USN", student['usn'], "Student Name", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal']), p_img],
-        ["Branch Code", db_branch_code, "Student Type", prog_type, ""],
-        ["Semester", str(student.get('current_sem', '1')), "", "", ""]
+        ["Semester", str(student.get('current_sem', '1')), "Programme", Paragraph(f"<b>{branch_name_str}</b>", getSampleStyleSheet()['Normal']), ""],
+        ["Branch Code", db_branch_code, "Student Type", prog_type, ""]
     ]
     
     t1 = Table(s_data, colWidths=[85, 85, 80, 205, 80], rowHeights=28)
@@ -254,7 +252,9 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     y -= 25
 
     c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Regular Subjects"); y -= 10
-    sub_rows = [["Subject Code", "Subject Name", "Select"]]
+    
+    # FIXED: Renamed Subject Code to Course Code, and Subject Name to Course Title
+    sub_rows = [["Course Code", "Course Title", "Select"]]
     for s in subjects:
         sub_rows.append([s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Applied"])
     
@@ -308,7 +308,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     c.drawRightString(w - 30, y - 12, f"Contact No: {phone}")
     c.drawRightString(w - 30, y - 24, f"Email ID: {email}")
 
-def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, assets, cycle_name, photo_bytes_io, timetable_map, eligibility_map, header_branch):
+def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, assets, cycle_name, photo_bytes_io, timetable_map, eligibility_map, header_branch, branch_name_str):
     if assets.get("watermark"):
         c.saveState(); c.setFillAlpha(0.08)
         mid_y = y_start - 200
@@ -318,27 +318,30 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     y = draw_header(c, w, y_start, assets)
     c.setFont("Helvetica-Bold", 11)
     
-    # FIX: Strictly injects the Branch Code right into the title natively (e.g. "LVS" or "MCA")
     c.drawCentredString(w/2, y - 10, f"Admission Ticket for {header_branch} Examination - {cycle_name}")
-    
     c.setFont("Helvetica-Bold", 9)
-    c.drawRightString(w - 40, y - 10, f"[{section}]")
-    y -= 25 
+    
+    # FIXED: Moved [STUDENT COPY] down to y-22 so it never overlaps the main title
+    c.drawRightString(w - 40, y - 22, f"[{section}]")
+    y -= 30 
 
+    # FIXED: Added the Semester and Programme row to the Hall Ticket
     h_data = [
         ["USN:", student['usn'], "Name:", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal'])],
         ["App ID:", app_id, "Date:", datetime.date.today().strftime('%d-%m-%Y')],
-        ["Center:", "AMC ENGINEERING COLLEGE", "", ""]
+        ["Center:", "AMC ENGINEERING COLLEGE", "", ""],
+        ["Semester:", str(student.get('current_sem', '1')), "Programme:", Paragraph(f"<b>{branch_name_str}</b>", getSampleStyleSheet()['Normal'])]
     ]
     
-    t_text = Table(h_data, colWidths=[45, 95, 35, 290], rowHeights=None)
+    # Slightly adjusted column widths to accommodate the word "Programme"
+    t_text = Table(h_data, colWidths=[55, 95, 65, 250], rowHeights=None)
     t_text.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
         ('FONTSIZE', (0,0), (-1,-1), 9),
         ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
         ('FONTNAME', (2,0), (2,-1), 'Helvetica-Bold'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('SPAN', (1,2), (3,2)),
+        ('SPAN', (1,2), (3,2)), # Spans the Center field perfectly
         ('ALIGN', (1,0), (1,-1), 'LEFT'),
         ('ALIGN', (3,0), (3,-1), 'LEFT'),
     ]))
@@ -478,21 +481,22 @@ with tabs[1]:
                     
                     db_branch_code = stu.get('branch_code', get_branch_code(u))
                     
-                    b_info = branch_map.get(db_branch_code, {"program_type": "UG"})
+                    b_info = branch_map.get(db_branch_code, {"program_type": "UG", "branch_name": db_branch_code})
                     prog_type = b_info.get("program_type", "UG")
+                    b_name_str = b_info.get("branch_name", db_branch_code)
                     
                     app_id = generate_app_id(u, selected_cycle_id)
-                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code)
+                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                     c.showPage()
                     
                     # Top Ticket
-                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code)
+                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     
-                    # FIX: Raised scissor line by 20 pixels to give the College Copy room to breathe
+                    # Raised scissor line
                     c.setDash(4, 4); c.line(20, (A4[1]/2) + 20, A4[0]-20, (A4[1]/2) + 20); c.setDash([])
                     
-                    # FIX: Lowered College Copy start by 15 pixels so logos don't touch the scissor line, and footer won't drop off the page
-                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code)
+                    # Lowered College Copy
+                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     c.showPage()
                 
                 progress_bar.progress(min((i + BATCH_SIZE) / total, 1.0))
@@ -543,8 +547,9 @@ with tabs[2]:
                 
                 db_branch_code = stu.get('branch_code', get_branch_code(target_usn))
                 
-                b_info = branch_map.get(db_branch_code, {"program_type": "UG"})
+                b_info = branch_map.get(db_branch_code, {"program_type": "UG", "branch_name": db_branch_code})
                 prog_type = b_info.get("program_type", "UG")
+                b_name_str = b_info.get("branch_name", db_branch_code)
                     
                 fee_res = supabase.table("master_fees").select("*").execute()
                 fees = {f['fee_type']: f['amount'] for f in fee_res.data}
@@ -555,17 +560,17 @@ with tabs[2]:
                     buf = io.BytesIO(); c = canvas.Canvas(buf, pagesize=A4)
                     app_id = generate_app_id(target_usn, selected_cycle_id)
                     
-                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code)
+                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                     c.showPage()
                     
                     # Top Ticket
-                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code)
+                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     
                     # Raised scissor line
                     c.setDash(4, 4); c.line(20, (A4[1]/2) + 20, A4[0]-20, (A4[1]/2) + 20); c.setDash([])
                     
                     # Lowered College Copy
-                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code)
+                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     c.showPage(); c.save()
                     
                     st.download_button(f"📥 Download Docs for {target_usn}", buf.getvalue(), f"{target_usn}_ExamDocs.pdf")
