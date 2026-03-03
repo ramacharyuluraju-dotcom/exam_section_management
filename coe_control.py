@@ -124,7 +124,6 @@ def download_photo_worker(args):
 def fetch_branches_map():
     branch_map = {}
     try:
-        # Added branch_name to the fetch list
         res = supabase.table("master_branches").select("branch_code, program_type, degree_type, branch_name").execute()
         for r in res.data:
             branch_map[r['branch_code']] = r
@@ -221,7 +220,6 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     else:
         p_img = Paragraph("<para align=center>PHOTO</para>", getSampleStyleSheet()['Normal'])
     
-    # FIXED: Interchanged Semester and Branch Code, added Programme to the empty space
     s_data = [
         ["USN", student['usn'], "Student Name", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal']), p_img],
         ["Semester", str(student.get('current_sem', '1')), "Programme", Paragraph(f"<b>{branch_name_str}</b>", getSampleStyleSheet()['Normal']), ""],
@@ -253,7 +251,6 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
 
     c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Regular Subjects"); y -= 10
     
-    # FIXED: Renamed Subject Code to Course Code, and Subject Name to Course Title
     sub_rows = [["Course Code", "Course Title", "Select"]]
     for s in subjects:
         sub_rows.append([s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Applied"])
@@ -318,14 +315,14 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     y = draw_header(c, w, y_start, assets)
     c.setFont("Helvetica-Bold", 11)
     
-    c.drawCentredString(w/2, y - 10, f"Admission Ticket for {header_branch} Examination - {cycle_name}")
+    # FIXED: Brought the title up slightly so there's no massive gap under the header line
+    c.drawCentredString(w/2, y + 5, f"Admission Ticket for {header_branch} Examination - {cycle_name}")
     c.setFont("Helvetica-Bold", 9)
     
-    # FIXED: Moved [STUDENT COPY] down to y-22 so it never overlaps the main title
-    c.drawRightString(w - 40, y - 22, f"[{section}]")
-    y -= 30 
+    # STUDENT/COLLEGE COPY label perfectly positioned
+    c.drawRightString(w - 40, y - 10, f"[{section}]")
+    y -= 25 
 
-    # FIXED: Added the Semester and Programme row to the Hall Ticket
     h_data = [
         ["USN:", student['usn'], "Name:", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal'])],
         ["App ID:", app_id, "Date:", datetime.date.today().strftime('%d-%m-%Y')],
@@ -333,7 +330,6 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ["Semester:", str(student.get('current_sem', '1')), "Programme:", Paragraph(f"<b>{branch_name_str}</b>", getSampleStyleSheet()['Normal'])]
     ]
     
-    # Slightly adjusted column widths to accommodate the word "Programme"
     t_text = Table(h_data, colWidths=[55, 95, 65, 250], rowHeights=None)
     t_text.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
@@ -341,7 +337,7 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
         ('FONTNAME', (2,0), (2,-1), 'Helvetica-Bold'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('SPAN', (1,2), (3,2)), # Spans the Center field perfectly
+        ('SPAN', (1,2), (3,2)), 
         ('ALIGN', (1,0), (1,-1), 'LEFT'),
         ('ALIGN', (3,0), (3,-1), 'LEFT'),
     ]))
@@ -402,6 +398,9 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     y -= 12
     c.setFont("Helvetica-Oblique", 8)
     c.drawCentredString(w/2, y, "Note: Please verify the eligibility of candidate before issuing the admission ticket.")
+    
+    # FIXED: Return the final Y position so we can dynamically draw the scissor line exactly where the ticket ends
+    return y - 15
 
 # ==========================================
 # 5. APP MAIN LOGIC (PARALLEL BATCHES)
@@ -474,10 +473,18 @@ with tabs[1]:
                 for u in batch_usns:
                     stu = next((s for s in all_students if s['usn'] == u), None)
                     if not stu: continue
-                    subs = course_map.get(u, [])
+                    raw_subs = course_map.get(u, [])
                     photo_stream = batch_photos.get(u)
                     
-                    subs = sort_subjects_by_timetable(subs, timetable_map)
+                    # FIXED: Auto-Deduplicate the subject list so it NEVER breaks the PDF
+                    unique_subs = []
+                    seen_codes = set()
+                    for sub in raw_subs:
+                        if sub['code'] not in seen_codes:
+                            unique_subs.append(sub)
+                            seen_codes.add(sub['code'])
+                    
+                    subs = sort_subjects_by_timetable(unique_subs, timetable_map)
                     
                     db_branch_code = stu.get('branch_code', get_branch_code(u))
                     
@@ -490,13 +497,13 @@ with tabs[1]:
                     c.showPage()
                     
                     # Top Ticket
-                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                    ticket1_end_y = draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     
-                    # Raised scissor line
-                    c.setDash(4, 4); c.line(20, (A4[1]/2) + 20, A4[0]-20, (A4[1]/2) + 20); c.setDash([])
+                    # FIXED: Dynamic Scissor line placement exactly where the ticket ended
+                    c.setDash(4, 4); c.line(20, ticket1_end_y, A4[0]-20, ticket1_end_y); c.setDash([])
                     
                     # Lowered College Copy
-                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                    draw_hall_ticket_half(c, A4[0], ticket1_end_y - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     c.showPage()
                 
                 progress_bar.progress(min((i + BATCH_SIZE) / total, 1.0))
@@ -538,12 +545,20 @@ with tabs[2]:
                     .select("course_code, master_courses(title)")\
                     .eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
                 
-                subs = []
+                raw_subs = []
                 for r in sub_res.data:
                     title = r.get('master_courses', {}).get('title', "Unknown Title") if r.get('master_courses') else "Unknown Title"
-                    subs.append({"code": r['course_code'], "title": title})
+                    raw_subs.append({"code": r['course_code'], "title": title})
                     
-                subs = sort_subjects_by_timetable(subs, timetable_map)
+                # FIXED: Auto-Deduplicate the subject list
+                unique_subs = []
+                seen_codes = set()
+                for sub in raw_subs:
+                    if sub['code'] not in seen_codes:
+                        unique_subs.append(sub)
+                        seen_codes.add(sub['code'])
+                        
+                subs = sort_subjects_by_timetable(unique_subs, timetable_map)
                 
                 db_branch_code = stu.get('branch_code', get_branch_code(target_usn))
                 
@@ -564,13 +579,13 @@ with tabs[2]:
                     c.showPage()
                     
                     # Top Ticket
-                    draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                    ticket1_end_y = draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     
-                    # Raised scissor line
-                    c.setDash(4, 4); c.line(20, (A4[1]/2) + 20, A4[0]-20, (A4[1]/2) + 20); c.setDash([])
+                    # Dynamic Scissor line
+                    c.setDash(4, 4); c.line(20, ticket1_end_y, A4[0]-20, ticket1_end_y); c.setDash([])
                     
                     # Lowered College Copy
-                    draw_hall_ticket_half(c, A4[0], (A4[1]/2) - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                    draw_hall_ticket_half(c, A4[0], ticket1_end_y - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     c.showPage(); c.save()
                     
                     st.download_button(f"📥 Download Docs for {target_usn}", buf.getvalue(), f"{target_usn}_ExamDocs.pdf")
