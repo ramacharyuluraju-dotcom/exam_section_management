@@ -324,12 +324,12 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     c.drawRightString(w - 40, y - 10, f"[{section}]")
     y -= 25 
 
-    # FIXED: Swapped the Center row and App ID row
+    # FIXED: Reordered so Center is the very last row in the hall ticket header
     h_data = [
         ["USN:", student['usn'], "Name:", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal'])],
-        ["Center:", "AMC ENGINEERING COLLEGE", "", ""],
         ["App ID:", app_id, "Date:", datetime.date.today().strftime('%d-%m-%Y')],
-        ["Semester:", str(student.get('current_sem', '1')), "Programme:", Paragraph(f"<b>{branch_name_str}</b>", getSampleStyleSheet()['Normal'])]
+        ["Semester:", str(student.get('current_sem', '1')), "Programme:", Paragraph(f"<b>{branch_name_str}</b>", getSampleStyleSheet()['Normal'])],
+        ["Center:", "AMC ENGINEERING COLLEGE", "", ""]
     ]
     
     t_text = Table(h_data, colWidths=[55, 95, 65, 250], rowHeights=None)
@@ -339,8 +339,8 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
         ('FONTNAME', (2,0), (2,-1), 'Helvetica-Bold'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        # FIXED: Updated the SPAN to row index 1 so the Center field merges perfectly
-        ('SPAN', (1,1), (3,1)), 
+        # FIXED: Updated span to merge columns on the 4th row (index 3)
+        ('SPAN', (1,3), (3,3)), 
         ('ALIGN', (1,0), (1,-1), 'LEFT'),
         ('ALIGN', (3,0), (3,-1), 'LEFT'),
     ]))
