@@ -181,11 +181,15 @@ def sort_subjects_by_timetable(subs, timetable_map):
 # 4. PDF ENGINE (EXACT ORIGINAL LAYOUT)
 # ==========================================
 
-def draw_header(c, w, y_start, assets):
+def draw_header(c, w, y_start, assets, is_hall_ticket=False):
     if assets.get("logo"):
         c.drawImage(ImageReader(assets["logo"]), 35, y_start - 35, width=60, height=60, mask='auto', preserveAspectRatio=True)
     if assets.get("naac"):
-        c.drawImage(ImageReader(assets["naac"]), w - 95, y_start - 35, width=60, height=60, mask='auto', preserveAspectRatio=True)
+        # FIXED: NAAC logo is scaled down slightly for the hall ticket to save space
+        if is_hall_ticket:
+            c.drawImage(ImageReader(assets["naac"]), w - 85, y_start - 30, width=50, height=50, mask='auto', preserveAspectRatio=True)
+        else:
+            c.drawImage(ImageReader(assets["naac"]), w - 95, y_start - 35, width=60, height=60, mask='auto', preserveAspectRatio=True)
 
     c.setFont("Helvetica-Bold", 15)
     c.drawCentredString(w/2, y_start, "AMC ENGINEERING COLLEGE")
@@ -203,7 +207,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
         c.drawImage(ImageReader(assets["watermark"]), w/2 - 175, h/2 - 175, width=350, height=350, mask='auto', preserveAspectRatio=True)
         c.restoreState()
 
-    y = draw_header(c, w, h - 30, assets)
+    y = draw_header(c, w, h - 30, assets, is_hall_ticket=False)
     c.setFont("Helvetica-Bold", 11)
     c.drawCentredString(w/2, y, f"Semester End Examination Application Form - {cycle_name}")
     y -= 25
@@ -220,10 +224,11 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     else:
         p_img = Paragraph("<para align=center>PHOTO</para>", getSampleStyleSheet()['Normal'])
     
+    # FIXED: Swapped "Student Type" and "Programme" fields exactly as requested
     s_data = [
         ["USN", student['usn'], "Student Name", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal']), p_img],
-        ["Semester", str(student.get('current_sem', '1')), "Programme", Paragraph(f"<b>{branch_name_str}</b>", getSampleStyleSheet()['Normal']), ""],
-        ["Branch Code", db_branch_code, "Student Type", prog_type, ""]
+        ["Semester", str(student.get('current_sem', '1')), "Student Type", prog_type, ""],
+        ["Branch Code", db_branch_code, "Programme", Paragraph(f"<b>{branch_name_str}</b>", getSampleStyleSheet()['Normal']), ""]
     ]
     
     t1 = Table(s_data, colWidths=[85, 85, 80, 205, 80], rowHeights=28)
@@ -312,14 +317,12 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         c.drawImage(ImageReader(assets["watermark"]), w/2 - 150, mid_y - 150, width=300, height=300, mask='auto', preserveAspectRatio=True)
         c.restoreState()
 
-    y = draw_header(c, w, y_start, assets)
+    y = draw_header(c, w, y_start, assets, is_hall_ticket=True)
     c.setFont("Helvetica-Bold", 11)
     
-    # FIXED: Brought the title up slightly so there's no massive gap under the header line
     c.drawCentredString(w/2, y + 5, f"Admission Ticket for {header_branch} Examination - {cycle_name}")
     c.setFont("Helvetica-Bold", 9)
     
-    # STUDENT/COLLEGE COPY label perfectly positioned
     c.drawRightString(w - 40, y - 10, f"[{section}]")
     y -= 25 
 
@@ -390,16 +393,30 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
 
     c.setFont("Helvetica", 8)
     c.drawString(30, y, "Candidate must read the instructions provided in the answer booklet, before the commencement of examination.")
-    y -= 25
-    c.setLineWidth(0.5); c.line(30, y, w - 30, y); y -= 12 
+    
+    # FIXED: Re-architected Signature Layout
+    y -= 30 
+    c.setLineWidth(0.5)
     c.setFont("Helvetica-Bold", 9)
-    sigs = ["Candidate", "HoD", "CoE", "Principal"]
-    for j, sig in enumerate(sigs): c.drawString(30 + (j * 135), y, sig)
-    y -= 12
+    sig_w = 80
+    
+    # Left: Candidate
+    c.line(40, y + 10, 40 + sig_w, y + 10)
+    c.drawCentredString(40 + sig_w/2, y, "Candidate")
+    
+    # Center: CoE
+    c.line(w/2 - sig_w/2, y + 10, w/2 + sig_w/2, y + 10)
+    c.drawCentredString(w/2, y, "CoE")
+    
+    # Right: Principal
+    c.line(w - 40 - sig_w, y + 10, w - 40, y + 10)
+    c.drawCentredString(w - 40 - sig_w/2, y, "Principal")
+    
+    # FIXED: Added massive vertical drop to separate the Note cleanly
+    y -= 25
     c.setFont("Helvetica-Oblique", 8)
     c.drawCentredString(w/2, y, "Note: Please verify the eligibility of candidate before issuing the admission ticket.")
     
-    # FIXED: Return the final Y position so we can dynamically draw the scissor line exactly where the ticket ends
     return y - 15
 
 # ==========================================
@@ -476,7 +493,6 @@ with tabs[1]:
                     raw_subs = course_map.get(u, [])
                     photo_stream = batch_photos.get(u)
                     
-                    # FIXED: Auto-Deduplicate the subject list so it NEVER breaks the PDF
                     unique_subs = []
                     seen_codes = set()
                     for sub in raw_subs:
@@ -499,7 +515,7 @@ with tabs[1]:
                     # Top Ticket
                     ticket1_end_y = draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     
-                    # FIXED: Dynamic Scissor line placement exactly where the ticket ended
+                    # Dynamic Scissor line
                     c.setDash(4, 4); c.line(20, ticket1_end_y, A4[0]-20, ticket1_end_y); c.setDash([])
                     
                     # Lowered College Copy
@@ -550,7 +566,6 @@ with tabs[2]:
                     title = r.get('master_courses', {}).get('title', "Unknown Title") if r.get('master_courses') else "Unknown Title"
                     raw_subs.append({"code": r['course_code'], "title": title})
                     
-                # FIXED: Auto-Deduplicate the subject list
                 unique_subs = []
                 seen_codes = set()
                 for sub in raw_subs:
