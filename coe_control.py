@@ -185,7 +185,6 @@ def draw_header(c, w, y_start, assets, is_hall_ticket=False):
     if assets.get("logo"):
         c.drawImage(ImageReader(assets["logo"]), 35, y_start - 35, width=60, height=60, mask='auto', preserveAspectRatio=True)
     if assets.get("naac"):
-        # FIXED: NAAC logo is scaled down slightly for the hall ticket to save space
         if is_hall_ticket:
             c.drawImage(ImageReader(assets["naac"]), w - 85, y_start - 30, width=50, height=50, mask='auto', preserveAspectRatio=True)
         else:
@@ -224,7 +223,6 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     else:
         p_img = Paragraph("<para align=center>PHOTO</para>", getSampleStyleSheet()['Normal'])
     
-    # FIXED: Swapped "Student Type" and "Programme" fields exactly as requested
     s_data = [
         ["USN", student['usn'], "Student Name", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal']), p_img],
         ["Semester", str(student.get('current_sem', '1')), "Student Type", prog_type, ""],
@@ -326,10 +324,11 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     c.drawRightString(w - 40, y - 10, f"[{section}]")
     y -= 25 
 
+    # FIXED: Swapped the Center row and App ID row
     h_data = [
         ["USN:", student['usn'], "Name:", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal'])],
-        ["App ID:", app_id, "Date:", datetime.date.today().strftime('%d-%m-%Y')],
         ["Center:", "AMC ENGINEERING COLLEGE", "", ""],
+        ["App ID:", app_id, "Date:", datetime.date.today().strftime('%d-%m-%Y')],
         ["Semester:", str(student.get('current_sem', '1')), "Programme:", Paragraph(f"<b>{branch_name_str}</b>", getSampleStyleSheet()['Normal'])]
     ]
     
@@ -340,7 +339,8 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
         ('FONTNAME', (2,0), (2,-1), 'Helvetica-Bold'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('SPAN', (1,2), (3,2)), 
+        # FIXED: Updated the SPAN to row index 1 so the Center field merges perfectly
+        ('SPAN', (1,1), (3,1)), 
         ('ALIGN', (1,0), (1,-1), 'LEFT'),
         ('ALIGN', (3,0), (3,-1), 'LEFT'),
     ]))
@@ -394,7 +394,6 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     c.setFont("Helvetica", 8)
     c.drawString(30, y, "Candidate must read the instructions provided in the answer booklet, before the commencement of examination.")
     
-    # FIXED: Re-architected Signature Layout
     y -= 30 
     c.setLineWidth(0.5)
     c.setFont("Helvetica-Bold", 9)
@@ -412,7 +411,6 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     c.line(w - 40 - sig_w, y + 10, w - 40, y + 10)
     c.drawCentredString(w - 40 - sig_w/2, y, "Principal")
     
-    # FIXED: Added massive vertical drop to separate the Note cleanly
     y -= 25
     c.setFont("Helvetica-Oblique", 8)
     c.drawCentredString(w/2, y, "Note: Please verify the eligibility of candidate before issuing the admission ticket.")
