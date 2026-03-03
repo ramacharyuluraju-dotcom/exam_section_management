@@ -299,14 +299,10 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     y -= 50
     c.setFont("Helvetica-Bold", 9); c.drawRightString(w - 30, y, "Signature of the Candidate")
     
+    # FIXED: Hardcoded clean blank lines for manual pen filling so "None" never shows up
     c.setFont("Helvetica", 8)
-    phone = str(student.get('phone', '')).replace('nan', '').strip()
-    email = str(student.get('email', '')).replace('nan', '').strip()
-    if not phone: phone = "__________________"
-    if not email: email = "__________________"
-    
-    c.drawRightString(w - 30, y - 12, f"Contact No: {phone}")
-    c.drawRightString(w - 30, y - 24, f"Email ID: {email}")
+    c.drawRightString(w - 30, y - 12, "Contact No: ___________________________")
+    c.drawRightString(w - 30, y - 24, "Email ID:   ___________________________")
 
 def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, assets, cycle_name, photo_bytes_io, timetable_map, eligibility_map, header_branch, branch_name_str):
     if assets.get("watermark"):
@@ -324,7 +320,6 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     c.drawRightString(w - 40, y - 10, f"[{section}]")
     y -= 25 
 
-    # FIXED: Reordered so Center is the very last row in the hall ticket header
     h_data = [
         ["USN:", student['usn'], "Name:", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal'])],
         ["App ID:", app_id, "Date:", datetime.date.today().strftime('%d-%m-%Y')],
@@ -339,7 +334,6 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
         ('FONTNAME', (2,0), (2,-1), 'Helvetica-Bold'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        # FIXED: Updated span to merge columns on the 4th row (index 3)
         ('SPAN', (1,3), (3,3)), 
         ('ALIGN', (1,0), (1,-1), 'LEFT'),
         ('ALIGN', (3,0), (3,-1), 'LEFT'),
