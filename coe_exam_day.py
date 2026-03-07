@@ -4,7 +4,6 @@ import io
 import datetime
 import math
 import zipfile
-import string
 import random
 from itertools import zip_longest
 from utils import init_db
@@ -25,18 +24,29 @@ from xlsxwriter.utility import xl_rowcol_to_cell
 # 1. SETUP & CONFIGURATION
 # ==========================================
 LOGO_FILENAME = "College_logo.png"
+NAAC_FILENAME = "NAAC_A_Logo.jpg"
 supabase = init_db()
 
 # --- GLOBAL CONTEXT ---
 selected_cycle_id = st.session_state.get('active_cycle_id')
 active_cycle_name = st.session_state.get('active_cycle_name', 'Unknown Cycle')
 
+@st.cache_data
+def load_pdf_assets():
+    """Fetches logos once to prevent slowing down PDF generation"""
+    assets = {}
+    for k, f in [("logo", LOGO_FILENAME), ("naac", NAAC_FILENAME)]:
+        try:
+            res = supabase.storage.from_("College_Logos").download(f)
+            if res: assets[k] = res
+        except: pass
+    return assets
+
 def generate_dummy_ids(count):
+    """Generates pure 4-digit unique numerical codes (e.g. 4812) for ultra-easy manual writing"""
     ids = set()
     while len(ids) < count:
-        letters = "".join(random.choices(string.ascii_uppercase, k=2))
-        numbers = "".join(random.choices(string.digits, k=2))
-        ids.add(f"{letters}{numbers}")
+        ids.add(str(random.randint(1000, 9999)))
     return list(ids)
 
 def clean_str(val):
@@ -85,7 +95,6 @@ def fetch_exam_data(cycle_id, date_str, session_str):
     df_merged = pd.merge(df_regs, df_stus, on='usn', how='left')
     df_merged.rename(columns={'usn': 'USN', 'full_name': 'Student Name', 'course_code': 'Subject Code'}, inplace=True)
     
-    # Fetch Master Courses to map proper Titles
     courses_res = supabase.table("master_courses").select("course_code, title").in_("course_code", course_codes).execute()
     course_dict = {r['course_code']: r['title'] for r in courses_res.data}
     df_merged['Subject Name'] = df_merged['Subject Code'].map(lambda x: course_dict.get(x, x))
@@ -105,23 +114,17 @@ def run_allocation(df_students, df_rooms):
     branch_queues = {b: df_students[df_students['Branch'] == b].sort_values('USN').to_dict('records') for b in branches}
     
     def get_candidate(exclude_list, needed_space, diff_code=None):
-        """Smart selector: Refuses to split small branches (<=20) just to top off a room"""
         cands = [b for b in branch_queues if len(branch_queues[b]) > 0 and b not in exclude_list]
         if not cands: return None
         
-        # Priority 1: Different Course Code (Anti-cheating)
         if diff_code:
             diff_cands = [b for b in cands if branch_queues[b][0]['Subject Code'] != diff_code]
             if diff_cands: cands = diff_cands
             
-        # Priority 2: Anti-Fragmentation (Don't pick small groups if they won't fit entirely)
         good_cands = [b for b in cands if not (len(branch_queues[b]) <= 20 and len(branch_queues[b]) > needed_space)]
         
-        if good_cands:
-            return max(good_cands, key=lambda x: len(branch_queues[x]))
-        else:
-            # If all available branches would be split, return None to leave seats empty & protect the B-Forms
-            return None
+        if good_cands: return max(good_cands, key=lambda x: len(branch_queues[x]))
+        else: return None
 
     allotment_rows = []
     
@@ -136,7 +139,7 @@ def run_allocation(df_students, df_rooms):
         while len(pile_1) < half_cap:
             needed = half_cap - len(pile_1)
             curr_left = get_candidate(exclude_list=[], needed_space=needed)
-            if not curr_left: break # Leave remaining seats empty to protect small branches
+            if not curr_left: break 
             take = min(needed, len(branch_queues[curr_left]))
             pile_1.extend(branch_queues[curr_left][:take])
             del branch_queues[curr_left][:take]
@@ -147,7 +150,7 @@ def run_allocation(df_students, df_rooms):
         while len(pile_2) < (capacity - len(pile_1)):
             needed = (capacity - len(pile_1)) - len(pile_2)
             curr_right = get_candidate(exclude_list=[], needed_space=needed, diff_code=left_code)
-            if not curr_right: break # Leave remaining seats empty
+            if not curr_right: break 
             take = min(needed, len(branch_queues[curr_right]))
             pile_2.extend(branch_queues[curr_right][:take])
             del branch_queues[curr_right][:take]
@@ -171,17 +174,32 @@ def run_allocation(df_students, df_rooms):
 # 4. DOCUMENT GENERATORS
 # ==========================================
 
-def draw_header(c, doc):
-    c.saveState()
-    c.setFont('Helvetica-Bold', 14)
-    c.drawCentredString(A4[0]/2, A4[1] - 40, "AMC ENGINEERING COLLEGE")
-    c.setFont('Helvetica', 9)
-    c.drawCentredString(A4[0]/2, A4[1] - 55, "AMC Campus, Bannerghatta Road, Bengaluru - 560083")
-    c.line(30, A4[1] - 62, A4[0] - 30, A4[1] - 62)
-    c.restoreState()
+def get_header_drawer(assets):
+    """Dynamically injects the official College Logos and Header Text into every PDF page"""
+    def draw_header(c, doc):
+        c.saveState()
+        y_start = A4[1] - 35
+        
+        if "logo" in assets:
+            c.drawImage(ImageReader(io.BytesIO(assets["logo"])), 35, y_start - 35, width=50, height=50, mask='auto', preserveAspectRatio=True)
+            
+        if "naac" in assets:
+            c.drawImage(ImageReader(io.BytesIO(assets["naac"])), A4[0] - 85, y_start - 35, width=50, height=50, mask='auto', preserveAspectRatio=True)
 
-def gen_posters(df, date, session):
-    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=65, bottomMargin=20)
+        c.setFont("Helvetica-Bold", 14)
+        c.drawCentredString(A4[0]/2, y_start, "AMC ENGINEERING COLLEGE")
+        c.setFont("Helvetica", 9)
+        c.drawCentredString(A4[0]/2, y_start - 15, "AMC Campus, Bannerghatta Road, Bengaluru - 560083")
+        c.drawCentredString(A4[0]/2, y_start - 27, "Autonomous Institution Affiliated to VTU, Belagavi")
+        c.drawCentredString(A4[0]/2, y_start - 39, "Approved by AICTE, New Delhi | NAAC A+ Accredited")
+        
+        c.setLineWidth(1)
+        c.line(30, y_start - 48, A4[0] - 30, y_start - 48)
+        c.restoreState()
+    return draw_header
+
+def gen_posters(df, date, session, assets):
+    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=95, bottomMargin=15)
     elements = []; styles = getSampleStyleSheet()
     s_seat = ParagraphStyle('S', parent=styles['Normal'], fontSize=8, alignment=TA_CENTER, textColor=colors.gray)
     s_usn = ParagraphStyle('U', parent=styles['Normal'], fontSize=11, fontName='Helvetica-Bold', alignment=TA_CENTER)
@@ -189,12 +207,12 @@ def gen_posters(df, date, session):
     
     for room_no, data in df.groupby('RoomNo'):
         elements.append(Paragraph(f"ROOM: {room_no} | Date: {date} | Session: {session}", styles['Heading2']))
-        elements.append(Spacer(1, 10))
+        elements.append(Spacer(1, 5))
         
         students = data.sort_values('SeatNo').to_dict('records')
         grid = []; row_buf = []
         for s in students:
-            row_buf.append([Paragraph(f"Seat: {s['SeatNo']}", s_seat), Spacer(1,2), Paragraph(s['USN'], s_usn), Spacer(1,2), Paragraph(s['Subject Code'], s_sub)])
+            row_buf.append([Paragraph(f"Seat: {s['SeatNo']}", s_seat), Spacer(1,1), Paragraph(s['USN'], s_usn), Spacer(1,1), Paragraph(s['Subject Code'], s_sub)])
             if len(row_buf) == 4: grid.append(row_buf); row_buf = []
         if row_buf:
             while len(row_buf) < 4: row_buf.append("")
@@ -204,16 +222,15 @@ def gen_posters(df, date, session):
         t.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('ALIGN', (0,0), (-1,-1), 'CENTER')]))
         elements.append(t); elements.append(PageBreak())
         
-    doc.build(elements, onFirstPage=draw_header, onLaterPages=draw_header)
+    doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
     return buf.getvalue()
 
-def gen_form_b(df, date, session):
+def gen_form_b(df, date, session, assets):
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=20, leftMargin=35, rightMargin=35, bottomMargin=20)
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=90, leftMargin=35, rightMargin=35, bottomMargin=15)
     elements = []
     styles = getSampleStyleSheet()
     
-    title_style = ParagraphStyle('Title', parent=styles['Heading3'], alignment=TA_CENTER, fontName='Helvetica-Bold', fontSize=12)
     sub_title_style = ParagraphStyle('SubTitle', parent=styles['Normal'], alignment=TA_CENTER, fontName='Helvetica-Bold', fontSize=10)
     meta_style = ParagraphStyle('Meta', parent=styles['Normal'], fontSize=9, leading=12)
     th_style = ParagraphStyle('th', parent=styles['Normal'], alignment=TA_CENTER, fontName='Helvetica-Bold', fontSize=8)
@@ -224,10 +241,9 @@ def gen_form_b(df, date, session):
         course_name = group['Subject Name'].iloc[0] if 'Subject Name' in group.columns else code
         branch_val = group['Branch'].iloc[0] if 'Branch' in group.columns else "N/A"
         
-        elements.append(Paragraph("AMC ENGINEERING COLLEGE", title_style))
         elements.append(Spacer(1, 5))
         elements.append(Paragraph("ATTENDANCE & ROOM SUPERINTENDENT’S/EXAMINERS REPORT (In Triplicate)", sub_title_style))
-        elements.append(Spacer(1, 10))
+        elements.append(Spacer(1, 8))
         
         m_data = [
             [Paragraph(f"<b>B.E./B.Arch./MCA/MBA/M.Tech:</b> {branch_val}", meta_style), Paragraph(f"<b>Semester Examination:</b> {date}", meta_style), Paragraph(f"<b>Block No:</b> {room}", meta_style)],
@@ -242,7 +258,7 @@ def gen_form_b(df, date, session):
             ('ALIGN', (0,0), (-1,-1), 'LEFT'),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
             ('SPAN', (0,2), (2,2)), 
-            ('BOTTOMPADDING', (0,0), (-1,-1), 6)
+            ('BOTTOMPADDING', (0,0), (-1,-1), 4)
         ]))
         elements.append(m_table)
         elements.append(Spacer(1, 5))
@@ -263,12 +279,12 @@ def gen_form_b(df, date, session):
         t.setStyle(TableStyle([
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 5),
-            ('TOPPADDING', (0,0), (-1,-1), 5),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 2), # Tightly packed to prevent multi-page spill
+            ('TOPPADDING', (0,0), (-1,-1), 2),
             ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ]))
         elements.append(t)
-        elements.append(Spacer(1, 15))
+        elements.append(Spacer(1, 10))
         
         f_data = [
             [Paragraph("<b>Seat Number of the candidates absent:</b> ____________________________________________________________________", meta_style), "", ""],
@@ -282,16 +298,16 @@ def gen_form_b(df, date, session):
             ('SPAN', (0,1), (2,1)), 
             ('ALIGN', (0,3), (2,3), 'CENTER'), 
             ('VALIGN', (0,0), (-1,-1), 'BOTTOM'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 8)
+            ('BOTTOMPADDING', (0,0), (-1,-1), 5)
         ]))
         elements.append(f_table)
         elements.append(PageBreak())
         
-    doc.build(elements)
+    doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
     return buf.getvalue()
 
-def gen_form_a(df, date, session):
-    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=75)
+def gen_form_a(df, date, session, assets):
+    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=95)
     elements = []; styles = getSampleStyleSheet()
     
     for (branch, code), group in df.groupby(['Branch', 'Subject Code']):
@@ -330,11 +346,11 @@ def gen_form_a(df, date, session):
         elements.append(c_sig)
         elements.append(PageBreak())
         
-    doc.build(elements, onFirstPage=draw_header, onLaterPages=draw_header)
+    doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
     return buf.getvalue()
 
-def gen_qpds(df, date, session):
-    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=75)
+def gen_qpds(df, date, session, assets):
+    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=95)
     elements = []; styles = getSampleStyleSheet()
     elements.append(Paragraph("<b>QP INDENT (ROOM WISE)</b>", styles['Heading2']))
     elements.append(Paragraph(f"Date: {date} | Session: {session}", styles['Normal']))
@@ -351,7 +367,7 @@ def gen_qpds(df, date, session):
         t.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black)]))
         elements.append(t); elements.append(Spacer(1, 10))
         
-    doc.build(elements, onFirstPage=draw_header, onLaterPages=draw_header)
+    doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
     return buf.getvalue()
 
 def gen_smart_excel(df, date, session):
@@ -364,7 +380,7 @@ def gen_smart_excel(df, date, session):
     return buf.getvalue()
 
 def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, total_bundles, cycle_name):
-    """Generates the Advanced VTU Either/Or Logic Excel Layout"""
+    """Generates Secure Bundles (USNs are completely hidden from the Evaluator!)"""
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
         wb = writer.book
@@ -378,7 +394,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         fmt_edit = wb.add_format({'locked': False, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#FFFFCC'})
         fmt_abs = wb.add_format({'locked': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'bold': True})
         
-        # SHEET 1: MARKS ENTRY
+        # SHEET 1: MARKS ENTRY (USN Masked!)
         ws_marks.protect('admin123')
         ws_marks.merge_range('A1:AT1', 'AMC Engineering College', fmt_title)
         ws_marks.merge_range('A2:AT2', 'AMC Campus Bannerghatta Road, Bengaluru', fmt_sub)
@@ -386,8 +402,9 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_marks.merge_range('A5:AT5', f'Semester End Examination - {cycle_name} | CBCS Scheme', fmt_sub)
         ws_marks.merge_range('A6:AT6', f'Evaluation & Marks Allotment | Course: {course_code} - {course_name} | Bundle {bundle_seq}/{total_bundles}', fmt_sub)
         
-        ws_marks.merge_range('A8:A9', 'Coding No.', fmt_head)
-        ws_marks.merge_range('B8:B9', 'USN', fmt_head)
+        # Changed Headers: USN is Gone!
+        ws_marks.merge_range('A8:A9', 'Sl. No.', fmt_head)
+        ws_marks.merge_range('B8:B9', 'Coding No.', fmt_head)
         
         col_idx = 2
         for q in range(1, 11):
@@ -405,8 +422,8 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         
         row_idx = 9
         for i, s in df.iterrows():
-            ws_marks.write(row_idx, 0, s['Dummy_ID'], fmt_locked)
-            ws_marks.write(row_idx, 1, s['USN'], fmt_locked)
+            ws_marks.write(row_idx, 0, i+1, fmt_locked)
+            ws_marks.write(row_idx, 1, s['Dummy_ID'], fmt_locked) 
             
             if s['Status'] != "PRESENT":
                 ws_marks.merge_range(row_idx, 2, row_idx, col_idx+3, s['Status'], fmt_abs)
@@ -423,7 +440,6 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                     c += 4
                 
                 r = row_idx + 1
-                # The Complex VTU Either/Or Logic Formula
                 formula_see = f"=SUM(MAX(SUM(C{r}:E{r}),SUM(G{r}:I{r})), MAX(SUM(K{r}:M{r}),SUM(O{r}:Q{r})), MAX(SUM(S{r}:U{r}),SUM(W{r}:Y{r})), MAX(SUM(AA{r}:AC{r}),SUM(AE{r}:AG{r})), MAX(SUM(AI{r}:AK{r}),SUM(AM{r}:AO{r})))"
                 ws_marks.write_formula(row_idx, col_idx, formula_see, fmt_locked)
                 
@@ -437,38 +453,40 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
 
             row_idx += 1
             
-        ws_marks.set_column('A:B', 15)
+        ws_marks.set_column('A:A', 8)
+        ws_marks.set_column('B:B', 12)
         ws_marks.set_column('C:AP', 5)
         ws_marks.set_column('AQ:AT', 14)
         
-        # SHEET 2: PRINT
+        # SHEET 2: PRINT (USN Masked!)
         ws_print.protect('admin123')
-        ws_print.merge_range('A1:E1', 'AMC Engineering College', fmt_title)
-        ws_print.merge_range('A2:E2', f'Semester End Examination - {cycle_name}', fmt_sub)
-        ws_print.merge_range('A3:E3', f'Course Code: {course_code} | Course Title: {course_name}', fmt_sub)
+        ws_print.merge_range('A1:D1', 'AMC Engineering College', fmt_title)
+        ws_print.merge_range('A2:D2', f'Semester End Examination - {cycle_name}', fmt_sub)
+        ws_print.merge_range('A3:D3', f'Course Code: {course_code} | Course Title: {course_name}', fmt_sub)
         
-        headers_print = ['Sl. No.', 'USN', 'Answer Booklet Code', 'SEE Marks in Figures (100)', 'SEE Marks in Words']
+        headers_print = ['Sl. No.', 'Answer Booklet Code', 'SEE Marks in Figures (100)', 'SEE Marks in Words']
         for c, h in enumerate(headers_print):
             ws_print.write(4, c, h, fmt_head)
             
         row_idx = 5
         for idx, s in df.iterrows():
             ws_print.write(row_idx, 0, idx+1, fmt_locked)
-            ws_print.write(row_idx, 1, s['USN'], fmt_locked)
-            ws_print.write(row_idx, 2, s['Dummy_ID'], fmt_locked)
+            ws_print.write(row_idx, 1, s['Dummy_ID'], fmt_locked)
             
             if s['Status'] != "PRESENT":
-                ws_print.write(row_idx, 3, s['Status'], fmt_abs)
-                ws_print.write(row_idx, 4, "-", fmt_locked)
+                ws_print.write(row_idx, 2, s['Status'], fmt_abs)
+                ws_print.write(row_idx, 3, "-", fmt_locked)
             else:
                 final_marks_cell = xl_rowcol_to_cell(9 + idx, col_idx+3)
-                ws_print.write_formula(row_idx, 3, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
-                ws_print.write(row_idx, 4, "", fmt_edit)
+                ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
+                ws_print.write(row_idx, 3, "", fmt_edit)
                 
             row_idx += 1
             
-        ws_print.set_column('B:C', 18)
-        ws_print.set_column('D:E', 25)
+        ws_print.set_column('A:A', 8)
+        ws_print.set_column('B:B', 20)
+        ws_print.set_column('C:C', 25)
+        ws_print.set_column('D:D', 30)
 
     return out.getvalue()
 
@@ -511,6 +529,9 @@ def gen_marks_bundles(df):
 if not selected_cycle_id:
     st.warning("⚠️ Please select an Active Exam Cycle in the Sidebar to proceed.")
     st.stop()
+
+# Pre-Load Assets for Documents
+pdf_assets = load_pdf_assets()
 
 st.title("🚀 Exam Day Operations")
 
@@ -601,15 +622,15 @@ if "alloc_df" in st.session_state and not st.session_state.alloc_df.empty:
     st.subheader("🖨️ 2. Download Exam Documents")
     
     c1, c2, c3, c4, c5 = st.columns(5)
-    with c1: st.download_button("📌 Room Posters (PDF)", gen_posters(df_a, date_str, sess_str), f"Posters_{date_str}.pdf")
-    with c2: st.download_button("📝 Form B (PDF)", gen_form_b(df_a, date_str, sess_str), f"FormB_{date_str}.pdf")
-    with c3: st.download_button("📦 Form A (PDF)", gen_form_a(df_a, date_str, sess_str), f"FormA_{date_str}.pdf")
-    with c4: st.download_button("📋 QPDS (PDF)", gen_qpds(df_a, date_str, sess_str), f"QPDS_{date_str}.pdf")
-    with c5: st.download_button("📊 Appearing (Excel)", gen_smart_excel(df_a, date_str, sess_str), f"Appearing_{date_str}.xlsx")
+    with c1: st.download_button("📌 Room Posters", gen_posters(df_a, date_str, sess_str, pdf_assets), f"Posters_{date_str}.pdf")
+    with c2: st.download_button("📝 Form B", gen_form_b(df_a, date_str, sess_str, pdf_assets), f"FormB_{date_str}.pdf")
+    with c3: st.download_button("📦 Form A", gen_form_a(df_a, date_str, sess_str, pdf_assets), f"FormA_{date_str}.pdf")
+    with c4: st.download_button("📋 QPDS", gen_qpds(df_a, date_str, sess_str, pdf_assets), f"QPDS_{date_str}.pdf")
+    with c5: st.download_button("📊 Appearing List", gen_smart_excel(df_a, date_str, sess_str), f"Appearing_{date_str}.xlsx")
         
     st.markdown("---")
     st.subheader("🔐 3. Post-Exam Processing")
-    st.info("Generates secure Excel bundles matching the VTU Layout. Max 20 per bundle. Absentees are dynamically locked out.")
+    st.info("Generates secure Evaluation Excel bundles. Maximum 20 papers per bundle. Absentees are dynamically locked. USNs are completely masked from Evaluators.")
     
     if st.button("📦 Generate Locked Marks Bundles (.zip)", type="primary"):
         with st.spinner("Encrypting bundles and generating Secret Key..."):
