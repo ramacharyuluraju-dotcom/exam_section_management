@@ -8,6 +8,7 @@ import string
 import random
 from itertools import zip_longest
 from utils import init_db
+from PIL import Image as PILImage # Added for dynamic logo scaling
 
 # --- PDF LIBRARIES ---
 from reportlab.lib.pagesizes import A4
@@ -34,7 +35,7 @@ active_cycle_name = st.session_state.get('active_cycle_name', 'Unknown Cycle')
 
 @st.cache_data
 def load_pdf_assets():
-    """Fetches logos once to prevent slowing down PDF/Excel generation"""
+    """Fetches logos once to prevent slowing down PDF generation"""
     assets = {}
     for k, f in [("logo", LOGO_FILENAME), ("naac", NAAC_FILENAME)]:
         try:
@@ -379,7 +380,7 @@ def gen_smart_excel(df, date, session):
     return buf.getvalue()
 
 def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, total_bundles, cycle_name, assets):
-    """Generates Ultra-Secure Bundles with MBA Logic & Ironclad Locking"""
+    """Generates Ultra-Secure Bundles with Dynamically Scaled Logos"""
     out = io.BytesIO()
     is_mba = 'MBA' in course_code.upper()
     
@@ -398,7 +399,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         fmt_footer = wb.add_format({'bold': True, 'font_size': 11, 'valign': 'vcenter'})
         
         # ==========================================
-        # SHEET 1: MARKS ENTRY (USN Masked!)
+        # SHEET 1: MARKS ENTRY
         # ==========================================
         ws_marks.protect('admin123')
         ws_marks.merge_range('A1:AT1', 'AMC Engineering College', fmt_title)
@@ -429,7 +430,6 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
             ws_marks.write(row_idx, 0, i+1, fmt_locked)
             ws_marks.write(row_idx, 1, s['Dummy_ID'], fmt_locked) 
             
-            # 1. ABSENTEE HARD-LOCK LOGIC
             if s['Status'] != "PRESENT":
                 for c in range(2, col_idx+3):
                     ws_marks.write(row_idx, c, "", fmt_locked_gray)
@@ -437,7 +437,6 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
             else:
                 c = 2
                 for q in range(1, 11):
-                    # 2. MBA Q9 & Q10 DISABLE LOGIC
                     if is_mba and q > 8:
                         ws_marks.write(row_idx, c, "", fmt_locked_gray)
                         ws_marks.write(row_idx, c+1, "", fmt_locked_gray)
@@ -453,13 +452,10 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                     c += 4
                 
                 r = row_idx + 1
-                # 3. ADVANCED COURSE SPECIFIC FORMULAS
                 if is_mba:
-                    # Top 4 of (Q1..Q7) + Q8
                     q1_7_cells = f"F{r},J{r},N{r},R{r},V{r},Z{r},AD{r}"
                     formula_see = f"=IFERROR(LARGE(({q1_7_cells}),1),0)+IFERROR(LARGE(({q1_7_cells}),2),0)+IFERROR(LARGE(({q1_7_cells}),3),0)+IFERROR(LARGE(({q1_7_cells}),4),0)+AH{r}"
                 else:
-                    # Standard VTU Either/Or Max
                     formula_see = f"=MAX(F{r},J{r})+MAX(N{r},R{r})+MAX(V{r},Z{r})+MAX(AD{r},AH{r})+MAX(AL{r},AP{r})"
                 
                 ws_marks.write_formula(row_idx, col_idx, formula_see, fmt_locked)
@@ -479,20 +475,28 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_marks.set_column('AQ:AT', 14)
         
         # ==========================================
-        # SHEET 2: PRINT (Logos + Signatures)
+        # SHEET 2: PRINT (Dynamically Scaled Logos)
         # ==========================================
         ws_print.protect('admin123')
-        ws_print.set_row(0, 45) # Make room for Logos
+        ws_print.set_row(0, 45) # Make Header Row 60 pixels high
         
         ws_print.merge_range('A1:D1', 'AMC Engineering College', fmt_title)
         ws_print.merge_range('A2:D2', f'Semester End Examination - {cycle_name}', fmt_sub)
         ws_print.merge_range('A3:D3', f'Course Code: {course_code} | Course Title: {course_name}', fmt_sub)
         
-        # Inject Logos safely
+        # 🟢 DYNAMIC LOGO SCALING LOGIC 🟢
+        # This forces both logos to be exactly 50 pixels tall, regardless of their native file resolution!
         if "logo" in assets:
-            ws_print.insert_image('A1', 'logo.png', {'image_data': io.BytesIO(assets["logo"]), 'x_scale': 0.12, 'y_scale': 0.12, 'x_offset': 10, 'y_offset': 5})
+            logo_io = io.BytesIO(assets["logo"])
+            with PILImage.open(logo_io) as img:
+                scale_left = 50.0 / float(img.height)
+            ws_print.insert_image('A1', 'logo.png', {'image_data': io.BytesIO(assets["logo"]), 'x_scale': scale_left, 'y_scale': scale_left, 'x_offset': 10, 'y_offset': 5})
+            
         if "naac" in assets:
-            ws_print.insert_image('D1', 'naac.jpg', {'image_data': io.BytesIO(assets["naac"]), 'x_scale': 0.12, 'y_scale': 0.12, 'x_offset': 150, 'y_offset': 5})
+            naac_io = io.BytesIO(assets["naac"])
+            with PILImage.open(naac_io) as img:
+                scale_right = 50.0 / float(img.height)
+            ws_print.insert_image('D1', 'naac.jpg', {'image_data': io.BytesIO(assets["naac"]), 'x_scale': scale_right, 'y_scale': scale_right, 'x_offset': 180, 'y_offset': 5})
 
         headers_print = ['Sl. No.', 'Answer Booklet Code', 'SEE Marks in Figures (100)', 'SEE Marks in Words']
         for c, h in enumerate(headers_print):
@@ -507,7 +511,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                 ws_print.write(row_idx, 2, s['Status'], fmt_abs)
                 ws_print.write(row_idx, 3, "-", fmt_locked_gray)
             else:
-                final_marks_cell = xl_rowcol_to_cell(9 + idx, col_idx+3) # Matches Marks Entry row logic
+                final_marks_cell = xl_rowcol_to_cell(9 + idx, col_idx+3) 
                 ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
                 ws_print.write(row_idx, 3, "", fmt_edit)
                 
@@ -518,7 +522,6 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_print.set_column('C:C', 25)
         ws_print.set_column('D:D', 35)
 
-        # 4. Inject Signatures Footer
         row_idx += 3
         ws_print.write(row_idx, 1, "Evaluator Name: _________________________", fmt_footer)
         ws_print.write(row_idx, 3, "Evaluator Signature with date: _________________________", fmt_footer)
