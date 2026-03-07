@@ -61,7 +61,7 @@ def resize_image_for_excel(img_bytes, target_height=50):
             out_io.seek(0)
             return out_io
     except Exception as e:
-        return io.BytesIO(img_bytes) # Fallback
+        return io.BytesIO(img_bytes)
 
 def generate_dummy_ids(count):
     """Generates a sequential series of IDs per bundle (e.g., AB1 to AB20)."""
@@ -417,7 +417,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         fmt_footer = wb.add_format({'bold': True, 'font_size': 11, 'valign': 'vcenter'})
         
         # ==========================================
-        # SHEET 1: MARKS ENTRY (USN Masked!)
+        # SHEET 1: MARKS ENTRY
         # ==========================================
         ws_marks.protect('admin123')
         ws_marks.merge_range('A1:AT1', 'AMC Engineering College', fmt_title)
@@ -493,24 +493,21 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_marks.set_column('AQ:AT', 14)
         
         # ==========================================
-        # SHEET 2: PRINT
+        # SHEET 2: PRINT (Automated Number to Words)
         # ==========================================
         ws_print.protect('admin123')
-        ws_print.set_row(0, 45) # Make Header Row 60 pixels high
+        ws_print.set_row(0, 45) 
         
         ws_print.merge_range('A1:D1', 'AMC Engineering College', fmt_title)
         ws_print.merge_range('A2:D2', f'Semester End Examination - {cycle_name}', fmt_sub)
         ws_print.merge_range('A3:D3', f'Course Code: {course_code} | Course Title: {course_name}', fmt_sub)
         
-        # 🟢 BULLETPROOF IMAGE RESIZING 🟢
-        # Physically resizes the images to exactly 50 pixels high before insertion
         if "logo" in assets:
             resized_logo = resize_image_for_excel(assets["logo"], target_height=50)
             ws_print.insert_image('A1', 'logo.png', {'image_data': resized_logo, 'x_offset': 10, 'y_offset': 5})
             
         if "naac" in assets:
             resized_naac = resize_image_for_excel(assets["naac"], target_height=50)
-            # x_offset 180 places it cleanly on the far right of the wide 'D' column
             ws_print.insert_image('D1', 'naac.png', {'image_data': resized_naac, 'x_offset': 180, 'y_offset': 5})
 
         headers_print = ['Sl. No.', 'Answer Booklet Code', 'SEE Marks in Figures (100)', 'SEE Marks in Words']
@@ -526,9 +523,16 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                 ws_print.write(row_idx, 2, s['Status'], fmt_abs)
                 ws_print.write(row_idx, 3, "-", fmt_locked_gray)
             else:
+                # 1. Bring the Final Marks value over
                 final_marks_cell = xl_rowcol_to_cell(9 + idx, col_idx+3) 
                 ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
-                ws_print.write(row_idx, 3, "", fmt_edit)
+                
+                # 2. Automate the "Words" column using the advanced TEXTJOIN / SEQUENCE logic!
+                c_cell = xl_rowcol_to_cell(row_idx, 2) 
+                words_formula = f'=TEXTJOIN(" ", TRUE, SWITCH(MID({c_cell}, SEQUENCE(LEN({c_cell})), 1), "0","Zero", "1","One", "2","Two", "3","Three", "4","Four", "5","Five", "6","Six", "7","Seven", "8","Eight", "9","Nine", ""))'
+                
+                # Formula is locked so Evaluators can't accidentally break the automation
+                ws_print.write_formula(row_idx, 3, words_formula, fmt_locked)
                 
             row_idx += 1
             
