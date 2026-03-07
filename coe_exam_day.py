@@ -34,7 +34,7 @@ active_cycle_name = st.session_state.get('active_cycle_name', 'Unknown Cycle')
 
 @st.cache_data
 def load_pdf_assets():
-    """Fetches logos once to prevent slowing down PDF generation"""
+    """Fetches logos once to prevent slowing down PDF/Excel generation"""
     assets = {}
     for k, f in [("logo", LOGO_FILENAME), ("naac", NAAC_FILENAME)]:
         try:
@@ -378,9 +378,11 @@ def gen_smart_excel(df, date, session):
         summary.to_excel(writer, sheet_name='Room_Summary', index=False)
     return buf.getvalue()
 
-def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, total_bundles, cycle_name):
-    """Generates Secure Bundles (USNs are completely hidden from the Evaluator!)"""
+def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, total_bundles, cycle_name, assets):
+    """Generates Ultra-Secure Bundles with MBA Logic & Ironclad Locking"""
     out = io.BytesIO()
+    is_mba = 'MBA' in course_code.upper()
+    
     with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
         wb = writer.book
         ws_marks = wb.add_worksheet('Marks Entry')
@@ -390,10 +392,14 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         fmt_sub = wb.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'font_size': 11})
         fmt_head = wb.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#f0f0f0', 'text_wrap': True})
         fmt_locked = wb.add_format({'locked': True, 'align': 'center', 'valign': 'vcenter', 'border': 1})
+        fmt_locked_gray = wb.add_format({'locked': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#e0e0e0'})
         fmt_edit = wb.add_format({'locked': False, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#FFFFCC'})
         fmt_abs = wb.add_format({'locked': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'bold': True})
+        fmt_footer = wb.add_format({'bold': True, 'font_size': 11, 'valign': 'vcenter'})
         
+        # ==========================================
         # SHEET 1: MARKS ENTRY (USN Masked!)
+        # ==========================================
         ws_marks.protect('admin123')
         ws_marks.merge_range('A1:AT1', 'AMC Engineering College', fmt_title)
         ws_marks.merge_range('A2:AT2', 'AMC Campus Bannerghatta Road, Bengaluru', fmt_sub)
@@ -423,24 +429,40 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
             ws_marks.write(row_idx, 0, i+1, fmt_locked)
             ws_marks.write(row_idx, 1, s['Dummy_ID'], fmt_locked) 
             
+            # 1. ABSENTEE HARD-LOCK LOGIC
             if s['Status'] != "PRESENT":
-                ws_marks.merge_range(row_idx, 2, row_idx, col_idx+3, s['Status'], fmt_abs)
+                for c in range(2, col_idx+3):
+                    ws_marks.write(row_idx, c, "", fmt_locked_gray)
+                ws_marks.write(row_idx, col_idx+3, s['Status'], fmt_abs)
             else:
                 c = 2
                 for q in range(1, 11):
-                    ws_marks.write(row_idx, c, "", fmt_edit)
-                    ws_marks.write(row_idx, c+1, "", fmt_edit)
-                    ws_marks.write(row_idx, c+2, "", fmt_edit)
-                    
-                    cell_a = xl_rowcol_to_cell(row_idx, c)
-                    cell_c = xl_rowcol_to_cell(row_idx, c+2)
-                    ws_marks.write_formula(row_idx, c+3, f'=SUM({cell_a}:{cell_c})', fmt_locked)
+                    # 2. MBA Q9 & Q10 DISABLE LOGIC
+                    if is_mba and q > 8:
+                        ws_marks.write(row_idx, c, "", fmt_locked_gray)
+                        ws_marks.write(row_idx, c+1, "", fmt_locked_gray)
+                        ws_marks.write(row_idx, c+2, "", fmt_locked_gray)
+                        ws_marks.write(row_idx, c+3, "", fmt_locked_gray)
+                    else:
+                        ws_marks.write(row_idx, c, "", fmt_edit)
+                        ws_marks.write(row_idx, c+1, "", fmt_edit)
+                        ws_marks.write(row_idx, c+2, "", fmt_edit)
+                        cell_a = xl_rowcol_to_cell(row_idx, c)
+                        cell_c = xl_rowcol_to_cell(row_idx, c+2)
+                        ws_marks.write_formula(row_idx, c+3, f'=SUM({cell_a}:{cell_c})', fmt_locked)
                     c += 4
                 
                 r = row_idx + 1
-                formula_see = f"=SUM(MAX(SUM(C{r}:E{r}),SUM(G{r}:I{r})), MAX(SUM(K{r}:M{r}),SUM(O{r}:Q{r})), MAX(SUM(S{r}:U{r}),SUM(W{r}:Y{r})), MAX(SUM(AA{r}:AC{r}),SUM(AE{r}:AG{r})), MAX(SUM(AI{r}:AK{r}),SUM(AM{r}:AO{r})))"
-                ws_marks.write_formula(row_idx, col_idx, formula_see, fmt_locked)
+                # 3. ADVANCED COURSE SPECIFIC FORMULAS
+                if is_mba:
+                    # Top 4 of (Q1..Q7) + Q8
+                    q1_7_cells = f"F{r},J{r},N{r},R{r},V{r},Z{r},AD{r}"
+                    formula_see = f"=IFERROR(LARGE(({q1_7_cells}),1),0)+IFERROR(LARGE(({q1_7_cells}),2),0)+IFERROR(LARGE(({q1_7_cells}),3),0)+IFERROR(LARGE(({q1_7_cells}),4),0)+AH{r}"
+                else:
+                    # Standard VTU Either/Or Max
+                    formula_see = f"=MAX(F{r},J{r})+MAX(N{r},R{r})+MAX(V{r},Z{r})+MAX(AD{r},AH{r})+MAX(AL{r},AP{r})"
                 
+                ws_marks.write_formula(row_idx, col_idx, formula_see, fmt_locked)
                 ws_marks.write(row_idx, col_idx+1, "", fmt_edit) 
                 
                 formula_diff = f'=IF(AR{r}>0,AQ{r}-AR{r},"")'
@@ -456,12 +478,22 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_marks.set_column('C:AP', 5)
         ws_marks.set_column('AQ:AT', 14)
         
-        # SHEET 2: PRINT (USN Masked!)
+        # ==========================================
+        # SHEET 2: PRINT (Logos + Signatures)
+        # ==========================================
         ws_print.protect('admin123')
+        ws_print.set_row(0, 45) # Make room for Logos
+        
         ws_print.merge_range('A1:D1', 'AMC Engineering College', fmt_title)
         ws_print.merge_range('A2:D2', f'Semester End Examination - {cycle_name}', fmt_sub)
         ws_print.merge_range('A3:D3', f'Course Code: {course_code} | Course Title: {course_name}', fmt_sub)
         
+        # Inject Logos safely
+        if "logo" in assets:
+            ws_print.insert_image('A1', 'logo.png', {'image_data': io.BytesIO(assets["logo"]), 'x_scale': 0.12, 'y_scale': 0.12, 'x_offset': 10, 'y_offset': 5})
+        if "naac" in assets:
+            ws_print.insert_image('D1', 'naac.jpg', {'image_data': io.BytesIO(assets["naac"]), 'x_scale': 0.12, 'y_scale': 0.12, 'x_offset': 150, 'y_offset': 5})
+
         headers_print = ['Sl. No.', 'Answer Booklet Code', 'SEE Marks in Figures (100)', 'SEE Marks in Words']
         for c, h in enumerate(headers_print):
             ws_print.write(4, c, h, fmt_head)
@@ -473,9 +505,9 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
             
             if s['Status'] != "PRESENT":
                 ws_print.write(row_idx, 2, s['Status'], fmt_abs)
-                ws_print.write(row_idx, 3, "-", fmt_locked)
+                ws_print.write(row_idx, 3, "-", fmt_locked_gray)
             else:
-                final_marks_cell = xl_rowcol_to_cell(9 + idx, col_idx+3)
+                final_marks_cell = xl_rowcol_to_cell(9 + idx, col_idx+3) # Matches Marks Entry row logic
                 ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
                 ws_print.write(row_idx, 3, "", fmt_edit)
                 
@@ -484,11 +516,16 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_print.set_column('A:A', 8)
         ws_print.set_column('B:B', 20)
         ws_print.set_column('C:C', 25)
-        ws_print.set_column('D:D', 30)
+        ws_print.set_column('D:D', 35)
+
+        # 4. Inject Signatures Footer
+        row_idx += 3
+        ws_print.write(row_idx, 1, "Evaluator Name: _________________________", fmt_footer)
+        ws_print.write(row_idx, 3, "Evaluator Signature with date: _________________________", fmt_footer)
 
     return out.getvalue()
 
-def gen_marks_bundles(df):
+def gen_marks_bundles(df, assets):
     zip_buf = io.BytesIO()
     key_log = []
     
@@ -510,7 +547,7 @@ def gen_marks_bundles(df):
                         'Subject': cc, 'Dummy_ID': s['Dummy_ID'], 'Status': s['Status']
                     })
                 
-                excel_bytes = create_locked_bundle(chunk, cc, course_name, room, i+1, n_chunks, active_cycle_name)
+                excel_bytes = create_locked_bundle(chunk, cc, course_name, room, i+1, n_chunks, active_cycle_name, assets)
                 zf.writestr(f"Bundles/{b_id}.xlsx", excel_bytes)
                 
         kdf = pd.DataFrame(key_log)
@@ -528,7 +565,6 @@ if not selected_cycle_id:
     st.warning("⚠️ Please select an Active Exam Cycle in the Sidebar to proceed.")
     st.stop()
 
-# Pre-Load Assets for Documents
 pdf_assets = load_pdf_assets()
 
 st.title("🚀 Exam Day Operations")
@@ -632,5 +668,5 @@ if "alloc_df" in st.session_state and not st.session_state.alloc_df.empty:
     
     if st.button("📦 Generate Locked Marks Bundles (.zip)", type="primary"):
         with st.spinner("Encrypting bundles and generating Secret Key..."):
-            zip_bytes = gen_marks_bundles(df_a)
+            zip_bytes = gen_marks_bundles(df_a, pdf_assets)
             st.download_button("📥 Click to Download ZIP", zip_bytes, f"Evaluation_Bundles_{date_str}.zip", "application/zip")
