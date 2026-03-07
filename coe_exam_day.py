@@ -32,7 +32,6 @@ selected_cycle_id = st.session_state.get('active_cycle_id')
 active_cycle_name = st.session_state.get('active_cycle_name', 'Unknown Cycle')
 
 def generate_dummy_ids(count):
-    """Generates a list of unique, easy-to-write IDs like 'VP01', 'AX89'"""
     ids = set()
     while len(ids) < count:
         letters = "".join(random.choices(string.ascii_uppercase, k=2))
@@ -44,7 +43,7 @@ def clean_str(val):
     return str(val).strip().upper() if pd.notna(val) else ""
 
 # ==========================================
-# 2. DATA FETCHING (CYCLE AWARE)
+# 2. DATA FETCHING
 # ==========================================
 
 def fetch_exam_sessions(cycle_id):
@@ -85,7 +84,12 @@ def fetch_exam_data(cycle_id, date_str, session_str):
     
     df_merged = pd.merge(df_regs, df_stus, on='usn', how='left')
     df_merged.rename(columns={'usn': 'USN', 'full_name': 'Student Name', 'course_code': 'Subject Code'}, inplace=True)
-    df_merged['Subject Name'] = df_merged['Subject Code']
+    
+    # Fetch Master Courses to map proper Titles
+    courses_res = supabase.table("master_courses").select("course_code, title").in_("course_code", course_codes).execute()
+    course_dict = {r['course_code']: r['title'] for r in courses_res.data}
+    df_merged['Subject Name'] = df_merged['Subject Code'].map(lambda x: course_dict.get(x, x))
+    
     return df_merged
 
 def fetch_rooms():
@@ -93,31 +97,32 @@ def fetch_rooms():
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
 # ==========================================
-# 3. ALLOCATION ENGINE
+# 3. ALLOCATION ENGINE (Anti-Fragmentation)
 # ==========================================
 
 def run_allocation(df_students, df_rooms):
     branches = df_students['Branch'].unique()
     branch_queues = {b: df_students[df_students['Branch'] == b].sort_values('USN').to_dict('records') for b in branches}
     
-    def get_largest_branch(exclude_list=[]):
+    def get_candidate(exclude_list, needed_space, diff_code=None):
+        """Smart selector: Refuses to split small branches (<=20) just to top off a room"""
         cands = [b for b in branch_queues if len(branch_queues[b]) > 0 and b not in exclude_list]
         if not cands: return None
-        return sorted(cands, key=lambda x: len(branch_queues[x]), reverse=True)[0]
-
-    def get_best_partner(left_b, exclude_list=[]):
-        cands = [b for b in branch_queues if len(branch_queues[b]) > 0 and b != left_b and b not in exclude_list]
-        if not cands: return None
-        if not left_b or len(branch_queues[left_b]) == 0:
-            return sorted(cands, key=lambda x: len(branch_queues[x]), reverse=True)[0]
         
-        left_code = branch_queues[left_b][0]['Subject Code']
-        diff_code_cands = [b for b in cands if branch_queues[b][0]['Subject Code'] != left_code]
-        if diff_code_cands: return sorted(diff_code_cands, key=lambda x: len(branch_queues[x]), reverse=True)[0]
-        return sorted(cands, key=lambda x: len(branch_queues[x]), reverse=True)[0]
+        # Priority 1: Different Course Code (Anti-cheating)
+        if diff_code:
+            diff_cands = [b for b in cands if branch_queues[b][0]['Subject Code'] != diff_code]
+            if diff_cands: cands = diff_cands
+            
+        # Priority 2: Anti-Fragmentation (Don't pick small groups if they won't fit entirely)
+        good_cands = [b for b in cands if not (len(branch_queues[b]) <= 20 and len(branch_queues[b]) > needed_space)]
+        
+        if good_cands:
+            return max(good_cands, key=lambda x: len(branch_queues[x]))
+        else:
+            # If all available branches would be split, return None to leave seats empty & protect the B-Forms
+            return None
 
-    curr_left = get_largest_branch()
-    curr_right = get_best_partner(curr_left) if curr_left else None
     allotment_rows = []
     
     for _, room in df_rooms.iterrows():
@@ -129,26 +134,23 @@ def run_allocation(df_students, df_rooms):
 
         pile_1 = []
         while len(pile_1) < half_cap:
-            if not curr_left or len(branch_queues[curr_left]) == 0:
-                curr_left = get_largest_branch(exclude_list=[curr_right])
-            if not curr_left: curr_left = get_largest_branch()
-            if not curr_left: break
             needed = half_cap - len(pile_1)
+            curr_left = get_candidate(exclude_list=[], needed_space=needed)
+            if not curr_left: break # Leave remaining seats empty to protect small branches
             take = min(needed, len(branch_queues[curr_left]))
             pile_1.extend(branch_queues[curr_left][:take])
             del branch_queues[curr_left][:take]
 
         pile_2 = []
+        left_code = pile_1[0]['Subject Code'] if pile_1 else None
+        
         while len(pile_2) < (capacity - len(pile_1)):
-            if not curr_right or len(branch_queues[curr_right]) == 0:
-                curr_right = get_best_partner(curr_left)
-            target = curr_right if curr_right else curr_left
-            if not target or len(branch_queues[target]) == 0: target = get_largest_branch()
-            if not target: break
             needed = (capacity - len(pile_1)) - len(pile_2)
-            take = min(needed, len(branch_queues[target]))
-            pile_2.extend(branch_queues[target][:take])
-            del branch_queues[target][:take]
+            curr_right = get_candidate(exclude_list=[], needed_space=needed, diff_code=left_code)
+            if not curr_right: break # Leave remaining seats empty
+            take = min(needed, len(branch_queues[curr_right]))
+            pile_2.extend(branch_queues[curr_right][:take])
+            del branch_queues[curr_right][:take]
 
         room_students = []
         for s1, s2 in zip_longest(pile_1, pile_2):
@@ -179,7 +181,7 @@ def draw_header(c, doc):
     c.restoreState()
 
 def gen_posters(df, date, session):
-    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=75)
+    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=65, bottomMargin=20)
     elements = []; styles = getSampleStyleSheet()
     s_seat = ParagraphStyle('S', parent=styles['Normal'], fontSize=8, alignment=TA_CENTER, textColor=colors.gray)
     s_usn = ParagraphStyle('U', parent=styles['Normal'], fontSize=11, fontName='Helvetica-Bold', alignment=TA_CENTER)
@@ -206,9 +208,8 @@ def gen_posters(df, date, session):
     return buf.getvalue()
 
 def gen_form_b(df, date, session):
-    """Generates the Official Form B Matching the DOCX Template exactly"""
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=30, leftMargin=35, rightMargin=35, bottomMargin=30)
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=20, leftMargin=35, rightMargin=35, bottomMargin=20)
     elements = []
     styles = getSampleStyleSheet()
     
@@ -223,13 +224,11 @@ def gen_form_b(df, date, session):
         course_name = group['Subject Name'].iloc[0] if 'Subject Name' in group.columns else code
         branch_val = group['Branch'].iloc[0] if 'Branch' in group.columns else "N/A"
         
-        # 1. Header
         elements.append(Paragraph("AMC ENGINEERING COLLEGE", title_style))
         elements.append(Spacer(1, 5))
         elements.append(Paragraph("ATTENDANCE & ROOM SUPERINTENDENT’S/EXAMINERS REPORT (In Triplicate)", sub_title_style))
-        elements.append(Spacer(1, 15))
+        elements.append(Spacer(1, 10))
         
-        # 2. Metadata Grid
         m_data = [
             [Paragraph(f"<b>B.E./B.Arch./MCA/MBA/M.Tech:</b> {branch_val}", meta_style), Paragraph(f"<b>Semester Examination:</b> {date}", meta_style), Paragraph(f"<b>Block No:</b> {room}", meta_style)],
             [Paragraph(f"<b>Branch / Title of the course:</b> {branch_val}", meta_style), Paragraph(f"<b>Subject Code:</b> {code}", meta_style), ""],
@@ -242,13 +241,12 @@ def gen_form_b(df, date, session):
         m_table.setStyle(TableStyle([
             ('ALIGN', (0,0), (-1,-1), 'LEFT'),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('SPAN', (0,2), (2,2)), # Spans Subject Name across
-            ('BOTTOMPADDING', (0,0), (-1,-1), 8)
+            ('SPAN', (0,2), (2,2)), 
+            ('BOTTOMPADDING', (0,0), (-1,-1), 6)
         ]))
         elements.append(m_table)
-        elements.append(Spacer(1, 10))
+        elements.append(Spacer(1, 5))
         
-        # 3. Main Attendance Table
         t_data = [[
             Paragraph("<b>ROLL NO</b>", th_style),
             Paragraph("<b>Seat Number of the Candidate</b>", th_style),
@@ -259,30 +257,24 @@ def gen_form_b(df, date, session):
         ]]
         
         for _, r in group.sort_values('SeatNo').iterrows():
-            t_data.append([
-                Paragraph(r['USN'], td_style_c),
-                Paragraph(str(r['Student Name']), td_style_l),
-                "", "", "", ""
-            ])
+            t_data.append([Paragraph(r['USN'], td_style_c), Paragraph(str(r['Student Name']), td_style_l), "", "", "", ""])
             
-        # Total width = 7.4 inches
         t = Table(t_data, colWidths=[1.1*inch, 2.1*inch, 1.3*inch, 1.3*inch, 1.1*inch, 0.5*inch])
         t.setStyle(TableStyle([
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-            ('TOPPADDING', (0,0), (-1,-1), 8),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+            ('TOPPADDING', (0,0), (-1,-1), 5),
             ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ]))
         elements.append(t)
-        elements.append(Spacer(1, 20))
+        elements.append(Spacer(1, 15))
         
-        # 4. Footer & Signatures
         f_data = [
             [Paragraph("<b>Seat Number of the candidates absent:</b> ____________________________________________________________________", meta_style), "", ""],
             [Paragraph("<b>Seat Number of the candidates booked under Malpractice:</b> ________________________________________________________", meta_style), "", ""],
             [Paragraph(f"<b>Total Number of students:</b> {len(group)}", meta_style), Paragraph("<b>Total Present:</b> ________", meta_style), Paragraph("<b>Total Absent:</b> ________", meta_style)],
-            ["\n\n\nSignature of Room Superintendent", "", "\n\n\nSignature of Chief Superintendent"]
+            ["\n\nSignature of Room Superintendent", "", "\n\nSignature of Chief Superintendent"]
         ]
         f_table = Table(f_data, colWidths=[3.6*inch, 1.9*inch, 1.9*inch])
         f_table.setStyle(TableStyle([
@@ -290,7 +282,7 @@ def gen_form_b(df, date, session):
             ('SPAN', (0,1), (2,1)), 
             ('ALIGN', (0,3), (2,3), 'CENTER'), 
             ('VALIGN', (0,0), (-1,-1), 'BOTTOM'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 10)
+            ('BOTTOMPADDING', (0,0), (-1,-1), 8)
         ]))
         elements.append(f_table)
         elements.append(PageBreak())
@@ -371,15 +363,14 @@ def gen_smart_excel(df, date, session):
         summary.to_excel(writer, sheet_name='Room_Summary', index=False)
     return buf.getvalue()
 
-def create_locked_bundle(df, course_code, room_no, bundle_seq, total_bundles, cycle_name):
-    """Generates the Official VTU Excel Layout with locked formulas and Dual Sheets"""
+def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, total_bundles, cycle_name):
+    """Generates the Advanced VTU Either/Or Logic Excel Layout"""
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
         wb = writer.book
         ws_marks = wb.add_worksheet('Marks Entry')
         ws_print = wb.add_worksheet('Print')
         
-        # Styles
         fmt_title = wb.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'font_size': 14})
         fmt_sub = wb.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'font_size': 11})
         fmt_head = wb.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#f0f0f0', 'text_wrap': True})
@@ -387,18 +378,14 @@ def create_locked_bundle(df, course_code, room_no, bundle_seq, total_bundles, cy
         fmt_edit = wb.add_format({'locked': False, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#FFFFCC'})
         fmt_abs = wb.add_format({'locked': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'bold': True})
         
-        # ==========================================
         # SHEET 1: MARKS ENTRY
-        # ==========================================
         ws_marks.protect('admin123')
-        
         ws_marks.merge_range('A1:AT1', 'AMC Engineering College', fmt_title)
         ws_marks.merge_range('A2:AT2', 'AMC Campus Bannerghatta Road, Bengaluru', fmt_sub)
         ws_marks.merge_range('A3:AT3', 'Autonomous Institution under VTU, Belagavi | NAAC A+ Accredited', fmt_sub)
-        ws_marks.merge_range('A5:AT5', f'Semester End Examination - {cycle_name} | CBCS 2025 Scheme', fmt_sub)
-        ws_marks.merge_range('A6:AT6', f'Evaluation & Marks Allotment | Course Code: {course_code} | Bundle {bundle_seq}/{total_bundles}', fmt_sub)
+        ws_marks.merge_range('A5:AT5', f'Semester End Examination - {cycle_name} | CBCS Scheme', fmt_sub)
+        ws_marks.merge_range('A6:AT6', f'Evaluation & Marks Allotment | Course: {course_code} - {course_name} | Bundle {bundle_seq}/{total_bundles}', fmt_sub)
         
-        # Row 7 & 8: Headers
         ws_marks.merge_range('A8:A9', 'Coding No.', fmt_head)
         ws_marks.merge_range('B8:B9', 'USN', fmt_head)
         
@@ -412,7 +399,7 @@ def create_locked_bundle(df, course_code, room_no, bundle_seq, total_bundles, cy
             col_idx += 4
             
         ws_marks.merge_range(7, col_idx, 8, col_idx, 'Total SEE Marks (100)', fmt_head)
-        ws_marks.merge_range(7, col_idx+1, 8, col_idx+1, 'Total Moderation (100)', fmt_head)
+        ws_marks.merge_range(7, col_idx+1, 8, col_idx+1, 'Total Moderation', fmt_head)
         ws_marks.merge_range(7, col_idx+2, 8, col_idx+2, 'Marks Difference', fmt_head)
         ws_marks.merge_range(7, col_idx+3, 8, col_idx+3, 'Final SEE Marks (100)', fmt_head)
         
@@ -435,15 +422,18 @@ def create_locked_bundle(df, course_code, room_no, bundle_seq, total_bundles, cy
                     ws_marks.write_formula(row_idx, c+3, f'=SUM({cell_a}:{cell_c})', fmt_locked)
                     c += 4
                 
-                # Grand Totals & Formulas
-                q_total_cells = ",".join([xl_rowcol_to_cell(row_idx, 5 + 4*x) for x in range(10)])
-                ws_marks.write_formula(row_idx, col_idx, f'=SUM({q_total_cells})', fmt_locked)
+                r = row_idx + 1
+                # The Complex VTU Either/Or Logic Formula
+                formula_see = f"=SUM(MAX(SUM(C{r}:E{r}),SUM(G{r}:I{r})), MAX(SUM(K{r}:M{r}),SUM(O{r}:Q{r})), MAX(SUM(S{r}:U{r}),SUM(W{r}:Y{r})), MAX(SUM(AA{r}:AC{r}),SUM(AE{r}:AG{r})), MAX(SUM(AI{r}:AK{r}),SUM(AM{r}:AO{r})))"
+                ws_marks.write_formula(row_idx, col_idx, formula_see, fmt_locked)
+                
                 ws_marks.write(row_idx, col_idx+1, "", fmt_edit) 
                 
-                cell_tot = xl_rowcol_to_cell(row_idx, col_idx)
-                cell_mod = xl_rowcol_to_cell(row_idx, col_idx+1)
-                ws_marks.write_formula(row_idx, col_idx+2, f'=IF(ISBLANK({cell_mod}), "", {cell_mod}-{cell_tot})', fmt_locked)
-                ws_marks.write_formula(row_idx, col_idx+3, f'=IF(ISBLANK({cell_mod}), {cell_tot}, {cell_mod})', fmt_locked)
+                formula_diff = f'=IF(AR{r}>0,AQ{r}-AR{r},"")'
+                ws_marks.write_formula(row_idx, col_idx+2, formula_diff, fmt_locked)
+                
+                formula_final = f"=MAX(AQ{r},AR{r})"
+                ws_marks.write_formula(row_idx, col_idx+3, formula_final, fmt_locked)
 
             row_idx += 1
             
@@ -451,13 +441,11 @@ def create_locked_bundle(df, course_code, room_no, bundle_seq, total_bundles, cy
         ws_marks.set_column('C:AP', 5)
         ws_marks.set_column('AQ:AT', 14)
         
-        # ==========================================
         # SHEET 2: PRINT
-        # ==========================================
         ws_print.protect('admin123')
         ws_print.merge_range('A1:E1', 'AMC Engineering College', fmt_title)
-        ws_print.merge_range('A2:E2', 'Semester End Examination', fmt_sub)
-        ws_print.merge_range('A3:E3', f'Course Code: {course_code}', fmt_sub)
+        ws_print.merge_range('A2:E2', f'Semester End Examination - {cycle_name}', fmt_sub)
+        ws_print.merge_range('A3:E3', f'Course Code: {course_code} | Course Title: {course_name}', fmt_sub)
         
         headers_print = ['Sl. No.', 'USN', 'Answer Booklet Code', 'SEE Marks in Figures (100)', 'SEE Marks in Words']
         for c, h in enumerate(headers_print):
@@ -473,10 +461,9 @@ def create_locked_bundle(df, course_code, room_no, bundle_seq, total_bundles, cy
                 ws_print.write(row_idx, 3, s['Status'], fmt_abs)
                 ws_print.write(row_idx, 4, "-", fmt_locked)
             else:
-                # Link cell directly to the Final Marks formula on Sheet 1
                 final_marks_cell = xl_rowcol_to_cell(9 + idx, col_idx+3)
                 ws_print.write_formula(row_idx, 3, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
-                ws_print.write(row_idx, 4, "", fmt_edit) # Words writable by user
+                ws_print.write(row_idx, 4, "", fmt_edit)
                 
             row_idx += 1
             
@@ -499,6 +486,7 @@ def gen_marks_bundles(df):
                 chunk['Dummy_ID'] = generate_dummy_ids(len(chunk))
                 
                 b_id = f"{room}_{cc}_{str(i+1).zfill(2)}"
+                course_name = chunk['Subject Name'].iloc[0] if 'Subject Name' in chunk.columns else cc
                 
                 for _, s in chunk.iterrows():
                     key_log.append({
@@ -506,7 +494,7 @@ def gen_marks_bundles(df):
                         'Subject': cc, 'Dummy_ID': s['Dummy_ID'], 'Status': s['Status']
                     })
                 
-                excel_bytes = create_locked_bundle(chunk, cc, room, i+1, n_chunks, active_cycle_name)
+                excel_bytes = create_locked_bundle(chunk, cc, course_name, room, i+1, n_chunks, active_cycle_name)
                 zf.writestr(f"Bundles/{b_id}.xlsx", excel_bytes)
                 
         kdf = pd.DataFrame(key_log)
