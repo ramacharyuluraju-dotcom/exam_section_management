@@ -4,6 +4,7 @@ import io
 import datetime
 import math
 import zipfile
+import string
 import random
 from itertools import zip_longest
 from utils import init_db
@@ -43,11 +44,9 @@ def load_pdf_assets():
     return assets
 
 def generate_dummy_ids(count):
-    """Generates pure 4-digit unique numerical codes (e.g. 4812) for ultra-easy manual writing"""
-    ids = set()
-    while len(ids) < count:
-        ids.add(str(random.randint(1000, 9999)))
-    return list(ids)
+    """Generates a sequential series of IDs per bundle (e.g., AB1 to AB20) for error-free data entry."""
+    prefix = "".join(random.choices(string.ascii_uppercase, k=2))
+    return [f"{prefix}{i+1}" for i in range(count)]
 
 def clean_str(val):
     return str(val).strip().upper() if pd.notna(val) else ""
@@ -279,7 +278,7 @@ def gen_form_b(df, date, session, assets):
         t.setStyle(TableStyle([
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 2), # Tightly packed to prevent multi-page spill
+            ('BOTTOMPADDING', (0,0), (-1,-1), 2), 
             ('TOPPADDING', (0,0), (-1,-1), 2),
             ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ]))
@@ -402,7 +401,6 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_marks.merge_range('A5:AT5', f'Semester End Examination - {cycle_name} | CBCS Scheme', fmt_sub)
         ws_marks.merge_range('A6:AT6', f'Evaluation & Marks Allotment | Course: {course_code} - {course_name} | Bundle {bundle_seq}/{total_bundles}', fmt_sub)
         
-        # Changed Headers: USN is Gone!
         ws_marks.merge_range('A8:A9', 'Sl. No.', fmt_head)
         ws_marks.merge_range('B8:B9', 'Coding No.', fmt_head)
         
