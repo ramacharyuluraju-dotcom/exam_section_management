@@ -8,7 +8,7 @@ import string
 import random
 from itertools import zip_longest
 from utils import init_db
-from PIL import Image as PILImage # Added for dynamic logo scaling
+from PIL import Image as PILImage
 
 # --- PDF LIBRARIES ---
 from reportlab.lib.pagesizes import A4
@@ -44,8 +44,27 @@ def load_pdf_assets():
         except: pass
     return assets
 
+def resize_image_for_excel(img_bytes, target_height=50):
+    """Physically resizes the image to a fixed height before giving it to Excel."""
+    try:
+        with PILImage.open(io.BytesIO(img_bytes)) as img:
+            w_percent = (target_height / float(img.size[1]))
+            target_width = int(float(img.size[0]) * float(w_percent))
+            
+            # Resize and convert to RGBA to ensure PNG compatibility
+            resized_img = img.resize((target_width, target_height), PILImage.LANCZOS)
+            if resized_img.mode != 'RGBA':
+                resized_img = resized_img.convert('RGBA')
+                
+            out_io = io.BytesIO()
+            resized_img.save(out_io, format='PNG')
+            out_io.seek(0)
+            return out_io
+    except Exception as e:
+        return io.BytesIO(img_bytes) # Fallback
+
 def generate_dummy_ids(count):
-    """Generates a sequential series of IDs per bundle (e.g., AB1 to AB20) for error-free data entry."""
+    """Generates a sequential series of IDs per bundle (e.g., AB1 to AB20)."""
     prefix = "".join(random.choices(string.ascii_uppercase, k=2))
     return [f"{prefix}{i+1}" for i in range(count)]
 
@@ -380,7 +399,6 @@ def gen_smart_excel(df, date, session):
     return buf.getvalue()
 
 def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, total_bundles, cycle_name, assets):
-    """Generates Ultra-Secure Bundles with Dynamically Scaled Logos"""
     out = io.BytesIO()
     is_mba = 'MBA' in course_code.upper()
     
@@ -399,7 +417,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         fmt_footer = wb.add_format({'bold': True, 'font_size': 11, 'valign': 'vcenter'})
         
         # ==========================================
-        # SHEET 1: MARKS ENTRY
+        # SHEET 1: MARKS ENTRY (USN Masked!)
         # ==========================================
         ws_marks.protect('admin123')
         ws_marks.merge_range('A1:AT1', 'AMC Engineering College', fmt_title)
@@ -475,7 +493,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_marks.set_column('AQ:AT', 14)
         
         # ==========================================
-        # SHEET 2: PRINT (Dynamically Scaled Logos)
+        # SHEET 2: PRINT
         # ==========================================
         ws_print.protect('admin123')
         ws_print.set_row(0, 45) # Make Header Row 60 pixels high
@@ -484,19 +502,16 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_print.merge_range('A2:D2', f'Semester End Examination - {cycle_name}', fmt_sub)
         ws_print.merge_range('A3:D3', f'Course Code: {course_code} | Course Title: {course_name}', fmt_sub)
         
-        # 🟢 DYNAMIC LOGO SCALING LOGIC 🟢
-        # This forces both logos to be exactly 50 pixels tall, regardless of their native file resolution!
+        # 🟢 BULLETPROOF IMAGE RESIZING 🟢
+        # Physically resizes the images to exactly 50 pixels high before insertion
         if "logo" in assets:
-            logo_io = io.BytesIO(assets["logo"])
-            with PILImage.open(logo_io) as img:
-                scale_left = 50.0 / float(img.height)
-            ws_print.insert_image('A1', 'logo.png', {'image_data': io.BytesIO(assets["logo"]), 'x_scale': scale_left, 'y_scale': scale_left, 'x_offset': 10, 'y_offset': 5})
+            resized_logo = resize_image_for_excel(assets["logo"], target_height=50)
+            ws_print.insert_image('A1', 'logo.png', {'image_data': resized_logo, 'x_offset': 10, 'y_offset': 5})
             
         if "naac" in assets:
-            naac_io = io.BytesIO(assets["naac"])
-            with PILImage.open(naac_io) as img:
-                scale_right = 50.0 / float(img.height)
-            ws_print.insert_image('D1', 'naac.jpg', {'image_data': io.BytesIO(assets["naac"]), 'x_scale': scale_right, 'y_scale': scale_right, 'x_offset': 180, 'y_offset': 5})
+            resized_naac = resize_image_for_excel(assets["naac"], target_height=50)
+            # x_offset 180 places it cleanly on the far right of the wide 'D' column
+            ws_print.insert_image('D1', 'naac.png', {'image_data': resized_naac, 'x_offset': 180, 'y_offset': 5})
 
         headers_print = ['Sl. No.', 'Answer Booklet Code', 'SEE Marks in Figures (100)', 'SEE Marks in Words']
         for c, h in enumerate(headers_print):
