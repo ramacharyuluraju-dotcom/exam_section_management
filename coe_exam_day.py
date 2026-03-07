@@ -18,6 +18,9 @@ from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.utils import ImageReader
 
+# --- EXCEL UTILS ---
+from xlsxwriter.utility import xl_rowcol_to_cell
+
 # ==========================================
 # 1. SETUP & CONFIGURATION
 # ==========================================
@@ -26,6 +29,7 @@ supabase = init_db()
 
 # --- GLOBAL CONTEXT ---
 selected_cycle_id = st.session_state.get('active_cycle_id')
+active_cycle_name = st.session_state.get('active_cycle_name', 'Unknown Cycle')
 
 def generate_dummy_ids(count):
     """Generates a list of unique, easy-to-write IDs like 'VP01', 'AX89'"""
@@ -70,14 +74,14 @@ def fetch_exam_data(cycle_id, date_str, session_str):
     usns = df_regs['usn'].unique().tolist()
     start = 0; all_stus = []
     while True:
-        res = supabase.table("master_students").select("usn, full_name").in_("usn", usns).range(start, start + limit - 1).execute()
+        res = supabase.table("master_students").select("usn, full_name, branch_code").in_("usn", usns).range(start, start + limit - 1).execute()
         if not res.data: break
         all_stus.extend(res.data)
         if len(res.data) < limit: break
         start += limit
         
     df_stus = pd.DataFrame(all_stus)
-    df_stus['Branch'] = df_stus['usn'].apply(lambda x: x[5:7].upper() if len(x) > 7 else "GEN")
+    df_stus['Branch'] = df_stus['branch_code']
     
     df_merged = pd.merge(df_regs, df_stus, on='usn', how='left')
     df_merged.rename(columns={'usn': 'USN', 'full_name': 'Student Name', 'course_code': 'Subject Code'}, inplace=True)
@@ -89,7 +93,7 @@ def fetch_rooms():
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
 # ==========================================
-# 3. ALLOCATION ENGINE (ANTI-CHEATING ZIP)
+# 3. ALLOCATION ENGINE
 # ==========================================
 
 def run_allocation(df_students, df_rooms):
@@ -168,7 +172,7 @@ def run_allocation(df_students, df_rooms):
 def draw_header(c, doc):
     c.saveState()
     c.setFont('Helvetica-Bold', 14)
-    c.drawCentredString(A4[0]/2, A4[1] - 40, "AMC ENGINEERING COLLEGE (AUTONOMOUS)")
+    c.drawCentredString(A4[0]/2, A4[1] - 40, "AMC ENGINEERING COLLEGE")
     c.setFont('Helvetica', 9)
     c.drawCentredString(A4[0]/2, A4[1] - 55, "AMC Campus, Bannerghatta Road, Bengaluru - 560083")
     c.line(30, A4[1] - 62, A4[0] - 30, A4[1] - 62)
@@ -202,77 +206,96 @@ def gen_posters(df, date, session):
     return buf.getvalue()
 
 def gen_form_b(df, date, session):
-    """Generates Form B strictly matching the DOCX Format layout"""
+    """Generates the Official Form B Matching the DOCX Template exactly"""
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=75, leftMargin=40, rightMargin=40, bottomMargin=40)
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=30, leftMargin=35, rightMargin=35, bottomMargin=30)
     elements = []
     styles = getSampleStyleSheet()
     
-    # Custom Styles for Form B
-    title_style = ParagraphStyle('Title', parent=styles['Heading3'], alignment=TA_CENTER, fontName='Helvetica-Bold')
-    meta_style = ParagraphStyle('Meta', parent=styles['Normal'], fontSize=10, leading=14)
+    title_style = ParagraphStyle('Title', parent=styles['Heading3'], alignment=TA_CENTER, fontName='Helvetica-Bold', fontSize=12)
+    sub_title_style = ParagraphStyle('SubTitle', parent=styles['Normal'], alignment=TA_CENTER, fontName='Helvetica-Bold', fontSize=10)
+    meta_style = ParagraphStyle('Meta', parent=styles['Normal'], fontSize=9, leading=12)
+    th_style = ParagraphStyle('th', parent=styles['Normal'], alignment=TA_CENTER, fontName='Helvetica-Bold', fontSize=8)
+    td_style_c = ParagraphStyle('td_c', parent=styles['Normal'], alignment=TA_CENTER, fontSize=9)
+    td_style_l = ParagraphStyle('td_l', parent=styles['Normal'], alignment=TA_LEFT, fontSize=8)
     
     for (room, code), group in df.groupby(['RoomNo', 'Subject Code']):
-        # Find course name safely
         course_name = group['Subject Name'].iloc[0] if 'Subject Name' in group.columns else code
+        branch_val = group['Branch'].iloc[0] if 'Branch' in group.columns else "N/A"
         
-        # 1. Main Headings
-        elements.append(Paragraph("FORM - B", title_style))
-        elements.append(Paragraph("ATTENDANCE SHEET", title_style))
-        elements.append(Spacer(1, 10))
-        
-        # 2. Metadata Grid (Room, Date, Session, Subject)
-        meta_data = [
-            [Paragraph(f"<b>Room No:</b> {room}", meta_style), Paragraph(f"<b>Date:</b> {date}", meta_style)],
-            [Paragraph(f"<b>Course Code:</b> {code}", meta_style), Paragraph(f"<b>Time/Session:</b> {session}", meta_style)],
-            [Paragraph(f"<b>Course Name:</b> {course_name}", meta_style), ""]
-        ]
-        meta_table = Table(meta_data, colWidths=[3.2*inch, 3.2*inch])
-        meta_table.setStyle(TableStyle([
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 6)
-        ]))
-        elements.append(meta_table)
+        # 1. Header
+        elements.append(Paragraph("AMC ENGINEERING COLLEGE", title_style))
+        elements.append(Spacer(1, 5))
+        elements.append(Paragraph("ATTENDANCE & ROOM SUPERINTENDENT’S/EXAMINERS REPORT (In Triplicate)", sub_title_style))
         elements.append(Spacer(1, 15))
         
-        # 3. Main Attendance Table (With generous spacing for writing)
-        table_data = [['Sl. No.', 'USN', 'Answer Booklet No.', 'Signature of the Candidate']]
-        for _, r in group.sort_values('SeatNo').iterrows():
-            table_data.append([str(r['SeatNo']), r['USN'], "", ""])
-            
-        t = Table(table_data, colWidths=[0.8*inch, 1.8*inch, 2*inch, 2.2*inch])
-        t.setStyle(TableStyle([
-            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
-            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            # Give plenty of room for writing in the actual cells
-            ('TOPPADDING', (0,1), (-1,-1), 12),
-            ('BOTTOMPADDING', (0,1), (-1,-1), 12),
-        ]))
-        elements.append(t)
-        elements.append(Spacer(1, 30))
-        
-        # 4. Invigilator Footer Section
-        total_students = len(group)
-        footer_data = [
-            [Paragraph(f"<b>Total No. of Students Allocated:</b> {total_students}", meta_style), ""],
-            [Paragraph("<b>Total No. of Students Present:</b> _________", meta_style), Paragraph("<b>Signature of Room Invigilator</b>", meta_style)],
-            [Paragraph("<b>Total No. of Students Absent:</b> _________", meta_style), Paragraph("<b>Name:</b> ____________________", meta_style)],
-            ["", Paragraph("<b>Dept:</b> ____________________", meta_style)]
+        # 2. Metadata Grid
+        m_data = [
+            [Paragraph(f"<b>B.E./B.Arch./MCA/MBA/M.Tech:</b> {branch_val}", meta_style), Paragraph(f"<b>Semester Examination:</b> {date}", meta_style), Paragraph(f"<b>Block No:</b> {room}", meta_style)],
+            [Paragraph(f"<b>Branch / Title of the course:</b> {branch_val}", meta_style), Paragraph(f"<b>Subject Code:</b> {code}", meta_style), ""],
+            [Paragraph(f"<b>Subject:</b> {course_name}", meta_style), "", ""],
+            [Paragraph(f"<b>Centre:</b> AMC ENGINEERING COLLEGE", meta_style), Paragraph(f"<b>Seat No's from:</b> {group['USN'].min()} <b>TO</b> {group['USN'].max()}", meta_style), ""],
+            [Paragraph(f"<b>Date:</b> {date}", meta_style), "", Paragraph(f"<b>Time:</b> {session}", meta_style)]
         ]
-        footer_table = Table(footer_data, colWidths=[3.2*inch, 3.2*inch])
-        footer_table.setStyle(TableStyle([
+        
+        m_table = Table(m_data, colWidths=[2.7*inch, 2.7*inch, 2.0*inch])
+        m_table.setStyle(TableStyle([
             ('ALIGN', (0,0), (-1,-1), 'LEFT'),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+            ('SPAN', (0,2), (2,2)), # Spans Subject Name across
+            ('BOTTOMPADDING', (0,0), (-1,-1), 8)
         ]))
-        elements.append(footer_table)
+        elements.append(m_table)
+        elements.append(Spacer(1, 10))
+        
+        # 3. Main Attendance Table
+        t_data = [[
+            Paragraph("<b>ROLL NO</b>", th_style),
+            Paragraph("<b>Seat Number of the Candidate</b>", th_style),
+            Paragraph("<b>Answer Book/Main Drawing Sheet Number</b>", th_style),
+            Paragraph("<b>Signature of the Candidate</b>", th_style),
+            Paragraph("<b>Additional/Drawing/ Graph Sheet Numbers</b>", th_style),
+            Paragraph("<b>Total</b>", th_style)
+        ]]
+        
+        for _, r in group.sort_values('SeatNo').iterrows():
+            t_data.append([
+                Paragraph(r['USN'], td_style_c),
+                Paragraph(str(r['Student Name']), td_style_l),
+                "", "", "", ""
+            ])
+            
+        # Total width = 7.4 inches
+        t = Table(t_data, colWidths=[1.1*inch, 2.1*inch, 1.3*inch, 1.3*inch, 1.1*inch, 0.5*inch])
+        t.setStyle(TableStyle([
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+            ('TOPPADDING', (0,0), (-1,-1), 8),
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+        ]))
+        elements.append(t)
+        elements.append(Spacer(1, 20))
+        
+        # 4. Footer & Signatures
+        f_data = [
+            [Paragraph("<b>Seat Number of the candidates absent:</b> ____________________________________________________________________", meta_style), "", ""],
+            [Paragraph("<b>Seat Number of the candidates booked under Malpractice:</b> ________________________________________________________", meta_style), "", ""],
+            [Paragraph(f"<b>Total Number of students:</b> {len(group)}", meta_style), Paragraph("<b>Total Present:</b> ________", meta_style), Paragraph("<b>Total Absent:</b> ________", meta_style)],
+            ["\n\n\nSignature of Room Superintendent", "", "\n\n\nSignature of Chief Superintendent"]
+        ]
+        f_table = Table(f_data, colWidths=[3.6*inch, 1.9*inch, 1.9*inch])
+        f_table.setStyle(TableStyle([
+            ('SPAN', (0,0), (2,0)), 
+            ('SPAN', (0,1), (2,1)), 
+            ('ALIGN', (0,3), (2,3), 'CENTER'), 
+            ('VALIGN', (0,0), (-1,-1), 'BOTTOM'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 10)
+        ]))
+        elements.append(f_table)
         elements.append(PageBreak())
         
-    doc.build(elements, onFirstPage=draw_header, onLaterPages=draw_header)
+    doc.build(elements)
     return buf.getvalue()
 
 def gen_form_a(df, date, session):
@@ -348,37 +371,118 @@ def gen_smart_excel(df, date, session):
         summary.to_excel(writer, sheet_name='Room_Summary', index=False)
     return buf.getvalue()
 
-def create_locked_bundle(df, course_code, room_no, bundle_seq, total_bundles):
+def create_locked_bundle(df, course_code, room_no, bundle_seq, total_bundles, cycle_name):
+    """Generates the Official VTU Excel Layout with locked formulas and Dual Sheets"""
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
         wb = writer.book
-        fmt_locked = wb.add_format({'locked': True, 'align': 'center', 'border': 1})
-        fmt_edit = wb.add_format({'locked': False, 'align': 'center', 'border': 1, 'bg_color': '#FFFFCC'})
-        fmt_head = wb.add_format({'locked': True, 'bold': True, 'align': 'center', 'border': 1, 'bg_color': '#f0f0f0'})
-        fmt_abs = wb.add_format({'locked': True, 'align': 'center', 'border': 1, 'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
+        ws_marks = wb.add_worksheet('Marks Entry')
+        ws_print = wb.add_worksheet('Print')
         
-        ws = wb.add_worksheet('Marks Entry')
-        ws.protect('admin123')
+        # Styles
+        fmt_title = wb.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'font_size': 14})
+        fmt_sub = wb.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'font_size': 11})
+        fmt_head = wb.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#f0f0f0', 'text_wrap': True})
+        fmt_locked = wb.add_format({'locked': True, 'align': 'center', 'valign': 'vcenter', 'border': 1})
+        fmt_edit = wb.add_format({'locked': False, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#FFFFCC'})
+        fmt_abs = wb.add_format({'locked': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'bold': True})
         
-        ws.write('A1', f"Course: {course_code} | Room: {room_no} | Bundle: {bundle_seq}/{total_bundles}", fmt_locked)
-        headers = ["Sl.", "DUMMY NO."] + [f"Q{q}" for q in range(1, 11)] + ["Total SEE (100)"]
-        for c, h in enumerate(headers): ws.write(2, c, h, fmt_head)
+        # ==========================================
+        # SHEET 1: MARKS ENTRY
+        # ==========================================
+        ws_marks.protect('admin123')
         
-        row = 3
+        ws_marks.merge_range('A1:AT1', 'AMC Engineering College', fmt_title)
+        ws_marks.merge_range('A2:AT2', 'AMC Campus Bannerghatta Road, Bengaluru', fmt_sub)
+        ws_marks.merge_range('A3:AT3', 'Autonomous Institution under VTU, Belagavi | NAAC A+ Accredited', fmt_sub)
+        ws_marks.merge_range('A5:AT5', f'Semester End Examination - {cycle_name} | CBCS 2025 Scheme', fmt_sub)
+        ws_marks.merge_range('A6:AT6', f'Evaluation & Marks Allotment | Course Code: {course_code} | Bundle {bundle_seq}/{total_bundles}', fmt_sub)
+        
+        # Row 7 & 8: Headers
+        ws_marks.merge_range('A8:A9', 'Coding No.', fmt_head)
+        ws_marks.merge_range('B8:B9', 'USN', fmt_head)
+        
+        col_idx = 2
+        for q in range(1, 11):
+            ws_marks.merge_range(7, col_idx, 7, col_idx+2, f'Q. {q}', fmt_head)
+            ws_marks.write(8, col_idx, 'a', fmt_head)
+            ws_marks.write(8, col_idx+1, 'b', fmt_head)
+            ws_marks.write(8, col_idx+2, 'c', fmt_head)
+            ws_marks.merge_range(7, col_idx+3, 8, col_idx+3, f'Q.{q} Total', fmt_head)
+            col_idx += 4
+            
+        ws_marks.merge_range(7, col_idx, 8, col_idx, 'Total SEE Marks (100)', fmt_head)
+        ws_marks.merge_range(7, col_idx+1, 8, col_idx+1, 'Total Moderation (100)', fmt_head)
+        ws_marks.merge_range(7, col_idx+2, 8, col_idx+2, 'Marks Difference', fmt_head)
+        ws_marks.merge_range(7, col_idx+3, 8, col_idx+3, 'Final SEE Marks (100)', fmt_head)
+        
+        row_idx = 9
         for i, s in df.iterrows():
-            ws.write(row, 0, i+1, fmt_locked)
-            ws.write(row, 1, s['Dummy_ID'], fmt_locked)
+            ws_marks.write(row_idx, 0, s['Dummy_ID'], fmt_locked)
+            ws_marks.write(row_idx, 1, s['USN'], fmt_locked)
             
             if s['Status'] != "PRESENT":
-                for c in range(2, 12): ws.write(row, c, "", fmt_locked)
-                ws.write(row, 12, s['Status'], fmt_abs)
+                ws_marks.merge_range(row_idx, 2, row_idx, col_idx+3, s['Status'], fmt_abs)
             else:
-                for c in range(2, 12): ws.write(row, c, "", fmt_edit)
-                r_num = row + 1
-                ws.write_formula(row, 12, f"=SUM(C{r_num}:L{r_num})", fmt_locked)
-            row += 1
+                c = 2
+                for q in range(1, 11):
+                    ws_marks.write(row_idx, c, "", fmt_edit)
+                    ws_marks.write(row_idx, c+1, "", fmt_edit)
+                    ws_marks.write(row_idx, c+2, "", fmt_edit)
+                    
+                    cell_a = xl_rowcol_to_cell(row_idx, c)
+                    cell_c = xl_rowcol_to_cell(row_idx, c+2)
+                    ws_marks.write_formula(row_idx, c+3, f'=SUM({cell_a}:{cell_c})', fmt_locked)
+                    c += 4
+                
+                # Grand Totals & Formulas
+                q_total_cells = ",".join([xl_rowcol_to_cell(row_idx, 5 + 4*x) for x in range(10)])
+                ws_marks.write_formula(row_idx, col_idx, f'=SUM({q_total_cells})', fmt_locked)
+                ws_marks.write(row_idx, col_idx+1, "", fmt_edit) 
+                
+                cell_tot = xl_rowcol_to_cell(row_idx, col_idx)
+                cell_mod = xl_rowcol_to_cell(row_idx, col_idx+1)
+                ws_marks.write_formula(row_idx, col_idx+2, f'=IF(ISBLANK({cell_mod}), "", {cell_mod}-{cell_tot})', fmt_locked)
+                ws_marks.write_formula(row_idx, col_idx+3, f'=IF(ISBLANK({cell_mod}), {cell_tot}, {cell_mod})', fmt_locked)
+
+            row_idx += 1
             
-        ws.set_column('B:B', 15)
+        ws_marks.set_column('A:B', 15)
+        ws_marks.set_column('C:AP', 5)
+        ws_marks.set_column('AQ:AT', 14)
+        
+        # ==========================================
+        # SHEET 2: PRINT
+        # ==========================================
+        ws_print.protect('admin123')
+        ws_print.merge_range('A1:E1', 'AMC Engineering College', fmt_title)
+        ws_print.merge_range('A2:E2', 'Semester End Examination', fmt_sub)
+        ws_print.merge_range('A3:E3', f'Course Code: {course_code}', fmt_sub)
+        
+        headers_print = ['Sl. No.', 'USN', 'Answer Booklet Code', 'SEE Marks in Figures (100)', 'SEE Marks in Words']
+        for c, h in enumerate(headers_print):
+            ws_print.write(4, c, h, fmt_head)
+            
+        row_idx = 5
+        for idx, s in df.iterrows():
+            ws_print.write(row_idx, 0, idx+1, fmt_locked)
+            ws_print.write(row_idx, 1, s['USN'], fmt_locked)
+            ws_print.write(row_idx, 2, s['Dummy_ID'], fmt_locked)
+            
+            if s['Status'] != "PRESENT":
+                ws_print.write(row_idx, 3, s['Status'], fmt_abs)
+                ws_print.write(row_idx, 4, "-", fmt_locked)
+            else:
+                # Link cell directly to the Final Marks formula on Sheet 1
+                final_marks_cell = xl_rowcol_to_cell(9 + idx, col_idx+3)
+                ws_print.write_formula(row_idx, 3, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
+                ws_print.write(row_idx, 4, "", fmt_edit) # Words writable by user
+                
+            row_idx += 1
+            
+        ws_print.set_column('B:C', 18)
+        ws_print.set_column('D:E', 25)
+
     return out.getvalue()
 
 def gen_marks_bundles(df):
@@ -402,7 +506,7 @@ def gen_marks_bundles(df):
                         'Subject': cc, 'Dummy_ID': s['Dummy_ID'], 'Status': s['Status']
                     })
                 
-                excel_bytes = create_locked_bundle(chunk, cc, room, i+1, n_chunks)
+                excel_bytes = create_locked_bundle(chunk, cc, room, i+1, n_chunks, active_cycle_name)
                 zf.writestr(f"Bundles/{b_id}.xlsx", excel_bytes)
                 
         kdf = pd.DataFrame(key_log)
@@ -517,7 +621,7 @@ if "alloc_df" in st.session_state and not st.session_state.alloc_df.empty:
         
     st.markdown("---")
     st.subheader("🔐 3. Post-Exam Processing")
-    st.info("Generates secure Excel bundles (Max 20 per bundle, Room & Subject-wise). Absentees are locked.")
+    st.info("Generates secure Excel bundles matching the VTU Layout. Max 20 per bundle. Absentees are dynamically locked out.")
     
     if st.button("📦 Generate Locked Marks Bundles (.zip)", type="primary"):
         with st.spinner("Encrypting bundles and generating Secret Key..."):
