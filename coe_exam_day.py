@@ -7,7 +7,6 @@ import zipfile
 import string
 import random
 from itertools import zip_longest
-from utils import init_db
 from PIL import Image as PILImage
 
 # --- PDF LIBRARIES ---
@@ -22,27 +21,11 @@ from reportlab.lib.utils import ImageReader
 # --- EXCEL UTILS ---
 from xlsxwriter.utility import xl_rowcol_to_cell
 
-# ==========================================
-# 1. SETUP & CONFIGURATION
-# ==========================================
-LOGO_FILENAME = "College_logo.png"
-NAAC_FILENAME = "NAAC_A_Logo.jpg"
-supabase = init_db()
+st.set_page_config(page_title="Exam Day Sandbox", layout="wide", page_icon="🛠️")
 
-# --- GLOBAL CONTEXT ---
-selected_cycle_id = st.session_state.get('active_cycle_id')
-active_cycle_name = st.session_state.get('active_cycle_name', 'Unknown Cycle')
-
-@st.cache_data
-def load_pdf_assets():
-    """Fetches logos once to prevent slowing down PDF generation"""
-    assets = {}
-    for k, f in [("logo", LOGO_FILENAME), ("naac", NAAC_FILENAME)]:
-        try:
-            res = supabase.storage.from_("College_Logos").download(f)
-            if res: assets[k] = res
-        except: pass
-    return assets
+# ==========================================
+# 1. CORE UTILITIES & SANDBOX MOCKS
+# ==========================================
 
 def resize_image_for_excel(img_bytes, target_height=50):
     """Physically resizes the image to a fixed height before giving it to Excel."""
@@ -78,61 +61,27 @@ def generate_dummy_ids(count):
 def clean_str(val):
     return str(val).strip().upper() if pd.notna(val) else ""
 
-# ==========================================
-# 2. DATA FETCHING
-# ==========================================
+def generate_mock_students():
+    """Generates fake students across different branches for testing."""
+    branches = [('MBA', '25MBA101', 'Management and Organizational Behaviour'), 
+                ('SCS', '25MCS101', 'Artificial Intelligence'),
+                ('LVS', '25MEC101', 'Advanced Machine Learning')]
+    data = []
+    for b, code, title in branches:
+        num = random.randint(30, 50)
+        for i in range(1, num + 1):
+            data.append({'USN': f'1AM25{b}{str(i).zfill(3)}', 'Student Name': f'Test Student {b}{i}', 'Branch': b, 'Subject Code': code, 'Subject Name': title})
+    return pd.DataFrame(data)
 
-def fetch_exam_sessions(cycle_id):
-    if not cycle_id: return []
-    res = supabase.table("exam_timetable").select("exam_date, session").eq("cycle_id", cycle_id).execute()
-    df = pd.DataFrame(res.data)
-    if df.empty: return []
-    df['label'] = df['exam_date'] + " | " + df['session']
-    return df.sort_values('exam_date')['label'].unique().tolist()
-
-def fetch_exam_data(cycle_id, date_str, session_str):
-    tt_res = supabase.table("exam_timetable").select("course_code").eq("cycle_id", cycle_id).eq("exam_date", date_str).eq("session", session_str).execute()
-    course_codes = [r['course_code'] for r in tt_res.data]
-    if not course_codes: return pd.DataFrame()
-    
-    start = 0; limit = 1000; all_regs = []
-    while True:
-        res = supabase.table("course_registrations").select("usn, course_code").eq("cycle_id", cycle_id).in_("course_code", course_codes).range(start, start + limit - 1).execute()
-        if not res.data: break
-        all_regs.extend(res.data)
-        if len(res.data) < limit: break
-        start += limit
-        
-    if not all_regs: return pd.DataFrame()
-    df_regs = pd.DataFrame(all_regs)
-    
-    usns = df_regs['usn'].unique().tolist()
-    start = 0; all_stus = []
-    while True:
-        res = supabase.table("master_students").select("usn, full_name, branch_code").in_("usn", usns).range(start, start + limit - 1).execute()
-        if not res.data: break
-        all_stus.extend(res.data)
-        if len(res.data) < limit: break
-        start += limit
-        
-    df_stus = pd.DataFrame(all_stus)
-    df_stus['Branch'] = df_stus['branch_code']
-    
-    df_merged = pd.merge(df_regs, df_stus, on='usn', how='left')
-    df_merged.rename(columns={'usn': 'USN', 'full_name': 'Student Name', 'course_code': 'Subject Code'}, inplace=True)
-    
-    courses_res = supabase.table("master_courses").select("course_code, title").in_("course_code", course_codes).execute()
-    course_dict = {r['course_code']: r['title'] for r in courses_res.data}
-    df_merged['Subject Name'] = df_merged['Subject Code'].map(lambda x: course_dict.get(x, x))
-    
-    return df_merged
-
-def fetch_rooms():
-    res = supabase.table("master_rooms").select("*").order("priority_order").execute()
-    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+def generate_mock_rooms():
+    """Generates a default list of rooms that the user can edit."""
+    data = []
+    for i in range(1, 16):
+        data.append({'Select': False, 'block_name': 'Main Block', 'room_no': f'MB-{200+i}', 'capacity': 40})
+    return pd.DataFrame(data)
 
 # ==========================================
-# 3. ALLOCATION ENGINE (Anti-Fragmentation)
+# 2. ALLOCATION ENGINE (Anti-Fragmentation)
 # ==========================================
 
 def run_allocation(df_students, df_rooms):
@@ -197,7 +146,7 @@ def run_allocation(df_students, df_rooms):
     return pd.DataFrame(allotment_rows)
 
 # ==========================================
-# 4. DOCUMENT GENERATORS
+# 3. DOCUMENT GENERATORS
 # ==========================================
 
 def get_header_drawer(assets):
@@ -332,44 +281,89 @@ def gen_form_b(df, date, session, assets):
     doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
     return buf.getvalue()
 
-def gen_form_a(df, date, session, assets):
-    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=95)
-    elements = []; styles = getSampleStyleSheet()
+def gen_form_a(df, date, session, assets, cycle_name):
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=90, leftMargin=35, rightMargin=35, bottomMargin=30)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    title_style = ParagraphStyle('Title', parent=styles['Heading3'], alignment=TA_CENTER, fontName='Helvetica-Bold', fontSize=12)
+    sub_title_style = ParagraphStyle('SubTitle', parent=styles['Normal'], alignment=TA_CENTER, fontName='Helvetica-Bold', fontSize=10)
+    meta_style = ParagraphStyle('Meta', parent=styles['Normal'], fontSize=10, leading=14)
+    th_style = ParagraphStyle('th', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10)
+    td_style_l = ParagraphStyle('td_l', parent=styles['Normal'], fontSize=9, leading=14, alignment=TA_LEFT)
+    td_style_c = ParagraphStyle('td_c', parent=styles['Normal'], fontSize=10, alignment=TA_CENTER, fontName='Helvetica-Bold')
     
     for (branch, code), group in df.groupby(['Branch', 'Subject Code']):
-        elements.append(Paragraph(f"<b>FORM A - ABSENTEES & BUNDLE DISPATCH</b>", styles['Heading2']))
-        elements.append(Paragraph(f"Branch/Dept: {branch} | Date: {date} | Session: {session} | Course: {code}", styles['Normal']))
+        course_name = group['Subject Name'].iloc[0] if 'Subject Name' in group.columns else code
+        
+        elements.append(Spacer(1, 5))
+        elements.append(Paragraph("FORM - A", title_style))
+        elements.append(Paragraph("CONSOLIDATED ATTENDANCE REPORT FOR PACKING OF ANSWER SCRIPTS  (In Duplicate)", sub_title_style))
         elements.append(Spacer(1, 15))
         
-        total = len(group)
-        absentees = group[group['Status'] == 'ABSENT']['USN'].tolist()
-        malpractice = group[group['Status'] == 'MALPRACTICE']['USN'].tolist()
-        present = total - len(absentees) - len(malpractice)
+        # Program & Exam Header
+        elements.append(Paragraph(f"<b>Semester End Examination - {cycle_name}</b>", sub_title_style))
+        elements.append(Spacer(1, 10))
         
-        sorted_usns = sorted(group['USN'].tolist())
-        usn_range = f"{sorted_usns[0]} TO {sorted_usns[-1]}" if sorted_usns else "NIL"
-        
-        sum_data = [
-            ["Total Allotted", str(total)],
-            ["Total Present", str(present)],
-            ["Total Absent", str(len(absentees))],
-            ["Absentee USNs", ", ".join(absentees) if absentees else "NIL"],
-            ["Malpractice USNs", ", ".join(malpractice) if malpractice else "NIL"],
-            ["Bundle Range (USNs)", usn_range]
+        # Metadata Grid
+        m_data = [
+            [Paragraph(f"<b>Branch / Program:</b>", meta_style), Paragraph(f"{branch}", meta_style), "", ""],
+            [Paragraph(f"<b>Course Title:</b>", meta_style), Paragraph(f"{course_name}", meta_style), Paragraph(f"<b>Course Code:</b>", meta_style), Paragraph(f"{code}", meta_style)],
+            [Paragraph(f"<b>Date:</b>", meta_style), Paragraph(f"{date}", meta_style), Paragraph(f"<b>Time:</b>", meta_style), Paragraph(f"{session}", meta_style)]
         ]
         
-        t = Table(sum_data, colWidths=[2*inch, 4.5*inch])
-        t.setStyle(TableStyle([
-            ('GRID', (0,0), (-1,-1), 0.5, colors.black), 
-            ('BACKGROUND', (0,0), (0,-1), colors.lightgrey),
-            ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE')
+        m_table = Table(m_data, colWidths=[1.5*inch, 3.2*inch, 1.2*inch, 1.5*inch])
+        m_table.setStyle(TableStyle([
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 6)
         ]))
-        elements.append(t); elements.append(Spacer(1, 40))
+        elements.append(m_table)
+        elements.append(Spacer(1, 15))
         
-        c_sig = Table([["Chief Superintendent / Dept Coordinator", "Signature of COE"]], colWidths=[3.25*inch, 3.25*inch])
-        c_sig.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
-        elements.append(c_sig)
+        # Data categorization
+        present_usns = group[group['Status'] == 'PRESENT']['USN'].sort_values().tolist()
+        absent_usns = group[group['Status'] == 'ABSENT']['USN'].sort_values().tolist()
+        malpractice_usns = group[group['Status'] == 'MALPRACTICE']['USN'].sort_values().tolist()
+        
+        def format_usn_list(usn_list):
+            return ", ".join(usn_list) if usn_list else "Nil"
+            
+        t_data = [
+            [Paragraph("<b>SEAT NUMBERS OF CANDIDATES PRESENT</b>", th_style), Paragraph("<b>COUNT</b>", th_style)],
+            [Paragraph(format_usn_list(present_usns), td_style_l), Paragraph(str(len(present_usns)), td_style_c)],
+            [Paragraph("<b>SEAT NUMBERS OF CANDIDATES ABSENT</b>", th_style), Paragraph("<b>COUNT</b>", th_style)],
+            [Paragraph(format_usn_list(absent_usns), td_style_l), Paragraph(str(len(absent_usns)), td_style_c)],
+            [Paragraph("<b>SEAT NUMBERS OF CANDIDATES BOOKED UNDER MALPRACTICE</b>", th_style), Paragraph("<b>COUNT</b>", th_style)],
+            [Paragraph(format_usn_list(malpractice_usns), td_style_l), Paragraph(str(len(malpractice_usns)), td_style_c)]
+        ]
+        
+        t = Table(t_data, colWidths=[6.2*inch, 1.0*inch])
+        t.setStyle(TableStyle([
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('BACKGROUND', (0,2), (-1,2), colors.lightgrey),
+            ('BACKGROUND', (0,4), (-1,4), colors.lightgrey),
+            ('TOPPADDING', (0,0), (-1,-1), 6),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+        ]))
+        elements.append(t)
+        elements.append(Spacer(1, 30))
+        
+        elements.append(Paragraph("<b>Signatures with date:</b>", meta_style))
+        elements.append(Spacer(1, 30))
+        
+        sig_data = [
+            ["Deputy Chief Superintendent", "Chief Superintendent"]
+        ]
+        sig_table = Table(sig_data, colWidths=[3.6*inch, 3.6*inch])
+        sig_table.setStyle(TableStyle([
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold')
+        ]))
+        elements.append(sig_table)
         elements.append(PageBreak())
         
     doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
@@ -424,7 +418,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         fmt_footer = wb.add_format({'bold': True, 'font_size': 11, 'valign': 'vcenter'})
         
         # ==========================================
-        # SHEET 1: MARKS ENTRY
+        # SHEET 1: MARKS ENTRY (USN Masked!)
         # ==========================================
         ws_marks.protect('admin123')
         ws_marks.merge_range('A1:AT1', 'AMC Engineering College', fmt_title)
@@ -456,7 +450,8 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
             ws_marks.write(row_idx, 1, s['Dummy_ID'], fmt_locked) 
             
             if s['Status'] != "PRESENT":
-                for c in range(2, col_idx+3): ws_marks.write(row_idx, c, "", fmt_locked_gray)
+                for c in range(2, col_idx+3):
+                    ws_marks.write(row_idx, c, "", fmt_locked_gray)
                 ws_marks.write(row_idx, col_idx+3, s['Status'], fmt_abs)
             else:
                 c = 2
@@ -484,8 +479,12 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                 
                 ws_marks.write_formula(row_idx, col_idx, formula_see, fmt_locked)
                 ws_marks.write(row_idx, col_idx+1, "", fmt_edit) 
-                ws_marks.write_formula(row_idx, col_idx+2, f'=IF(AR{r}>0,AQ{r}-AR{r},"")', fmt_locked)
-                ws_marks.write_formula(row_idx, col_idx+3, f"=MAX(AQ{r},AR{r})", fmt_locked)
+                
+                formula_diff = f'=IF(AR{r}>0,AQ{r}-AR{r},"")'
+                ws_marks.write_formula(row_idx, col_idx+2, formula_diff, fmt_locked)
+                
+                formula_final = f"=MAX(AQ{r},AR{r})"
+                ws_marks.write_formula(row_idx, col_idx+3, formula_final, fmt_locked)
 
             row_idx += 1
             
@@ -495,7 +494,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_marks.set_column('AQ:AT', 14)
         
         # ==========================================
-        # SHEET 2: PRINT (Fixing Blank Formula Issue)
+        # SHEET 2: PRINT
         # ==========================================
         ws_print.protect('admin123')
         ws_print.set_row(0, 45) 
@@ -505,9 +504,12 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_print.merge_range('A3:D3', f'Course Code: {course_code} | Course Title: {course_name}', fmt_sub)
         
         if "logo" in assets:
-            ws_print.insert_image('A1', 'logo.png', {'image_data': resize_image_for_excel(assets["logo"]), 'x_offset': 10, 'y_offset': 5})
+            resized_logo = resize_image_for_excel(assets["logo"], target_height=50)
+            ws_print.insert_image('A1', 'logo.png', {'image_data': resized_logo, 'x_offset': 10, 'y_offset': 5})
+            
         if "naac" in assets:
-            ws_print.insert_image('D1', 'naac.png', {'image_data': resize_image_for_excel(assets["naac"]), 'x_offset': 180, 'y_offset': 5})
+            resized_naac = resize_image_for_excel(assets["naac"], target_height=50)
+            ws_print.insert_image('D1', 'naac.png', {'image_data': resized_naac, 'x_offset': 180, 'y_offset': 5})
 
         headers_print = ['Sl. No.', 'Answer Booklet Code', 'SEE Marks in Figures (100)', 'SEE Marks in Words']
         for c, h in enumerate(headers_print):
@@ -525,10 +527,8 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                 final_marks_cell = xl_rowcol_to_cell(9 + idx, col_idx+3) 
                 ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
                 
-                # FIXED: Wrapped in IF(ISBLANK) so MBA doesn't show errors when blank!
                 c_cell = xl_rowcol_to_cell(row_idx, 2) 
                 words_formula = f'=IF({c_cell}="","",TEXTJOIN(" ", TRUE, SWITCH(MID({c_cell}, SEQUENCE(LEN({c_cell})), 1), "0","Zero", "1","One", "2","Two", "3","Three", "4","Four", "5","Five", "6","Six", "7","Seven", "8","Eight", "9","Nine", "")))'
-                
                 ws_print.write_formula(row_idx, 3, words_formula, fmt_locked)
                 
             row_idx += 1
@@ -544,7 +544,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
 
     return out.getvalue()
 
-def gen_marks_bundles(df, assets):
+def gen_marks_bundles(df, assets, cycle_name):
     global USED_PREFIXES
     USED_PREFIXES.clear() # Reset prefixes per zip generation
     
@@ -569,7 +569,7 @@ def gen_marks_bundles(df, assets):
                         'Subject': cc, 'Dummy_ID': s['Dummy_ID'], 'Status': s['Status']
                     })
                 
-                excel_bytes = create_locked_bundle(chunk, cc, course_name, room, i+1, n_chunks, active_cycle_name, assets)
+                excel_bytes = create_locked_bundle(chunk, cc, course_name, room, i+1, n_chunks, cycle_name, assets)
                 zf.writestr(f"Bundles/{b_id}.xlsx", excel_bytes)
                 
         kdf = pd.DataFrame(key_log)
@@ -580,115 +580,152 @@ def gen_marks_bundles(df, assets):
     return zip_buf.getvalue()
 
 # ==========================================
-# 5. UI FLOW
+# 4. SANDBOX UI 
 # ==========================================
 
-if not selected_cycle_id:
-    st.warning("⚠️ Please select an Active Exam Cycle in the Sidebar to proceed.")
-    st.stop()
+st.title("🛠️ Exam Day Operations [OFFLINE SANDBOX]")
+st.warning("You are running in Sandbox Mode. This connects to NO database.")
 
-pdf_assets = load_pdf_assets()
-
-st.title("🚀 Exam Day Operations")
-
-sessions = fetch_exam_sessions(selected_cycle_id)
-if not sessions:
-    st.error("No timetable records found for this cycle.")
-    st.stop()
-
-def clear_allocation():
-    if "alloc_df" in st.session_state: del st.session_state["alloc_df"]
-
-selected_slot = st.selectbox("📅 Select Date & Session", sessions, on_change=clear_allocation)
-
-date_str, sess_str = selected_slot.split(" | ")
-df_stus = fetch_exam_data(selected_cycle_id, date_str, sess_str)
-df_rooms_master = fetch_rooms()
-
-if df_stus.empty:
-    st.error("No students registered for this session.")
-elif df_rooms_master.empty:
-    st.error("No rooms defined in Infrastructure master.")
-else:
-    total_students = len(df_stus)
-    st.info(f"👨‍🎓 **Total Students to Allocate:** {total_students}")
-
-    st.markdown("---")
-    st.subheader("🏢 Select Exam Blocks & Rooms")
+# Sidebar Configuration
+with st.sidebar:
+    st.header("⚙️ Sandbox Configuration")
+    sim_cycle = st.text_input("Simulated Cycle Name", "Sandbox Examinations 2026")
     
-    with st.form("room_selector_form"):
-        df_rooms_master.insert(0, 'Select', False) 
-        display_cols = ['Select', 'block_name', 'room_no', 'capacity', 'bench_type']
-        
-        edited_rooms = st.data_editor(
-            df_rooms_master[display_cols],
-            column_config={
-                "Select": st.column_config.CheckboxColumn("Use Room", default=False),
-                "block_name": st.column_config.TextColumn("Block Name", disabled=True),
-                "room_no": st.column_config.TextColumn("Room No.", disabled=True),
-                "capacity": st.column_config.NumberColumn("Capacity", disabled=True)
-            },
-            hide_index=True, use_container_width=True
-        )
+    st.markdown("---")
+    st.subheader("🖼️ Upload Logos (Optional)")
+    logo_file = st.file_uploader("Upload College Logo (Left)", type=['png', 'jpg', 'jpeg'])
+    naac_file = st.file_uploader("Upload NAAC Logo (Right)", type=['png', 'jpg', 'jpeg'])
+    
+    assets = {}
+    if logo_file: assets['logo'] = logo_file.read()
+    if naac_file: assets['naac'] = naac_file.read()
 
-        selected_rooms_df = edited_rooms[edited_rooms['Select'] == True]
-        selected_capacity = selected_rooms_df['capacity'].sum()
+# State Management for Data
+if "sim_data" not in st.session_state:
+    st.session_state.sim_data = None
+if "sim_rooms" not in st.session_state:
+    st.session_state.sim_rooms = generate_mock_rooms()
+
+col1, col2 = st.columns(2)
+with col1:
+    st.subheader("1. Load Student Data")
+    data_source = st.radio("Data Source", ["Use Mock Data", "Single Custom CSV", "Advanced Multi-File Merge (PE/OE Test)"])
+    
+    if data_source == "Use Mock Data":
+        sim_date = st.date_input("Simulated Date", datetime.date.today()).strftime("%Y-%m-%d")
+        sim_session = st.selectbox("Simulated Session", ["Morning", "Afternoon"])
+        if st.button("🎲 Generate Mock Student List"):
+            st.session_state.sim_data = generate_mock_students()
+            st.success(f"Generated {len(st.session_state.sim_data)} mock students.")
+            
+    elif data_source == "Single Custom CSV":
+        sim_date = st.date_input("Simulated Date", datetime.date.today()).strftime("%Y-%m-%d")
+        sim_session = st.selectbox("Simulated Session", ["Morning", "Afternoon"])
+        st.info("CSV must contain: USN, Student Name, Branch, Subject Code, Subject Name")
+        f_csv = st.file_uploader("Upload CSV", type='csv')
+        if f_csv:
+            st.session_state.sim_data = pd.read_csv(f_csv)
+            st.success(f"Loaded {len(st.session_state.sim_data)} students from CSV.")
+            
+    elif data_source == "Advanced Multi-File Merge (PE/OE Test)":
+        st.info("Upload your individual database extracts here. The system will merge them into a live session.")
+        f_stu = st.file_uploader("1. Master Students (USN, Student Name, Branch)", type='csv')
+        f_pe = st.file_uploader("2. Professional Electives (USN, Course Code)", type='csv')
+        f_oe = st.file_uploader("3. Open Electives (USN, Course Code)", type='csv')
+        f_tt = st.file_uploader("4. Timetable (Date, Session, Course Code, Course Title)", type='csv')
         
-        st.write(f"**Selected Capacity:** {selected_capacity} / {total_students} needed.")
-        
-        submitted_allocation = st.form_submit_button("⚙️ Run Allocation Algorithm", type="primary")
-        
-        if submitted_allocation:
-            if selected_capacity < total_students:
-                st.error("⚠️ Not enough capacity! Please select more rooms.")
-            else:
-                with st.spinner("Assigning seats..."):
-                    df_alloc = run_allocation(df_stus, selected_rooms_df)
-                    df_alloc['Status'] = "PRESENT" 
-                    st.session_state.alloc_df = df_alloc
-                    st.success(f"✅ Allocated {len(df_alloc)} students successfully!")
-                    st.rerun()
+        if f_stu and f_tt and (f_pe or f_oe):
+            df_stu = pd.read_csv(f_stu)
+            df_tt = pd.read_csv(f_tt)
+            
+            df_regs_list = []
+            if f_pe: df_regs_list.append(pd.read_csv(f_pe))
+            if f_oe: df_regs_list.append(pd.read_csv(f_oe))
+            df_all_regs = pd.concat(df_regs_list, ignore_index=True)
+            
+            df_tt['Label'] = df_tt['Date'].astype(str) + " | " + df_tt['Session'].astype(str)
+            selected_tt_slot = st.selectbox("Select Session from Timetable:", df_tt['Label'].unique())
+            
+            if st.button("🔄 Merge & Generate Appearing List"):
+                active_codes = df_tt[df_tt['Label'] == selected_tt_slot]['Course Code'].unique()
+                active_regs = df_all_regs[df_all_regs['Course Code'].isin(active_codes)]
+                merged_df = pd.merge(active_regs, df_stu, on='USN', how='inner')
+                final_df = pd.merge(merged_df, df_tt[['Course Code', 'Course Title']].drop_duplicates(), on='Course Code', how='left')
+                final_df.rename(columns={'Course Code': 'Subject Code', 'Course Title': 'Subject Name'}, inplace=True)
+                
+                # Split slot text to use outside button state dynamically
+                sim_date_split, sim_session_split = selected_tt_slot.split(" | ")
+                st.session_state['sim_date'] = sim_date_split
+                st.session_state['sim_session'] = sim_session_split
+                
+                st.session_state.sim_data = final_df
+                st.success(f"Merged successfully! {len(final_df)} students found for this session.")
+
+if st.session_state.sim_data is not None:
+    df_stus = st.session_state.sim_data
+    total_students = len(df_stus)
+    
+    with col2:
+        st.subheader("2. Configure Rooms")
+        with st.form("room_selector_form"):
+            display_cols = ['Select', 'block_name', 'room_no', 'capacity']
+            edited_rooms = st.data_editor(st.session_state.sim_rooms[display_cols], hide_index=True, use_container_width=True)
+            
+            selected_rooms_df = edited_rooms[edited_rooms['Select'] == True]
+            selected_capacity = selected_rooms_df['capacity'].sum()
+            
+            st.write(f"**Selected Capacity:** {selected_capacity} / {total_students} needed.")
+            submitted_allocation = st.form_submit_button("⚙️ Run Allocation Algorithm", type="primary")
+            
+            if submitted_allocation:
+                if selected_capacity < total_students:
+                    st.error("⚠️ Not enough capacity!")
+                else:
+                    with st.spinner("Assigning seats..."):
+                        df_alloc = run_allocation(df_stus, selected_rooms_df)
+                        df_alloc['Status'] = "PRESENT" 
+                        st.session_state.alloc_df = df_alloc
+                        st.success("✅ Allocation Complete!")
+                        st.rerun()
 
 if "alloc_df" in st.session_state and not st.session_state.alloc_df.empty:
     df_a = st.session_state.alloc_df
     
-    st.markdown("---")
-    st.subheader("📝 1. Mark Absentees / Malpractice")
-    st.write("Enter USNs separated by commas or new lines. This updates Form A and locks them out of evaluation bundles.")
+    try: 
+        final_date = st.session_state.get('sim_date', sim_date)
+        final_session = st.session_state.get('sim_session', sim_session)
+    except:
+        final_date = "N/A"
+        final_session = "N/A"
     
+    st.markdown("---")
+    st.subheader("3. Mark Absentees / Malpractice")
     with st.form("absentee_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            abs_text = st.text_area("Absentee USNs", placeholder="e.g. 1AM25CS001, 1AM25CS002\n1AM25CS003", height=100)
-        with col2:
-            mal_text = st.text_area("Malpractice USNs", placeholder="e.g. 1AM25ME045", height=100)
+        c_abs, c_mal = st.columns(2)
+        with c_abs: abs_text = st.text_area("Absentee USNs", placeholder="e.g. 1AM25CS001", height=100)
+        with c_mal: mal_text = st.text_area("Malpractice USNs", placeholder="e.g. 1AM25ME045", height=100)
             
-        if st.form_submit_button("💾 Apply Status Updates", type="secondary"):
-            absent_list = [x.strip().upper() for x in abs_text.replace('\n', ',').split(',') if x.strip()]
+        if st.form_submit_button("💾 Apply Status Updates"):
+            abs_list = [x.strip().upper() for x in abs_text.replace('\n', ',').split(',') if x.strip()]
             mal_list = [x.strip().upper() for x in mal_text.replace('\n', ',').split(',') if x.strip()]
-            
             df_a['Status'] = "PRESENT"
-            df_a.loc[df_a['USN'].isin(absent_list), 'Status'] = "ABSENT"
+            df_a.loc[df_a['USN'].isin(abs_list), 'Status'] = "ABSENT"
             df_a.loc[df_a['USN'].isin(mal_list), 'Status'] = "MALPRACTICE"
-            
             st.session_state.alloc_df = df_a
-            st.success(f"Updated! {len(absent_list)} Absentees, {len(mal_list)} Malpractice.")
+            st.success("Updated!")
     
     st.markdown("---")
-    st.subheader("🖨️ 2. Download Exam Documents")
-    
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1: st.download_button("📌 Room Posters", gen_posters(df_a, date_str, sess_str, pdf_assets), f"Posters_{date_str}.pdf")
-    with c2: st.download_button("📝 Form B", gen_form_b(df_a, date_str, sess_str, pdf_assets), f"FormB_{date_str}.pdf")
-    with c3: st.download_button("📦 Form A", gen_form_a(df_a, date_str, sess_str, pdf_assets), f"FormA_{date_str}.pdf")
-    with c4: st.download_button("📋 QPDS", gen_qpds(df_a, date_str, sess_str, pdf_assets), f"QPDS_{date_str}.pdf")
-    with c5: st.download_button("📊 Appearing List", gen_smart_excel(df_a, date_str, sess_str), f"Appearing_{date_str}.xlsx")
+    st.subheader("4. Download Exam Documents")
+    d1, d2, d3, d4, d5 = st.columns(5)
+    with d1: st.download_button("📌 Posters", gen_posters(df_a, final_date, final_session, assets), f"Posters.pdf")
+    with d2: st.download_button("📝 Form B", gen_form_b(df_a, final_date, final_session, assets), f"FormB.pdf")
+    with d3: st.download_button("📦 Form A", gen_form_a(df_a, final_date, final_session, assets, sim_cycle), f"FormA.pdf")
+    with d4: st.download_button("📋 QPDS", gen_qpds(df_a, final_date, final_session, assets), f"QPDS.pdf")
+    with d5: st.download_button("📊 Appearing List", gen_smart_excel(df_a, final_date, final_session), f"Appearing.xlsx")
         
     st.markdown("---")
-    st.subheader("🔐 3. Post-Exam Processing")
-    st.info("Generates secure Evaluation Excel bundles. Maximum 20 papers per bundle. Absentees are dynamically locked. USNs are completely masked from Evaluators.")
-    
+    st.subheader("5. Post-Exam Processing")
     if st.button("📦 Generate Locked Marks Bundles (.zip)", type="primary"):
-        with st.spinner("Encrypting bundles and generating Secret Key..."):
-            zip_bytes = gen_marks_bundles(df_a, pdf_assets)
-            st.download_button("📥 Click to Download ZIP", zip_bytes, f"Evaluation_Bundles_{date_str}.zip", "application/zip")
+        with st.spinner("Encrypting..."):
+            zip_bytes = gen_marks_bundles(df_a, assets, sim_cycle)
+            st.download_button("📥 Click to Download ZIP", zip_bytes, f"Sandbox_Bundles.zip", "application/zip")
