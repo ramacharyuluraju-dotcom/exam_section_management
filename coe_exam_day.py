@@ -51,7 +51,6 @@ def resize_image_for_excel(img_bytes, target_height=50):
             w_percent = (target_height / float(img.size[1]))
             target_width = int(float(img.size[0]) * float(w_percent))
             
-            # Resize and convert to RGBA to ensure PNG compatibility
             resized_img = img.resize((target_width, target_height), PILImage.LANCZOS)
             if resized_img.mode != 'RGBA':
                 resized_img = resized_img.convert('RGBA')
@@ -63,9 +62,17 @@ def resize_image_for_excel(img_bytes, target_height=50):
     except Exception as e:
         return io.BytesIO(img_bytes)
 
+# Keep track of used prefixes so we NEVER get a duplicate
+USED_PREFIXES = set()
+
 def generate_dummy_ids(count):
-    """Generates a sequential series of IDs per bundle (e.g., AB1 to AB20)."""
-    prefix = "".join(random.choices(string.ascii_uppercase, k=2))
+    """Generates a sequential series of IDs per bundle with a guaranteed unique prefix."""
+    global USED_PREFIXES
+    while True:
+        prefix = "".join(random.choices(string.ascii_uppercase, k=2))
+        if prefix not in USED_PREFIXES:
+            USED_PREFIXES.add(prefix)
+            break
     return [f"{prefix}{i+1}" for i in range(count)]
 
 def clean_str(val):
@@ -449,8 +456,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
             ws_marks.write(row_idx, 1, s['Dummy_ID'], fmt_locked) 
             
             if s['Status'] != "PRESENT":
-                for c in range(2, col_idx+3):
-                    ws_marks.write(row_idx, c, "", fmt_locked_gray)
+                for c in range(2, col_idx+3): ws_marks.write(row_idx, c, "", fmt_locked_gray)
                 ws_marks.write(row_idx, col_idx+3, s['Status'], fmt_abs)
             else:
                 c = 2
@@ -478,12 +484,8 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                 
                 ws_marks.write_formula(row_idx, col_idx, formula_see, fmt_locked)
                 ws_marks.write(row_idx, col_idx+1, "", fmt_edit) 
-                
-                formula_diff = f'=IF(AR{r}>0,AQ{r}-AR{r},"")'
-                ws_marks.write_formula(row_idx, col_idx+2, formula_diff, fmt_locked)
-                
-                formula_final = f"=MAX(AQ{r},AR{r})"
-                ws_marks.write_formula(row_idx, col_idx+3, formula_final, fmt_locked)
+                ws_marks.write_formula(row_idx, col_idx+2, f'=IF(AR{r}>0,AQ{r}-AR{r},"")', fmt_locked)
+                ws_marks.write_formula(row_idx, col_idx+3, f"=MAX(AQ{r},AR{r})", fmt_locked)
 
             row_idx += 1
             
@@ -493,7 +495,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_marks.set_column('AQ:AT', 14)
         
         # ==========================================
-        # SHEET 2: PRINT (Automated Number to Words)
+        # SHEET 2: PRINT (Fixing Blank Formula Issue)
         # ==========================================
         ws_print.protect('admin123')
         ws_print.set_row(0, 45) 
@@ -503,12 +505,9 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_print.merge_range('A3:D3', f'Course Code: {course_code} | Course Title: {course_name}', fmt_sub)
         
         if "logo" in assets:
-            resized_logo = resize_image_for_excel(assets["logo"], target_height=50)
-            ws_print.insert_image('A1', 'logo.png', {'image_data': resized_logo, 'x_offset': 10, 'y_offset': 5})
-            
+            ws_print.insert_image('A1', 'logo.png', {'image_data': resize_image_for_excel(assets["logo"]), 'x_offset': 10, 'y_offset': 5})
         if "naac" in assets:
-            resized_naac = resize_image_for_excel(assets["naac"], target_height=50)
-            ws_print.insert_image('D1', 'naac.png', {'image_data': resized_naac, 'x_offset': 180, 'y_offset': 5})
+            ws_print.insert_image('D1', 'naac.png', {'image_data': resize_image_for_excel(assets["naac"]), 'x_offset': 180, 'y_offset': 5})
 
         headers_print = ['Sl. No.', 'Answer Booklet Code', 'SEE Marks in Figures (100)', 'SEE Marks in Words']
         for c, h in enumerate(headers_print):
@@ -523,15 +522,13 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                 ws_print.write(row_idx, 2, s['Status'], fmt_abs)
                 ws_print.write(row_idx, 3, "-", fmt_locked_gray)
             else:
-                # 1. Bring the Final Marks value over
                 final_marks_cell = xl_rowcol_to_cell(9 + idx, col_idx+3) 
                 ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
                 
-                # 2. Automate the "Words" column using the advanced TEXTJOIN / SEQUENCE logic!
+                # FIXED: Wrapped in IF(ISBLANK) so MBA doesn't show errors when blank!
                 c_cell = xl_rowcol_to_cell(row_idx, 2) 
-                words_formula = f'=TEXTJOIN(" ", TRUE, SWITCH(MID({c_cell}, SEQUENCE(LEN({c_cell})), 1), "0","Zero", "1","One", "2","Two", "3","Three", "4","Four", "5","Five", "6","Six", "7","Seven", "8","Eight", "9","Nine", ""))'
+                words_formula = f'=IF({c_cell}="","",TEXTJOIN(" ", TRUE, SWITCH(MID({c_cell}, SEQUENCE(LEN({c_cell})), 1), "0","Zero", "1","One", "2","Two", "3","Three", "4","Four", "5","Five", "6","Six", "7","Seven", "8","Eight", "9","Nine", "")))'
                 
-                # Formula is locked so Evaluators can't accidentally break the automation
                 ws_print.write_formula(row_idx, 3, words_formula, fmt_locked)
                 
             row_idx += 1
@@ -548,6 +545,9 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
     return out.getvalue()
 
 def gen_marks_bundles(df, assets):
+    global USED_PREFIXES
+    USED_PREFIXES.clear() # Reset prefixes per zip generation
+    
     zip_buf = io.BytesIO()
     key_log = []
     
