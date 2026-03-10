@@ -20,7 +20,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.utils import ImageReader
 
 # --- EXCEL UTILS ---
-from xlsxwriter.utility import xl_rowcol_to_cell
+from xlsxwriter.utility import xl_rowcol_to_cell, xl_col_to_name
 
 # ==========================================
 # 1. SETUP & CONFIGURATION
@@ -35,7 +35,7 @@ active_cycle_name = st.session_state.get('active_cycle_name', 'Unknown Cycle')
 
 @st.cache_data
 def load_pdf_assets():
-    """Fetches logos once from Supabase to prevent slowing down generation"""
+    """Fetches logos once to prevent slowing down PDF generation"""
     assets = {}
     for k, f in [("logo", LOGO_FILENAME), ("naac", NAAC_FILENAME)]:
         try:
@@ -62,7 +62,7 @@ def resize_image_for_excel(img_bytes, target_height=50):
     except Exception as e:
         return io.BytesIO(img_bytes)
 
-# Keep track of used prefixes so we NEVER get a duplicate bundle prefix
+# Keep track of used prefixes so we NEVER get a duplicate
 USED_PREFIXES = set()
 
 def generate_dummy_ids(count):
@@ -79,7 +79,7 @@ def clean_str(val):
     return str(val).strip().upper() if pd.notna(val) else ""
 
 # ==========================================
-# 2. LIVE DATABASE FETCHING
+# 2. DATA FETCHING
 # ==========================================
 
 def fetch_exam_sessions(cycle_id):
@@ -450,6 +450,7 @@ def gen_smart_excel(df, date, session):
 def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, total_bundles, cycle_name, assets):
     out = io.BytesIO()
     is_mba = 'MBA' in course_code.upper()
+    num_q = 8 if is_mba else 10 # 🟢 DYNAMIC QUESTION GENERATOR 🟢
     
     with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
         wb = writer.book
@@ -465,21 +466,29 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         fmt_abs = wb.add_format({'locked': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'bold': True})
         fmt_footer = wb.add_format({'bold': True, 'font_size': 11, 'valign': 'vcenter'})
         
+        # Determine Exact Column Bounds (Fixes the MBA shifting issue!)
+        end_col_idx = 2 + (num_q * 4) 
+        col_tot = xl_col_to_name(end_col_idx)
+        col_mod = xl_col_to_name(end_col_idx + 1)
+        col_diff = xl_col_to_name(end_col_idx + 2)
+        col_final = xl_col_to_name(end_col_idx + 3)
+        last_q_col = xl_col_to_name(end_col_idx - 1)
+
         # ==========================================
         # SHEET 1: MARKS ENTRY 
         # ==========================================
         ws_marks.protect('admin123')
-        ws_marks.merge_range('A1:AT1', 'AMC Engineering College', fmt_title)
-        ws_marks.merge_range('A2:AT2', 'AMC Campus Bannerghatta Road, Bengaluru', fmt_sub)
-        ws_marks.merge_range('A3:AT3', 'Autonomous Institution under VTU, Belagavi | NAAC A+ Accredited', fmt_sub)
-        ws_marks.merge_range('A5:AT5', f'Semester End Examination - {cycle_name} | CBCS Scheme', fmt_sub)
-        ws_marks.merge_range('A6:AT6', f'Evaluation & Marks Allotment | Course: {course_code} - {course_name} | Bundle {bundle_seq}/{total_bundles}', fmt_sub)
+        ws_marks.merge_range(f'A1:{col_final}1', 'AMC Engineering College', fmt_title)
+        ws_marks.merge_range(f'A2:{col_final}2', 'AMC Campus Bannerghatta Road, Bengaluru', fmt_sub)
+        ws_marks.merge_range(f'A3:{col_final}3', 'Autonomous Institution under VTU, Belagavi | NAAC A+ Accredited', fmt_sub)
+        ws_marks.merge_range(f'A5:{col_final}5', f'Semester End Examination - {cycle_name} | CBCS Scheme', fmt_sub)
+        ws_marks.merge_range(f'A6:{col_final}6', f'Evaluation & Marks Allotment | Course: {course_code} - {course_name} | Bundle {bundle_seq}/{total_bundles}', fmt_sub)
         
         ws_marks.merge_range('A8:A9', 'Sl. No.', fmt_head)
         ws_marks.merge_range('B8:B9', 'Coding No.', fmt_head)
         
         col_idx = 2
-        for q in range(1, 11):
+        for q in range(1, num_q + 1):
             ws_marks.merge_range(7, col_idx, 7, col_idx+2, f'Q. {q}', fmt_head)
             ws_marks.write(8, col_idx, 'a', fmt_head)
             ws_marks.write(8, col_idx+1, 'b', fmt_head)
@@ -487,10 +496,10 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
             ws_marks.merge_range(7, col_idx+3, 8, col_idx+3, f'Q.{q} Total', fmt_head)
             col_idx += 4
             
-        ws_marks.merge_range(7, col_idx, 8, col_idx, 'Total SEE Marks (100)', fmt_head)
-        ws_marks.merge_range(7, col_idx+1, 8, col_idx+1, 'Total Moderation', fmt_head)
-        ws_marks.merge_range(7, col_idx+2, 8, col_idx+2, 'Marks Difference', fmt_head)
-        ws_marks.merge_range(7, col_idx+3, 8, col_idx+3, 'Final SEE Marks (100)', fmt_head)
+        ws_marks.merge_range(7, end_col_idx, 8, end_col_idx, 'Total SEE Marks (100)', fmt_head)
+        ws_marks.merge_range(7, end_col_idx+1, 8, end_col_idx+1, 'Total Moderation', fmt_head)
+        ws_marks.merge_range(7, end_col_idx+2, 8, end_col_idx+2, 'Marks Difference', fmt_head)
+        ws_marks.merge_range(7, end_col_idx+3, 8, end_col_idx+3, 'Final SEE Marks (100)', fmt_head)
         
         row_idx = 9
         for i, s in df.iterrows():
@@ -498,23 +507,17 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
             ws_marks.write(row_idx, 1, s['Dummy_ID'], fmt_locked) 
             
             if s['Status'] != "PRESENT":
-                for c in range(2, col_idx+3): ws_marks.write(row_idx, c, "", fmt_locked_gray)
-                ws_marks.write(row_idx, col_idx+3, s['Status'], fmt_abs)
+                for c in range(2, end_col_idx+3): ws_marks.write(row_idx, c, "", fmt_locked_gray)
+                ws_marks.write(row_idx, end_col_idx+3, s['Status'], fmt_abs)
             else:
                 c = 2
-                for q in range(1, 11):
-                    if is_mba and q > 8:
-                        ws_marks.write(row_idx, c, "", fmt_locked_gray)
-                        ws_marks.write(row_idx, c+1, "", fmt_locked_gray)
-                        ws_marks.write(row_idx, c+2, "", fmt_locked_gray)
-                        ws_marks.write(row_idx, c+3, "", fmt_locked_gray)
-                    else:
-                        ws_marks.write(row_idx, c, "", fmt_edit)
-                        ws_marks.write(row_idx, c+1, "", fmt_edit)
-                        ws_marks.write(row_idx, c+2, "", fmt_edit)
-                        cell_a = xl_rowcol_to_cell(row_idx, c)
-                        cell_c = xl_rowcol_to_cell(row_idx, c+2)
-                        ws_marks.write_formula(row_idx, c+3, f'=SUM({cell_a}:{cell_c})', fmt_locked)
+                for q in range(1, num_q + 1):
+                    ws_marks.write(row_idx, c, "", fmt_edit)
+                    ws_marks.write(row_idx, c+1, "", fmt_edit)
+                    ws_marks.write(row_idx, c+2, "", fmt_edit)
+                    cell_a = xl_rowcol_to_cell(row_idx, c)
+                    cell_c = xl_rowcol_to_cell(row_idx, c+2)
+                    ws_marks.write_formula(row_idx, c+3, f'=SUM({cell_a}:{cell_c})', fmt_locked)
                     c += 4
                 
                 r = row_idx + 1
@@ -524,21 +527,18 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                 else:
                     formula_see = f"=MAX(F{r},J{r})+MAX(N{r},R{r})+MAX(V{r},Z{r})+MAX(AD{r},AH{r})+MAX(AL{r},AP{r})"
                 
-                ws_marks.write_formula(row_idx, col_idx, formula_see, fmt_locked)
-                ws_marks.write(row_idx, col_idx+1, "", fmt_edit) 
+                ws_marks.write_formula(row_idx, end_col_idx, formula_see, fmt_locked)
+                ws_marks.write(row_idx, end_col_idx+1, "", fmt_edit) 
                 
-                formula_diff = f'=IF(AR{r}>0,AQ{r}-AR{r},"")'
-                ws_marks.write_formula(row_idx, col_idx+2, formula_diff, fmt_locked)
-                
-                formula_final = f"=MAX(AQ{r},AR{r})"
-                ws_marks.write_formula(row_idx, col_idx+3, formula_final, fmt_locked)
+                ws_marks.write_formula(row_idx, end_col_idx+2, f'=IF({col_mod}{r}>0,{col_tot}{r}-{col_mod}{r},"")', fmt_locked)
+                ws_marks.write_formula(row_idx, end_col_idx+3, f"=MAX({col_tot}{r},{col_mod}{r})", fmt_locked)
 
             row_idx += 1
             
         ws_marks.set_column('A:A', 8)
         ws_marks.set_column('B:B', 12)
-        ws_marks.set_column('C:AP', 5)
-        ws_marks.set_column('AQ:AT', 14)
+        ws_marks.set_column(f'C:{last_q_col}', 5)
+        ws_marks.set_column(f'{col_tot}:{col_final}', 14)
         
         # ==========================================
         # SHEET 2: PRINT 
@@ -551,11 +551,9 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_print.merge_range('A3:D3', f'Course Code: {course_code} | Course Title: {course_name}', fmt_sub)
         
         if "logo" in assets:
-            resized_logo = resize_image_for_excel(assets["logo"], target_height=50)
-            ws_print.insert_image('A1', 'logo.png', {'image_data': resized_logo, 'x_offset': 10, 'y_offset': 5})
+            ws_print.insert_image('A1', 'logo.png', {'image_data': resize_image_for_excel(assets["logo"]), 'x_offset': 10, 'y_offset': 5})
         if "naac" in assets:
-            resized_naac = resize_image_for_excel(assets["naac"], target_height=50)
-            ws_print.insert_image('D1', 'naac.png', {'image_data': resized_naac, 'x_offset': 180, 'y_offset': 5})
+            ws_print.insert_image('D1', 'naac.png', {'image_data': resize_image_for_excel(assets["naac"]), 'x_offset': 180, 'y_offset': 5})
 
         headers_print = ['Sl. No.', 'Answer Booklet Code', 'SEE Marks in Figures (100)', 'SEE Marks in Words']
         for c, h in enumerate(headers_print):
@@ -570,7 +568,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                 ws_print.write(row_idx, 2, s['Status'], fmt_abs)
                 ws_print.write(row_idx, 3, "-", fmt_locked_gray)
             else:
-                final_marks_cell = xl_rowcol_to_cell(9 + idx, col_idx+3) 
+                final_marks_cell = xl_rowcol_to_cell(9 + idx, end_col_idx+3) 
                 ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
                 
                 c_cell = xl_rowcol_to_cell(row_idx, 2) 
