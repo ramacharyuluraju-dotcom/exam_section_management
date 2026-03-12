@@ -466,7 +466,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         fmt_abs = wb.add_format({'locked': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'bold': True})
         fmt_footer = wb.add_format({'bold': True, 'font_size': 11, 'valign': 'vcenter'})
         
-        # Determine Exact Column Bounds (Fixes the MBA shifting issue!)
+        # Determine Exact Column Bounds
         end_col_idx = 2 + (num_q * 4) 
         col_tot = xl_col_to_name(end_col_idx)
         col_mod = xl_col_to_name(end_col_idx + 1)
@@ -571,8 +571,15 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                 final_marks_cell = xl_rowcol_to_cell(9 + idx, end_col_idx+3) 
                 ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
                 
+                # 🟢 BUG FIX: Replaced SEQUENCE() array logic with fixed 3-digit explicit extractor 
+                # This guarantees compatibility with older Excel versions and prevents #VALUE! / @ array corruption
                 c_cell = xl_rowcol_to_cell(row_idx, 2) 
-                words_formula = f'=IF({c_cell}="","",TEXTJOIN(" ", TRUE, SWITCH(MID({c_cell}, SEQUENCE(LEN({c_cell})), 1), "0","Zero", "1","One", "2","Two", "3","Three", "4","Four", "5","Five", "6","Six", "7","Seven", "8","Eight", "9","Nine", "")))'
+                
+                sw1 = f'SWITCH(MID({c_cell},1,1), "0","Zero", "1","One", "2","Two", "3","Three", "4","Four", "5","Five", "6","Six", "7","Seven", "8","Eight", "9","Nine", "")'
+                sw2 = f'SWITCH(MID({c_cell},2,1), "0","Zero", "1","One", "2","Two", "3","Three", "4","Four", "5","Five", "6","Six", "7","Seven", "8","Eight", "9","Nine", "")'
+                sw3 = f'SWITCH(MID({c_cell},3,1), "0","Zero", "1","One", "2","Two", "3","Three", "4","Four", "5","Five", "6","Six", "7","Seven", "8","Eight", "9","Nine", "")'
+                
+                words_formula = f'=IF({c_cell}="","",TRIM(TEXTJOIN(" ", TRUE, {sw1}, {sw2}, {sw3})))'
                 ws_print.write_formula(row_idx, 3, words_formula, fmt_locked)
                 
             row_idx += 1
