@@ -3,6 +3,8 @@ import pandas as pd
 import io
 import math
 import zipfile
+import string
+import random
 from utils import init_db
 
 # --- REPORTLAB IMPORTS FOR PDF GENERATION ---
@@ -17,6 +19,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 LOGO_FILENAME = "College_logo.png"
 supabase = init_db()
 
+# --- GLOBAL CONTEXT ---
 selected_cycle_id = st.session_state.get('active_cycle_id')
 active_cycle_name = st.session_state.get('active_cycle_name', 'Unknown Cycle')
 
@@ -170,12 +173,14 @@ if not selected_cycle_id:
 
 st.title("🏆 Results & Grading Engine")
 
-t1, t2, t3, t4, t5 = st.tabs([
+# 🟢 NEW: 6-Tab Layout
+t1, t2, t3, t4, t5, t6 = st.tabs([
     "1. CIE Consolidator", 
-    "2. SEE Consolidator", 
-    "3. Grading Engine", 
-    "4. Moderation", 
-    "5. Publish Ledgers"
+    "2. Bundle Decoder Utility", 
+    "3. SEE Consolidator", 
+    "4. Grading Engine", 
+    "5. Moderation", 
+    "6. Publish Ledgers"
 ])
 
 # ----------------------------------------------------
@@ -229,11 +234,118 @@ with t1:
                     st.error(f"Error: {e}")
 
 # ----------------------------------------------------
-# TAB 2: SEE CONSOLIDATION (Decoupled from Decoder)
+# TAB 2: BUNDLE DECODER UTILITY (STANDALONE)
 # ----------------------------------------------------
 with t2:
+    st.subheader("🔐 Standalone Bundle Decoder")
+    st.info("This utility decodes Dummy IDs into USNs and generates a CSV. **It does NOT upload to the database.** You must take the downloaded CSV and upload it in Tab 3.")
+    
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        key_file = st.file_uploader("1. Upload MASTER_SECRET_KEY.xlsx", type=['xlsx'])
+    with col_d2:
+        bundle_files = st.file_uploader("2. Upload Evaluator Bundles (.xlsx)", type=['xlsx'], accept_multiple_files=True)
+
+    if st.button("🔓 Generate Decoded CSV", type="primary"):
+        if not key_file or not bundle_files:
+            st.warning("⚠️ Please upload both the Master Key and at least one Evaluator Bundle.")
+        else:
+            with st.spinner("Decrypting Dummy IDs and extracting marks..."):
+                try:
+                    # 1. Load Master Key
+                    key_df = pd.read_excel(key_file)
+                    key_df['Dummy_ID'] = key_df['Dummy_ID'].astype(str).str.strip().str.upper()
+                    
+                    extracted_data = []
+                    
+                    # 2. Iterate through bundles
+                    for f in bundle_files:
+                        try:
+                            df_preview = pd.read_excel(f, sheet_name='Marks Entry', header=None, nrows=15)
+                            header_idx = -1
+                            for idx, row in df_preview.iterrows():
+                                if any("CODING" in str(x).upper() or "DUMMY" in str(x).upper() for x in row.tolist()):
+                                    header_idx = idx
+                                    break
+                            
+                            if header_idx == -1: continue
+                                
+                            df_bun = pd.read_excel(f, sheet_name='Marks Entry', header=header_idx)
+                            dummy_col = next((c for c in df_bun.columns if "DUMMY" in str(c).upper() or "CODING" in str(c).upper()), None)
+                            
+                            # Target FINAL SEE first, fallback to TOTAL SEE
+                            marks_col = next((c for c in df_bun.columns if "FINAL SEE" in str(c).upper()), None)
+                            if not marks_col:
+                                marks_col = next((c for c in df_bun.columns if "TOTAL SEE" in str(c).upper()), None)
+                            
+                            if dummy_col and marks_col:
+                                for _, r in df_bun.iterrows():
+                                    d_id = str(r[dummy_col]).strip().upper()
+                                    m_val = r[marks_col]
+                                    if len(d_id) > 2 and d_id != "NAN":
+                                        extracted_data.append({'Dummy_ID': d_id, 'SEE_Raw_Val': m_val})
+                        except: pass
+                    
+                    if extracted_data:
+                        # 3. Match and Format
+                        marks_df = pd.DataFrame(extracted_data)
+                        final_df = pd.merge(key_df, marks_df, on='Dummy_ID', how='inner')
+                        
+                        processed_records = []
+                        for _, r in final_df.iterrows():
+                            raw_val = r.get('SEE_Raw_Val', '')
+                            m_val = str(raw_val).strip().upper()
+                            
+                            stat = "PRESENT"
+                            raw_see = 0.0
+                            
+                            if m_val in ['AB', 'ABSENT']: 
+                                stat = 'ABSENT'
+                            elif m_val in ['MP', 'MAL', 'MALPRACTICE']: 
+                                stat = 'MALPRACTICE'
+                            elif m_val in ['WH', 'WITHHELD']: 
+                                stat = 'WITHHELD'
+                            elif m_val == 'NAN' or m_val == '':
+                                stat = 'PRESENT'
+                            else:
+                                try: 
+                                    raw_see = float(m_val)
+                                    if math.isnan(raw_see): raw_see = 0.0
+                                except ValueError: 
+                                    raw_see = 0.0
+                                    
+                            processed_records.append({
+                                "usn": clean_str(r['USN']),
+                                "course_code": clean_str(r['Subject']),
+                                "see_marks": raw_see,
+                                "status": stat
+                            })
+                            
+                        # 4. Provide Download
+                        out_df = pd.DataFrame(processed_records)
+                        csv_buffer = io.StringIO()
+                        out_df.to_csv(csv_buffer, index=False)
+                        
+                        st.success(f"✅ Successfully decoded {len(out_df)} student records!")
+                        
+                        st.download_button(
+                            label="📥 Download Decoded SEE CSV",
+                            data=csv_buffer.getvalue(),
+                            file_name="Decoded_SEE_Marks.csv",
+                            mime="text/csv",
+                            type="primary"
+                        )
+                    else:
+                        st.error("No valid marks data extracted from the uploaded bundles.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+# ----------------------------------------------------
+# TAB 3: SEE CONSOLIDATION (Upload CSV here)
+# ----------------------------------------------------
+with t3:
     st.subheader("SEE Marks Consolidation")
-    st.info("Upload decoded, finalized SEE marks here. (The Dummy ID Decoder is now a separate utility).")
+    st.info("Upload your finalized SEE marks CSV here (You can use the CSV generated in Tab 2).")
     
     col_s1, col_s2 = st.columns(2)
     with col_s1:
@@ -252,10 +364,9 @@ with t2:
                 records = []
                 for _, r in df_see.iterrows():
                     stat = clean_str(r[stat_col]) if stat_col else "PRESENT"
-                    
-                    # Handle text entries in marks column
-                    m_val = clean_str(r[m_col])
+                    m_val = str(r[m_col]).strip().upper()
                     raw_see = 0.0
+                    
                     if m_val in ['AB', 'ABSENT']: stat = 'ABSENT'
                     elif m_val in ['MP', 'MAL']: stat = 'MALPRACTICE'
                     elif m_val in ['WH']: stat = 'WITHHELD'
@@ -273,7 +384,7 @@ with t2:
                 try:
                     for i in range(0, len(records), 500):
                         supabase.table("student_results").upsert(records[i:i+500]).execute()
-                    st.success(f"✅ Successfully uploaded {len(records)} SEE records.")
+                    st.success(f"✅ Successfully uploaded {len(records)} SEE records to Database.")
                 except Exception as e:
                     st.error(f"Database Error: {e}")
 
@@ -291,14 +402,14 @@ with t2:
                         "cycle_id": selected_cycle_id, "usn": s_usn, "course_code": s_cc, 
                         "see_raw": s_marks, "exam_status": s_stat
                     }).execute()
-                    st.success("✅ Saved.")
+                    st.success("✅ Saved to Database.")
                 except Exception as e:
                     st.error(f"Error: {e}")
 
 # ----------------------------------------------------
-# TAB 3: GRADING ENGINE 
+# TAB 4: GRADING ENGINE 
 # ----------------------------------------------------
-with t3:
+with t4:
     st.subheader("Result & Grading Processor")
     st.write(f"Apply autonomous CBCS grading rules to all saved marks for **{active_cycle_name}**.")
     
@@ -310,20 +421,16 @@ with t3:
                     st.error("No marks found for this cycle. Complete CIE and SEE entry first.")
                     st.stop()
                     
-                # 🟢 Pre-Fetch Branches for UG/PG Routing
                 stu_res = supabase.table("master_students").select("usn, branch_code").execute()
                 branch_map = {r['usn']: r['branch_code'] for r in stu_res.data}
                 
                 branch_res = supabase.table("master_branches").select("branch_code, program_type").execute()
                 pg_branches = [r['branch_code'] for r in branch_res.data if str(r['program_type']).upper() == 'PG']
 
-                # 🟢 Pre-Fetch Course Rule Data
                 crs_res = supabase.table("master_courses").select("course_code, credits, max_see, max_cie, total_marks").execute()
                 credit_map = {r['course_code']: float(r['credits'] or 0) for r in crs_res.data}
                 max_see_map = {r['course_code']: float(r['max_see'] or 50) for r in crs_res.data}
                 max_cie_map = {r['course_code']: float(r['max_cie'] or 50) for r in crs_res.data}
-                
-                # REPURPOSED: `total_marks` is now mathematically interpreted as the Paper Conducted For marks!
                 paper_max_map = {r['course_code']: float(r['total_marks'] or 100) for r in crs_res.data}
                 
                 updates = []
@@ -361,15 +468,14 @@ with t3:
                 st.error(f"Error during calculation: {e}")
 
 # ----------------------------------------------------
-# TAB 4: MODERATION (GRACE MARKS)
+# TAB 5: MODERATION (GRACE MARKS)
 # ----------------------------------------------------
-with t4:
+with t5:
     st.subheader("⚖️ Moderation & Grace Marks")
     mod_usn = st.text_input("Enter Student USN to review failing subjects:").strip().upper()
     
     if mod_usn:
         try:
-            # Determine UG/PG status
             stu_res = supabase.table("master_students").select("branch_code").eq("usn", mod_usn).execute()
             student_branch = stu_res.data[0]['branch_code'] if stu_res.data else ""
             
@@ -428,9 +534,9 @@ with t4:
             st.error(f"Error fetching data: {e}")
 
 # ----------------------------------------------------
-# TAB 5: PUBLISH LEDGERS & CARDS
+# TAB 6: PUBLISH LEDGERS & CARDS
 # ----------------------------------------------------
-with t5:
+with t6:
     st.subheader("Generate Ledgers & Marks Cards")
     
     if st.button("🖨️ Generate Master Ledger & PDFs"):
