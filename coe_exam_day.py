@@ -571,8 +571,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                 final_marks_cell = xl_rowcol_to_cell(9 + idx, end_col_idx+3) 
                 ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
                 
-                # 🟢 BUG FIX: Replaced SEQUENCE() array logic with fixed 3-digit explicit extractor 
-                # This guarantees compatibility with older Excel versions and prevents #VALUE! / @ array corruption
+                # 🟢 YOUR BULLETPROOF FIX: Safe 3-Digit Extractor using explicit string construction
                 c_cell = xl_rowcol_to_cell(row_idx, 2) 
                 
                 sw1 = f'SWITCH(MID({c_cell},1,1), "0","Zero", "1","One", "2","Two", "3","Three", "4","Four", "5","Five", "6","Six", "7","Seven", "8","Eight", "9","Nine", "")'
