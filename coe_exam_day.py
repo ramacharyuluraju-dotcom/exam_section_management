@@ -450,7 +450,7 @@ def gen_smart_excel(df, date, session):
 def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, total_bundles, cycle_name, assets):
     out = io.BytesIO()
     is_mba = 'MBA' in course_code.upper()
-    num_q = 8 if is_mba else 10 # 🟢 DYNAMIC QUESTION GENERATOR 🟢
+    num_q = 8 if is_mba else 10
     
     with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
         wb = writer.book
@@ -571,14 +571,17 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                 final_marks_cell = xl_rowcol_to_cell(9 + idx, end_col_idx+3) 
                 ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
                 
-                # 🟢 YOUR BULLETPROOF FIX: Safe 3-Digit Extractor using explicit string construction
+                # 🟢 BULLETPROOF EXCEL FORMULA 🟢
+                # Using CHOOSE and standard concatenation instead of SWITCH/TEXTJOIN 
+                # strictly prevents the #NAME? error in ANY version of Excel.
                 c_cell = xl_rowcol_to_cell(row_idx, 2) 
                 
-                sw1 = f'SWITCH(MID({c_cell},1,1), "0","Zero", "1","One", "2","Two", "3","Three", "4","Four", "5","Five", "6","Six", "7","Seven", "8","Eight", "9","Nine", "")'
-                sw2 = f'SWITCH(MID({c_cell},2,1), "0","Zero", "1","One", "2","Two", "3","Three", "4","Four", "5","Five", "6","Six", "7","Seven", "8","Eight", "9","Nine", "")'
-                sw3 = f'SWITCH(MID({c_cell},3,1), "0","Zero", "1","One", "2","Two", "3","Three", "4","Four", "5","Five", "6","Six", "7","Seven", "8","Eight", "9","Nine", "")'
+                ch = 'CHOOSE(MID({},{},1)+1, "Zero","One","Two","Three","Four","Five","Six","Seven","Eight","Nine")'
+                p1 = f'IF(LEN({c_cell})>=1, {ch.format(c_cell, 1)}, "")'
+                p2 = f'IF(LEN({c_cell})>=2, " " & {ch.format(c_cell, 2)}, "")'
+                p3 = f'IF(LEN({c_cell})>=3, " " & {ch.format(c_cell, 3)}, "")'
                 
-                words_formula = f'=IF({c_cell}="","",TRIM(TEXTJOIN(" ", TRUE, {sw1}, {sw2}, {sw3})))'
+                words_formula = f'=IF({c_cell}="","",TRIM({p1} & {p2} & {p3}))'
                 ws_print.write_formula(row_idx, 3, words_formula, fmt_locked)
                 
             row_idx += 1
