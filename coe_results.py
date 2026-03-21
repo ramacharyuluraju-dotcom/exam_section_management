@@ -32,6 +32,20 @@ def find_column(df, candidates):
             return df.columns[cols.index(candidate.upper())]
     return None
 
+# 🟢 THE "0" BUG FIX PARSER 🟢
+def safe_float(val, default):
+    """Safely converts a value to float, correctly preserving literal 0s."""
+    if val is None:
+        return float(default)
+    try:
+        if pd.isna(val):
+            return float(default)
+        if str(val).strip() == "":
+            return float(default)
+        return float(val)
+    except:
+        return float(default)
+
 # 🟢 SUPABASE LIMIT BUSTER 🟢
 def fetch_all_records(table_name, select_query="*", filters=None):
     """Recursively fetches all records from a Supabase table bypassing the 1000 row limit."""
@@ -61,13 +75,12 @@ def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=5
     is_internal_only = (max_see == 0)
     
     # 🟢 THE AUTO-HEALER 🟢
-    # If the system has valid marks but the status is stuck on PENDING, auto-correct it to PRESENT.
     if not is_internal_only:
         if pd.notna(see_raw) and see_raw is not None and str(see_raw).strip() != "":
             if not status or status in ['PENDING', 'PND']:
                 status = 'PRESENT'
     else:
-        if pd.notna(cie_raw) and cie_raw is not None and cie_raw > 0:
+        if pd.notna(cie_raw) and cie_raw is not None and str(cie_raw).strip() != "":
             if not status or status in ['PENDING', 'PND']:
                 status = 'PRESENT'
 
@@ -249,12 +262,11 @@ with t1:
                     for _, r in df_cie.iterrows():
                         usn, cc = clean_str(r[usn_col]), clean_str(r[cc_col])
                         if (usn, cc) in valid_pairs:
-                            # 🟢 BUG FIX: Removed exam_status so we don't accidentally overwrite SEE uploads! 🟢
                             records.append({
                                 "cycle_id": selected_cycle_id, 
                                 "usn": usn, 
                                 "course_code": cc, 
-                                "cie_marks": float(r[m_col]) if pd.notna(r[m_col]) else None
+                                "cie_marks": safe_float(r[m_col], None)
                             })
                         else: ignored_count += 1
                             
@@ -277,7 +289,6 @@ with t1:
                     st.error(f"❌ Student {m_usn} is NOT registered for {m_cc} in this cycle.")
                 else:
                     try:
-                        # 🟢 BUG FIX: Removed exam_status here too 🟢
                         supabase.table("student_results").upsert({
                             "cycle_id": selected_cycle_id, "usn": m_usn, "course_code": m_cc, 
                             "cie_marks": m_marks
@@ -446,11 +457,12 @@ with t4:
                 branch_res = supabase.table("master_branches").select("branch_code, program_type").execute()
                 pg_branches = [r['branch_code'] for r in branch_res.data if str(r['program_type']).upper() == 'PG']
 
+                # 🟢 SAFE_FLOAT APPLIED HERE 🟢
                 crs_res = fetch_all_records("master_courses", "course_code, credits, max_see, max_cie, total_marks")
-                credit_map = {r['course_code']: float(r['credits'] or 0) for r in crs_res}
-                max_see_map = {r['course_code']: float(r['max_see'] or 50) for r in crs_res}
-                max_cie_map = {r['course_code']: float(r['max_cie'] or 50) for r in crs_res}
-                paper_max_map = {r['course_code']: float(r['total_marks'] or 100) for r in crs_res}
+                credit_map = {r['course_code']: safe_float(r.get('credits'), 4.0) for r in crs_res}
+                max_see_map = {r['course_code']: safe_float(r.get('max_see'), 50.0) for r in crs_res}
+                max_cie_map = {r['course_code']: safe_float(r.get('max_cie'), 50.0) for r in crs_res}
+                paper_max_map = {r['course_code']: safe_float(r.get('total_marks'), 100.0) for r in crs_res}
                 
                 updates = []
                 for row in raw_res:
@@ -461,20 +473,19 @@ with t4:
                     is_pg = branch_map.get(usn, "") in pg_branches
                     status = row.get('exam_status')
                     
-                    # 🟢 THE AUTO HEALER CALL 🟢
                     scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(row['cie_marks'], row['see_raw'], status, cred, m_cie, m_see, conducted_for, is_pg)
                     
                     updates.append({
                         "cycle_id": selected_cycle_id, "usn": usn, "course_code": cc,
                         "see_scaled": scaled_see, "total_marks": tot, "grade": grd,
                         "grade_points": gp, "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass,
-                        "exam_status": healed_status # Save the healed status back to DB
+                        "exam_status": healed_status
                     })
                     
                 for i in range(0, len(updates), 500):
                     supabase.table("student_results").upsert(updates[i:i+500]).execute()
                     
-                st.success(f"✅ Grading calculated for {len(updates)} records successfully! (Corrupted records auto-healed)")
+                st.success(f"✅ Grading calculated for {len(updates)} records successfully! (Internal Subjects Safely Recognized)")
             except Exception as e: st.error(f"Error: {e}")
 
 # ----------------------------------------------------
@@ -516,8 +527,12 @@ with t5:
                                 if st.form_submit_button("✨ Apply Grace Marks & Recalculate"):
                                     new_cie = c_cie + grace_marks if grace_target == "CIE (Internals)" else c_cie
                                     new_see = c_see + grace_marks if grace_target == "SEE Exam" else c_see
-                                    cred = float(mc.get('credits', 4))
-                                    m_cie, m_see, conducted_for = float(mc.get('max_cie', 50)), float(mc.get('max_see', 50)), float(mc.get('total_marks', 100))
+                                    
+                                    # 🟢 SAFE_FLOAT APPLIED HERE 🟢
+                                    cred = safe_float(mc.get('credits'), 4.0)
+                                    m_cie = safe_float(mc.get('max_cie'), 50.0)
+                                    m_see = safe_float(mc.get('max_see'), 50.0)
+                                    conducted_for = safe_float(mc.get('total_marks'), 100.0)
                                     
                                     scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(new_cie, new_see, r['exam_status'], cred, m_cie, m_see, conducted_for, is_pg)
                                     
@@ -575,8 +590,11 @@ with t6:
                         
                         for cc in courses:
                             mc = crs_map.get(cc, {})
-                            cr = float(mc.get('credits', 0))
-                            is_internal_only = (float(mc.get('max_see', 50)) == 0)
+                            cr = safe_float(mc.get('credits'), 0.0)
+                            
+                            # 🟢 SAFE_FLOAT APPLIED HERE 🟢
+                            is_internal_only = (safe_float(mc.get('max_see'), 50.0) == 0.0)
+                            
                             r = res_map.get((usn, cc))
                             
                             if not is_internal_only:
@@ -584,7 +602,7 @@ with t6:
                             else:
                                 see_missing = False # Internal subjects do not require SEE marks
                             
-                            if see_missing or not r or r.get('grade') in ['PND', 'PENDING']:
+                            if see_missing or not r or r.get('grade') in ['PND', 'PENDING'] or r.get('exam_status') in ['PND', 'PENDING']:
                                 has_pending = True
                                 cie_disp = str(r['cie_marks']) if (r and pd.notna(r.get('cie_marks'))) else "PND"
                                 see_disp = "-" if is_internal_only else "PND"
@@ -601,7 +619,7 @@ with t6:
                                 tot_val = r.get('total_marks', 0)
                                 grd_val = r.get('grade', 'F')
                                 
-                                results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': str(cie_val), 'see': str(see_val), 'tot': str(tot_val), 'grade': str(grd_val), 'gp': str(r.get('grade_points', 0)), 'pass': r.get('is_pass', False)})
+                                results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': str(cie_val), 'see': str(see_val) if not is_internal_only else "-", 'tot': str(tot_val), 'grade': str(grd_val), 'gp': str(r.get('grade_points', 0)), 'pass': r.get('is_pass', False)})
                                 
                                 ledger_dict[f"{cc}_CIE"] = cie_val
                                 ledger_dict[f"{cc}_SEE"] = "-" if is_internal_only else see_val
@@ -624,7 +642,6 @@ with t6:
                         
                 df_ledger = pd.DataFrame(ledger_rows)
                 
-                # 🟢 PERFECT ALPHABETICAL COLUMN SORTING 🟢
                 base_cols = ['USN', 'Name', 'Branch']
                 end_cols = ['SGPA', 'Result']
                 
@@ -649,7 +666,7 @@ with t6:
                             b_df.dropna(axis=1, how='all').to_excel(writer, index=False)
                         branch_zf.writestr(f"Ledger_{str(b_name)}.xlsx", branch_excel.getvalue())
                 
-                st.success(f"✅ Successfully compiled {len(ledger_rows)} records into ZIP! (Columns are perfectly sorted)")
+                st.success(f"✅ Successfully compiled {len(ledger_rows)} records into ZIP!")
                 c1, c2 = st.columns(2)
                 with c1: st.download_button("📊 Branch Ledgers (ZIP)", ledger_zip.getvalue(), f"Branch_Ledgers_{active_cycle_name}.zip")
                 with c2: st.download_button("📄 Marks Cards (ZIP)", pdf_zip_buffer.getvalue(), f"Marks_Cards_{active_cycle_name}.zip")
