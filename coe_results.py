@@ -224,18 +224,19 @@ if not selected_cycle_id:
 st.title("🏆 Results & Grading Engine")
 st.info(f"📍 **Active Context:** Processing data strictly for Cycle: **{active_cycle_name}**")
 
-t1, t2, t3, t4, t5, t6 = st.tabs([
+# 🟢 7 TABS DEFINED HERE 🟢
+t1, t2, t3, t4, t5, t6, t7 = st.tabs([
     "1. CIE Consolidator", 
     "2. Bundle Decoder", 
     "3. SEE Consolidator", 
     "4. Grading Engine", 
     "5. Moderation", 
-    "6. Publish Ledgers"
+    "6. Publish Ledgers",
     "7. CoE Dashboard"
 ])
 
 # ----------------------------------------------------
-# TAB 1: CIE ENTRY (Secured by Registration Firewall)
+# TAB 1: CIE ENTRY
 # ----------------------------------------------------
 with t1:
     st.subheader("Department Internals (CIE) Consolidation")
@@ -458,7 +459,6 @@ with t4:
                 branch_res = supabase.table("master_branches").select("branch_code, program_type").execute()
                 pg_branches = [r['branch_code'] for r in branch_res.data if str(r['program_type']).upper() == 'PG']
 
-                # 🟢 SAFE_FLOAT APPLIED HERE 🟢
                 crs_res = fetch_all_records("master_courses", "course_code, credits, max_see, max_cie, total_marks")
                 credit_map = {r['course_code']: safe_float(r.get('credits'), 4.0) for r in crs_res}
                 max_see_map = {r['course_code']: safe_float(r.get('max_see'), 50.0) for r in crs_res}
@@ -486,7 +486,7 @@ with t4:
                 for i in range(0, len(updates), 500):
                     supabase.table("student_results").upsert(updates[i:i+500]).execute()
                     
-                st.success(f"✅ Grading calculated for {len(updates)} records successfully! (Internal Subjects Safely Recognized)")
+                st.success(f"✅ Grading calculated for {len(updates)} records successfully!")
             except Exception as e: st.error(f"Error: {e}")
 
 # ----------------------------------------------------
@@ -528,8 +528,6 @@ with t5:
                                 if st.form_submit_button("✨ Apply Grace Marks & Recalculate"):
                                     new_cie = c_cie + grace_marks if grace_target == "CIE (Internals)" else c_cie
                                     new_see = c_see + grace_marks if grace_target == "SEE Exam" else c_see
-                                    
-                                    # 🟢 SAFE_FLOAT APPLIED HERE 🟢
                                     cred = safe_float(mc.get('credits'), 4.0)
                                     m_cie = safe_float(mc.get('max_cie'), 50.0)
                                     m_see = safe_float(mc.get('max_see'), 50.0)
@@ -593,9 +591,7 @@ with t6:
                             mc = crs_map.get(cc, {})
                             cr = safe_float(mc.get('credits'), 0.0)
                             
-                            # 🟢 SAFE_FLOAT APPLIED HERE 🟢
                             is_internal_only = (safe_float(mc.get('max_see'), 50.0) == 0.0)
-                            
                             r = res_map.get((usn, cc))
                             
                             if not is_internal_only:
@@ -698,7 +694,7 @@ with t7:
 
                     # Calculate Top-Level Metrics
                     total_evals = len(df)
-                    pending_evals = len(df[df['grade'] == 'PND'])
+                    pending_evals = len(df[df['grade'].isin(['PND', 'PENDING'])])
                     failed_evals = len(df[df['grade'] == 'F'])
                     passed_evals = total_evals - pending_evals - failed_evals
                     
@@ -720,16 +716,16 @@ with t7:
                     with chart_col1:
                         st.markdown("##### 📈 Grade Distribution")
                         # Exclude pending from grade distribution
-                        df_graded = df[df['grade'] != 'PND']
+                        df_graded = df[~df['grade'].isin(['PND', 'PENDING'])]
                         if not df_graded.empty:
                             grade_counts = df_graded['grade'].value_counts().reset_index()
                             grade_counts.columns = ['Grade', 'Count']
                             # Sort custom order
                             grade_order = ['O', 'A+', 'A', 'B+', 'B', 'C', 'P', 'F', 'AB', 'MP']
                             grade_counts['Grade'] = pd.Categorical(grade_counts['Grade'], categories=grade_order, ordered=True)
-                            grade_counts = grade_counts.sort_values('Grade')
+                            grade_counts = grade_counts.sort_values('Grade').set_index('Grade')
                             
-                            st.bar_chart(grade_counts.set_index('Grade'), color="#4CAF50")
+                            st.bar_chart(grade_counts['Count'], color="#4CAF50")
                         else:
                             st.info("No graded data to display.")
 
@@ -744,7 +740,7 @@ with t7:
                         
                         if branch_stats:
                             df_branch = pd.DataFrame(branch_stats).set_index('Branch')
-                            st.bar_chart(df_branch, color="#2196F3")
+                            st.bar_chart(df_branch['Pass Rate %'], color="#2196F3")
                         else:
                             st.info("No branch data to display.")
 
@@ -752,7 +748,7 @@ with t7:
                     st.markdown("---")
                     st.subheader("⚠️ Actionable Alerts")
                     
-                    pending_df = df[df['grade'] == 'PND']
+                    pending_df = df[df['grade'].isin(['PND', 'PENDING'])]
                     if not pending_df.empty:
                         pending_by_course = pending_df['course_code'].value_counts()
                         for course, count in pending_by_course.items():
