@@ -58,18 +58,34 @@ def fetch_all_records(table_name, select_query="*", filters=None):
 # 2. UNIVERSAL GRADING ALGORITHM
 # ==========================================
 def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=50, exam_conducted_for=100, is_pg=False):
-    # 🟢 PROPER NULL/PENDING HANDLING 🟢
-    if status in ['PENDING', 'PND'] or not status or pd.isna(see_raw) or see_raw is None: 
-        return 0, cie_raw, 'PND', 0, False
-        
-    if status in ['ABSENT', 'AB']: return 0, 0, 'AB', 0, False
-    if status in ['MALPRACTICE', 'MP']: return 0, 0, 'MP', 0, False
-    if status in ['WITHHELD', 'WH']: return 0, 0, 'WH', 0, False
+    is_internal_only = (max_see == 0)
+    
+    # 🟢 THE AUTO-HEALER 🟢
+    # If the system has valid marks but the status is stuck on PENDING, auto-correct it to PRESENT.
+    if not is_internal_only:
+        if pd.notna(see_raw) and see_raw is not None and str(see_raw).strip() != "":
+            if not status or status in ['PENDING', 'PND']:
+                status = 'PRESENT'
+    else:
+        if pd.notna(cie_raw) and cie_raw is not None and cie_raw > 0:
+            if not status or status in ['PENDING', 'PND']:
+                status = 'PRESENT'
+
+    # 🟢 STRICT PENDING LOCKS 🟢
+    if not is_internal_only:
+        if status in ['PENDING', 'PND'] or not status or pd.isna(see_raw) or see_raw is None: 
+            return 0, cie_raw, 'PND', 0, False, status
+    else:
+        if status in ['PENDING', 'PND'] or not status or pd.isna(cie_raw) or cie_raw is None:
+            return 0, cie_raw, 'PND', 0, False, status
+            
+    # Standard Status Overrides
+    if status in ['ABSENT', 'AB']: return 0, 0, 'AB', 0, False, 'ABSENT'
+    if status in ['MALPRACTICE', 'MP']: return 0, 0, 'MP', 0, False, 'MALPRACTICE'
+    if status in ['WITHHELD', 'WH']: return 0, 0, 'WH', 0, False, 'WITHHELD'
 
     cie = math.ceil(float(cie_raw)) if pd.notna(cie_raw) else 0.0
     see_raw = float(see_raw) if pd.notna(see_raw) else 0.0
-    
-    is_internal_only = (max_see == 0)
     
     if is_internal_only: see_scaled = 0
     else:
@@ -95,31 +111,31 @@ def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=5
             is_pass = False
 
     if credits == 0:
-        if is_pass: return see_scaled, total, 'PP', 0, True  
-        else: return see_scaled, total, 'NP', 0, False 
+        if is_pass: return see_scaled, total, 'PP', 0, True, status  
+        else: return see_scaled, total, 'NP', 0, False, status 
 
-    if not is_pass: return see_scaled, total, 'F', 0, False
+    if not is_pass: return see_scaled, total, 'F', 0, False, status
         
     total_max = max_cie + max_see
     pct = total / total_max
     
     if is_pg:
-        if pct >= 0.90: return see_scaled, total, 'O', 10, True
-        elif pct >= 0.80: return see_scaled, total, 'A+', 9, True
-        elif pct >= 0.70: return see_scaled, total, 'A', 8, True
-        elif pct >= 0.60: return see_scaled, total, 'B+', 7, True
-        elif pct >= 0.55: return see_scaled, total, 'B', 6, True
-        elif pct >= 0.50: return see_scaled, total, 'C', 5, True
-        else: return see_scaled, total, 'F', 0, False 
+        if pct >= 0.90: return see_scaled, total, 'O', 10, True, status
+        elif pct >= 0.80: return see_scaled, total, 'A+', 9, True, status
+        elif pct >= 0.70: return see_scaled, total, 'A', 8, True, status
+        elif pct >= 0.60: return see_scaled, total, 'B+', 7, True, status
+        elif pct >= 0.55: return see_scaled, total, 'B', 6, True, status
+        elif pct >= 0.50: return see_scaled, total, 'C', 5, True, status
+        else: return see_scaled, total, 'F', 0, False, status
     else:
-        if pct >= 0.90: return see_scaled, total, 'O', 10, True
-        elif pct >= 0.80: return see_scaled, total, 'A+', 9, True
-        elif pct >= 0.70: return see_scaled, total, 'A', 8, True
-        elif pct >= 0.60: return see_scaled, total, 'B+', 7, True
-        elif pct >= 0.50: return see_scaled, total, 'B', 6, True
-        elif pct >= 0.45: return see_scaled, total, 'C', 5, True
-        elif pct >= 0.40: return see_scaled, total, 'P', 4, True
-        else: return see_scaled, total, 'F', 0, False
+        if pct >= 0.90: return see_scaled, total, 'O', 10, True, status
+        elif pct >= 0.80: return see_scaled, total, 'A+', 9, True, status
+        elif pct >= 0.70: return see_scaled, total, 'A', 8, True, status
+        elif pct >= 0.60: return see_scaled, total, 'B+', 7, True, status
+        elif pct >= 0.50: return see_scaled, total, 'B', 6, True, status
+        elif pct >= 0.45: return see_scaled, total, 'C', 5, True, status
+        elif pct >= 0.40: return see_scaled, total, 'P', 4, True, status
+        else: return see_scaled, total, 'F', 0, False, status
 
 # ==========================================
 # 3. PDF MARKS CARD GENERATOR
@@ -209,6 +225,7 @@ t1, t2, t3, t4, t5, t6 = st.tabs([
 # ----------------------------------------------------
 with t1:
     st.subheader("Department Internals (CIE) Consolidation")
+    st.info("Marks are securely cross-checked against official Course Registrations for this cycle.")
     col_c1, col_c2 = st.columns(2)
     
     with col_c1:
@@ -232,12 +249,12 @@ with t1:
                     for _, r in df_cie.iterrows():
                         usn, cc = clean_str(r[usn_col]), clean_str(r[cc_col])
                         if (usn, cc) in valid_pairs:
+                            # 🟢 BUG FIX: Removed exam_status so we don't accidentally overwrite SEE uploads! 🟢
                             records.append({
                                 "cycle_id": selected_cycle_id, 
                                 "usn": usn, 
                                 "course_code": cc, 
-                                "cie_marks": float(r[m_col]) if pd.notna(r[m_col]) else None,
-                                "exam_status": "PENDING"
+                                "cie_marks": float(r[m_col]) if pd.notna(r[m_col]) else None
                             })
                         else: ignored_count += 1
                             
@@ -260,9 +277,10 @@ with t1:
                     st.error(f"❌ Student {m_usn} is NOT registered for {m_cc} in this cycle.")
                 else:
                     try:
+                        # 🟢 BUG FIX: Removed exam_status here too 🟢
                         supabase.table("student_results").upsert({
                             "cycle_id": selected_cycle_id, "usn": m_usn, "course_code": m_cc, 
-                            "cie_marks": m_marks, "exam_status": "PENDING"
+                            "cie_marks": m_marks
                         }).execute()
                         st.success("✅ Saved.")
                     except Exception as e:
@@ -370,7 +388,7 @@ with t3:
                         if (usn, cc) in valid_pairs:
                             stat = clean_str(r[stat_col]) if stat_col else "PRESENT"
                             m_val = str(r[m_col]).strip().upper()
-                            raw_see = None # 🟢 DEFAULT TO NULL 🟢
+                            raw_see = None
                             
                             if m_val in ['AB', 'ABSENT']: stat = 'ABSENT'
                             elif m_val in ['MP', 'MAL']: stat = 'MALPRACTICE'
@@ -441,20 +459,22 @@ with t4:
                     m_see, m_cie, conducted_for = max_see_map.get(cc, 50.0), max_cie_map.get(cc, 50.0), paper_max_map.get(cc, 100.0)
                     
                     is_pg = branch_map.get(usn, "") in pg_branches
-                    status = row.get('exam_status') or 'PENDING'
+                    status = row.get('exam_status')
                     
-                    scaled_see, tot, grd, gp, is_pass = apply_grading_rules(row['cie_marks'], row['see_raw'], status, cred, m_cie, m_see, conducted_for, is_pg)
+                    # 🟢 THE AUTO HEALER CALL 🟢
+                    scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(row['cie_marks'], row['see_raw'], status, cred, m_cie, m_see, conducted_for, is_pg)
                     
                     updates.append({
                         "cycle_id": selected_cycle_id, "usn": usn, "course_code": cc,
                         "see_scaled": scaled_see, "total_marks": tot, "grade": grd,
-                        "grade_points": gp, "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass
+                        "grade_points": gp, "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass,
+                        "exam_status": healed_status # Save the healed status back to DB
                     })
                     
                 for i in range(0, len(updates), 500):
                     supabase.table("student_results").upsert(updates[i:i+500]).execute()
                     
-                st.success(f"✅ Grading calculated for {len(updates)} records successfully!")
+                st.success(f"✅ Grading calculated for {len(updates)} records successfully! (Corrupted records auto-healed)")
             except Exception as e: st.error(f"Error: {e}")
 
 # ----------------------------------------------------
@@ -498,12 +518,15 @@ with t5:
                                     new_see = c_see + grace_marks if grace_target == "SEE Exam" else c_see
                                     cred = float(mc.get('credits', 4))
                                     m_cie, m_see, conducted_for = float(mc.get('max_cie', 50)), float(mc.get('max_see', 50)), float(mc.get('total_marks', 100))
-                                    scaled_see, tot, grd, gp, is_pass = apply_grading_rules(new_cie, new_see, r['exam_status'], cred, m_cie, m_see, conducted_for, is_pg)
+                                    
+                                    scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(new_cie, new_see, r['exam_status'], cred, m_cie, m_see, conducted_for, is_pg)
+                                    
                                     update_data = {
                                         "cycle_id": selected_cycle_id, "usn": mod_usn, "course_code": cc,
                                         "cie_marks": new_cie, "see_raw": new_see, "see_scaled": scaled_see,
                                         "total_marks": tot, "grade": grd, "grade_points": gp,
-                                        "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass
+                                        "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass,
+                                        "exam_status": healed_status
                                     }
                                     supabase.table("student_results").upsert(update_data).execute()
                                     if is_pass: st.success(f"✅ Grace marks applied! Passed with Grade **{grd}**.")
@@ -511,7 +534,7 @@ with t5:
         except Exception as e: st.error(f"Error fetching data: {e}")
 
 # ----------------------------------------------------
-# TAB 6: PUBLISH LEDGERS & CARDS (Perfectly Sorted Columns)
+# TAB 6: PUBLISH LEDGERS & CARDS
 # ----------------------------------------------------
 with t6:
     st.subheader("Generate Ledgers & Marks Cards")
@@ -537,7 +560,7 @@ with t6:
                 name_map = {clean_str(r['usn']): r.get('full_name', "Unknown") for r in stu_res}
                 branch_map = {clean_str(r['usn']): r.get('branch_code', "UNKNOWN") for r in stu_res}
                 
-                crs_data = fetch_all_records("master_courses", "course_code, title, credits")
+                crs_data = fetch_all_records("master_courses", "course_code, title, credits, max_see")
                 crs_map = {clean_str(c['course_code']): c for c in crs_data}
                 
                 ledger_rows = []
@@ -553,20 +576,23 @@ with t6:
                         for cc in courses:
                             mc = crs_map.get(cc, {})
                             cr = float(mc.get('credits', 0))
+                            is_internal_only = (float(mc.get('max_see', 50)) == 0)
                             r = res_map.get((usn, cc))
                             
-                            # 🟢 STRICT NULL / PENDING CHECK 🟢
-                            see_missing = not r or pd.isna(r.get('see_raw')) or r.get('see_raw') is None
+                            if not is_internal_only:
+                                see_missing = not r or pd.isna(r.get('see_raw')) or r.get('see_raw') is None
+                            else:
+                                see_missing = False # Internal subjects do not require SEE marks
                             
-                            if see_missing or r.get('grade') in ['PND', 'PENDING'] or r.get('exam_status') == 'PENDING':
+                            if see_missing or not r or r.get('grade') in ['PND', 'PENDING']:
                                 has_pending = True
                                 cie_disp = str(r['cie_marks']) if (r and pd.notna(r.get('cie_marks'))) else "PND"
+                                see_disp = "-" if is_internal_only else "PND"
                                 
-                                results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': cie_disp, 'see': "-", 'tot': "-", 'grade': "PND", 'gp': "-", 'pass': False})
+                                results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': cie_disp, 'see': see_disp, 'tot': "-", 'grade': "PND", 'gp': "-", 'pass': False})
                                 
-                                # 🟢 4-COLUMN LEDGER 🟢
                                 ledger_dict[f"{cc}_CIE"] = cie_disp
-                                ledger_dict[f"{cc}_SEE"] = "PND"
+                                ledger_dict[f"{cc}_SEE"] = see_disp
                                 ledger_dict[f"{cc}_Tot"] = "PND"
                                 ledger_dict[f"{cc}_Grd"] = "PND"
                             else:
@@ -577,9 +603,8 @@ with t6:
                                 
                                 results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': str(cie_val), 'see': str(see_val), 'tot': str(tot_val), 'grade': str(grd_val), 'gp': str(r.get('grade_points', 0)), 'pass': r.get('is_pass', False)})
                                 
-                                # 🟢 4-COLUMN LEDGER 🟢
                                 ledger_dict[f"{cc}_CIE"] = cie_val
-                                ledger_dict[f"{cc}_SEE"] = see_val
+                                ledger_dict[f"{cc}_SEE"] = "-" if is_internal_only else see_val
                                 ledger_dict[f"{cc}_Tot"] = tot_val
                                 ledger_dict[f"{cc}_Grd"] = grd_val
                                 
@@ -599,11 +624,10 @@ with t6:
                         
                 df_ledger = pd.DataFrame(ledger_rows)
                 
-                # 🟢 PERFECT ALPHABETICAL COLUMN SORTING LOGIC 🟢
+                # 🟢 PERFECT ALPHABETICAL COLUMN SORTING 🟢
                 base_cols = ['USN', 'Name', 'Branch']
                 end_cols = ['SGPA', 'Result']
                 
-                # Custom sorting so CIE comes before SEE, Tot, Grd.
                 def sort_key(col_name):
                     if col_name.endswith('_CIE'): return (col_name[:-4], 1)
                     if col_name.endswith('_SEE'): return (col_name[:-4], 2)
@@ -625,7 +649,7 @@ with t6:
                             b_df.dropna(axis=1, how='all').to_excel(writer, index=False)
                         branch_zf.writestr(f"Ledger_{str(b_name)}.xlsx", branch_excel.getvalue())
                 
-                st.success(f"✅ Successfully compiled {len(ledger_rows)} records into ZIP! (Perfectly Sorted Columns)")
+                st.success(f"✅ Successfully compiled {len(ledger_rows)} records into ZIP! (Columns are perfectly sorted)")
                 c1, c2 = st.columns(2)
                 with c1: st.download_button("📊 Branch Ledgers (ZIP)", ledger_zip.getvalue(), f"Branch_Ledgers_{active_cycle_name}.zip")
                 with c2: st.download_button("📄 Marks Cards (ZIP)", pdf_zip_buffer.getvalue(), f"Marks_Cards_{active_cycle_name}.zip")
