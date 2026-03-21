@@ -54,8 +54,6 @@ def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=5
     if is_internal_only:
         see_scaled = 0
     else:
-        # e.g., (80 raw / 100 paper) * 50 max = 40 scaled
-        # e.g., (40 raw / 50 paper) * 50 max = 40 scaled
         scale_factor = max_see / exam_conducted_for if exam_conducted_for > 0 else 1
         see_scaled = math.ceil(see_raw * scale_factor)
 
@@ -173,7 +171,6 @@ if not selected_cycle_id:
 
 st.title("🏆 Results & Grading Engine")
 
-# 🟢 NEW: 6-Tab Layout
 t1, t2, t3, t4, t5, t6 = st.tabs([
     "1. CIE Consolidator", 
     "2. Bundle Decoder Utility", 
@@ -234,7 +231,7 @@ with t1:
                     st.error(f"Error: {e}")
 
 # ----------------------------------------------------
-# TAB 2: BUNDLE DECODER UTILITY (STANDALONE)
+# TAB 2: BUNDLE DECODER UTILITY
 # ----------------------------------------------------
 with t2:
     st.subheader("🔐 Standalone Bundle Decoder")
@@ -252,13 +249,11 @@ with t2:
         else:
             with st.spinner("Decrypting Dummy IDs and extracting marks..."):
                 try:
-                    # 1. Load Master Key
                     key_df = pd.read_excel(key_file)
                     key_df['Dummy_ID'] = key_df['Dummy_ID'].astype(str).str.strip().str.upper()
                     
                     extracted_data = []
                     
-                    # 2. Iterate through bundles
                     for f in bundle_files:
                         try:
                             df_preview = pd.read_excel(f, sheet_name='Marks Entry', header=None, nrows=15)
@@ -273,7 +268,6 @@ with t2:
                             df_bun = pd.read_excel(f, sheet_name='Marks Entry', header=header_idx)
                             dummy_col = next((c for c in df_bun.columns if "DUMMY" in str(c).upper() or "CODING" in str(c).upper()), None)
                             
-                            # Target FINAL SEE first, fallback to TOTAL SEE
                             marks_col = next((c for c in df_bun.columns if "FINAL SEE" in str(c).upper()), None)
                             if not marks_col:
                                 marks_col = next((c for c in df_bun.columns if "TOTAL SEE" in str(c).upper()), None)
@@ -287,7 +281,6 @@ with t2:
                         except: pass
                     
                     if extracted_data:
-                        # 3. Match and Format
                         marks_df = pd.DataFrame(extracted_data)
                         final_df = pd.merge(key_df, marks_df, on='Dummy_ID', how='inner')
                         
@@ -299,20 +292,15 @@ with t2:
                             stat = "PRESENT"
                             raw_see = 0.0
                             
-                            if m_val in ['AB', 'ABSENT']: 
-                                stat = 'ABSENT'
-                            elif m_val in ['MP', 'MAL', 'MALPRACTICE']: 
-                                stat = 'MALPRACTICE'
-                            elif m_val in ['WH', 'WITHHELD']: 
-                                stat = 'WITHHELD'
-                            elif m_val == 'NAN' or m_val == '':
-                                stat = 'PRESENT'
+                            if m_val in ['AB', 'ABSENT']: stat = 'ABSENT'
+                            elif m_val in ['MP', 'MAL', 'MALPRACTICE']: stat = 'MALPRACTICE'
+                            elif m_val in ['WH', 'WITHHELD']: stat = 'WITHHELD'
+                            elif m_val == 'NAN' or m_val == '': stat = 'PRESENT'
                             else:
                                 try: 
                                     raw_see = float(m_val)
                                     if math.isnan(raw_see): raw_see = 0.0
-                                except ValueError: 
-                                    raw_see = 0.0
+                                except ValueError: raw_see = 0.0
                                     
                             processed_records.append({
                                 "usn": clean_str(r['USN']),
@@ -321,7 +309,6 @@ with t2:
                                 "status": stat
                             })
                             
-                        # 4. Provide Download
                         out_df = pd.DataFrame(processed_records)
                         csv_buffer = io.StringIO()
                         out_df.to_csv(csv_buffer, index=False)
@@ -341,7 +328,7 @@ with t2:
                     st.error(f"Error: {e}")
 
 # ----------------------------------------------------
-# TAB 3: SEE CONSOLIDATION (Upload CSV here)
+# TAB 3: SEE CONSOLIDATION
 # ----------------------------------------------------
 with t3:
     st.subheader("SEE Marks Consolidation")
@@ -476,22 +463,31 @@ with t5:
     
     if mod_usn:
         try:
-            stu_res = supabase.table("master_students").select("branch_code").eq("usn", mod_usn).execute()
-            student_branch = stu_res.data[0]['branch_code'] if stu_res.data else ""
-            
-            branch_res = supabase.table("master_branches").select("program_type").eq("branch_code", student_branch).execute()
-            is_pg = (str(branch_res.data[0]['program_type']).upper() == 'PG') if branch_res.data else False
-
-            fail_res = supabase.table("student_results").select("*, master_courses(title, credits, max_cie, max_see, total_marks)").eq("cycle_id", selected_cycle_id).eq("usn", mod_usn).eq("is_pass", False).execute()
+            # 🟢 Python-Based Join to Fix Database Issue 🟢
+            fail_res = supabase.table("student_results").select("*").eq("cycle_id", selected_cycle_id).eq("usn", mod_usn).eq("is_pass", False).execute()
             
             if not fail_res.data:
                 st.success(f"🎉 Student {mod_usn} has no failing subjects in this cycle!")
             else:
+                # Get UG/PG Info
+                stu_res = supabase.table("master_students").select("branch_code").eq("usn", mod_usn).execute()
+                student_branch = stu_res.data[0]['branch_code'] if stu_res.data else ""
+                
+                branch_res = supabase.table("master_branches").select("program_type").eq("branch_code", student_branch).execute()
+                is_pg = (str(branch_res.data[0]['program_type']).upper() == 'PG') if branch_res.data else False
+
+                # Fetch Course Data (Python Join)
+                failed_course_codes = [r['course_code'] for r in fail_res.data]
+                crs_res = supabase.table("master_courses").select("course_code, title, credits, max_cie, max_see, total_marks").in_("course_code", failed_course_codes).execute()
+                crs_map = {c['course_code']: c for c in crs_res.data}
+                
                 st.warning(f"Found {len(fail_res.data)} failing subject(s) for {mod_usn}. (Routing: {'PG' if is_pg else 'UG'} Rules)")
                 
                 for r in fail_res.data:
                     cc = r['course_code']
-                    title = r.get('master_courses', {}).get('title', cc) if r.get('master_courses') else cc
+                    mc = crs_map.get(cc, {})
+                    title = mc.get('title', cc)
+                    
                     c_cie = r['cie_marks']
                     c_see = r['see_raw']
                     c_tot = r['total_marks']
@@ -509,10 +505,10 @@ with t5:
                                 new_cie = c_cie + grace_marks if grace_target == "CIE (Internals)" else c_cie
                                 new_see = c_see + grace_marks if grace_target == "SEE Exam" else c_see
                                 
-                                cred = float(r.get('master_courses', {}).get('credits', 4) if r.get('master_courses') else 4)
-                                m_cie = float(r.get('master_courses', {}).get('max_cie', 50) if r.get('master_courses') else 50)
-                                m_see = float(r.get('master_courses', {}).get('max_see', 50) if r.get('master_courses') else 50)
-                                conducted_for = float(r.get('master_courses', {}).get('total_marks', 100) if r.get('master_courses') else 100)
+                                cred = float(mc.get('credits', 4))
+                                m_cie = float(mc.get('max_cie', 50))
+                                m_see = float(mc.get('max_see', 50))
+                                conducted_for = float(mc.get('total_marks', 100))
                                 
                                 scaled_see, tot, grd, gp, is_pass = apply_grading_rules(
                                     new_cie, new_see, r['exam_status'], 
@@ -542,16 +538,20 @@ with t6:
     if st.button("🖨️ Generate Master Ledger & PDFs"):
         with st.spinner("Compiling institutional ledgers..."):
             try:
-                res_data = supabase.table("student_results").select(
-                    "usn, course_code, cie_marks, see_scaled, total_marks, grade, grade_points, credits_earned, is_pass, master_courses(title, credits)"
-                ).eq("cycle_id", selected_cycle_id).execute()
+                # 🟢 Python-Based Join to Fix PGRST200 Database Issue 🟢
+                res_data = supabase.table("student_results").select("*").eq("cycle_id", selected_cycle_id).execute()
                 
                 if not res_data.data:
                     st.error("No graded results found. Run the Grading Engine first.")
                     st.stop()
-                    
+                
+                # Fetch Names
                 stu_res = supabase.table("master_students").select("usn, full_name").execute()
                 name_map = {r['usn']: r['full_name'] for r in stu_res.data}
+                
+                # Fetch Course Details
+                crs_res = supabase.table("master_courses").select("course_code, title, credits").execute()
+                crs_map = {c['course_code']: c for c in crs_res.data}
                 
                 df_res = pd.DataFrame(res_data.data)
                 ledger_rows = []
@@ -570,8 +570,9 @@ with t6:
                         
                         for _, r in group.iterrows():
                             cc = r['course_code']
-                            title = r.get('master_courses', {}).get('title', cc) if r.get('master_courses') else cc
-                            cr = float(r.get('master_courses', {}).get('credits', 0) if r.get('master_courses') else 0)
+                            mc = crs_map.get(cc, {})
+                            title = mc.get('title', cc)
+                            cr = float(mc.get('credits', 0))
                             
                             results_list.append({
                                 'code': cc, 'title': title, 'cr': cr,
