@@ -58,7 +58,8 @@ def fetch_all_records(table_name, select_query="*", filters=None):
 # 2. UNIVERSAL GRADING ALGORITHM
 # ==========================================
 def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=50, exam_conducted_for=100, is_pg=False):
-    if status in ['PENDING', 'PND'] or not status: 
+    # 🟢 PROPER NULL/PENDING HANDLING 🟢
+    if status in ['PENDING', 'PND'] or not status or pd.isna(see_raw) or see_raw is None: 
         return 0, cie_raw, 'PND', 0, False
         
     if status in ['ABSENT', 'AB']: return 0, 0, 'AB', 0, False
@@ -208,7 +209,6 @@ t1, t2, t3, t4, t5, t6 = st.tabs([
 # ----------------------------------------------------
 with t1:
     st.subheader("Department Internals (CIE) Consolidation")
-    st.info("Marks are securely cross-checked against official Course Registrations for this cycle.")
     col_c1, col_c2 = st.columns(2)
     
     with col_c1:
@@ -232,13 +232,20 @@ with t1:
                     for _, r in df_cie.iterrows():
                         usn, cc = clean_str(r[usn_col]), clean_str(r[cc_col])
                         if (usn, cc) in valid_pairs:
-                            records.append({"cycle_id": selected_cycle_id, "usn": usn, "course_code": cc, "cie_marks": float(r[m_col]) if pd.notna(r[m_col]) else 0.0, "exam_status": "PENDING"})
+                            records.append({
+                                "cycle_id": selected_cycle_id, 
+                                "usn": usn, 
+                                "course_code": cc, 
+                                "cie_marks": float(r[m_col]) if pd.notna(r[m_col]) else None,
+                                "exam_status": "PENDING"
+                            })
                         else: ignored_count += 1
                             
                     if not records: st.error("No matching registered students found.")
                     else:
                         for i in range(0, len(records), 500): supabase.table("student_results").upsert(records[i:i+500]).execute()
-                        st.success(f"✅ Successfully uploaded {len(records)} records.")
+                        st.success(f"✅ Successfully uploaded {len(records)} CIE records.")
+                        if ignored_count > 0: st.warning(f"⚠️ Blocked {ignored_count} records (Not registered).")
 
     with col_c2:
         st.markdown("**Manual Entry**")
@@ -257,12 +264,12 @@ with t1:
                             "cycle_id": selected_cycle_id, "usn": m_usn, "course_code": m_cc, 
                             "cie_marks": m_marks, "exam_status": "PENDING"
                         }).execute()
-                        st.success("✅ Saved and marked as PENDING.")
+                        st.success("✅ Saved.")
                     except Exception as e:
                         st.error(f"Error: {e}")
 
 # ----------------------------------------------------
-# TAB 2: BUNDLE DECODER UTILITY (STANDALONE)
+# TAB 2: BUNDLE DECODER UTILITY
 # ----------------------------------------------------
 with t2:
     st.subheader("🔐 Standalone Bundle Decoder")
@@ -288,10 +295,9 @@ with t2:
                             header_idx = -1
                             for idx, row in df_preview.iterrows():
                                 if any("CODING" in str(x).upper() or "DUMMY" in str(x).upper() for x in row.tolist()):
-                                    header_idx = idx
-                                    break
-                            
+                                    header_idx = idx; break
                             if header_idx == -1: continue
+                            
                             df_bun = pd.read_excel(f, sheet_name='Marks Entry', header=header_idx)
                             dummy_col = next((c for c in df_bun.columns if "DUMMY" in str(c).upper() or "CODING" in str(c).upper()), None)
                             marks_col = next((c for c in df_bun.columns if "FINAL SEE" in str(c).upper()), None)
@@ -320,15 +326,10 @@ with t2:
                             elif m_val in ['WH', 'WITHHELD']: stat = 'WITHHELD'
                             elif m_val == 'NAN' or m_val == '': stat = 'PRESENT'
                             else:
-                                try: 
-                                    raw_see = float(m_val)
-                                    if math.isnan(raw_see): raw_see = 0.0
+                                try: raw_see = float(m_val)
                                 except ValueError: raw_see = 0.0
                                     
-                            processed_records.append({
-                                "usn": clean_str(r['USN']), "course_code": clean_str(r['Subject']),
-                                "see_marks": raw_see, "status": stat
-                            })
+                            processed_records.append({"usn": clean_str(r['USN']), "course_code": clean_str(r['Subject']), "see_marks": raw_see, "status": stat})
                             
                         out_df = pd.DataFrame(processed_records)
                         csv_buffer = io.StringIO()
@@ -339,11 +340,12 @@ with t2:
                 except Exception as e: st.error(f"Error: {e}")
 
 # ----------------------------------------------------
-# TAB 3: SEE CONSOLIDATION 
+# TAB 3: SEE CONSOLIDATION
 # ----------------------------------------------------
 with t3:
     st.subheader("SEE Marks Consolidation")
     col_s1, col_s2 = st.columns(2)
+    
     with col_s1:
         st.markdown("**Bulk CSV Upload**")
         f_see = st.file_uploader("Upload CSV (Required: usn, course_code, see_marks, status)", type='csv', key="see_up")
@@ -368,21 +370,18 @@ with t3:
                         if (usn, cc) in valid_pairs:
                             stat = clean_str(r[stat_col]) if stat_col else "PRESENT"
                             m_val = str(r[m_col]).strip().upper()
-                            raw_see = 0.0
+                            raw_see = None # 🟢 DEFAULT TO NULL 🟢
                             
                             if m_val in ['AB', 'ABSENT']: stat = 'ABSENT'
                             elif m_val in ['MP', 'MAL']: stat = 'MALPRACTICE'
                             elif m_val in ['WH']: stat = 'WITHHELD'
-                            else:
+                            elif pd.notna(r[m_col]) and m_val != 'NAN' and m_val != '':
                                 try: raw_see = float(m_val)
-                                except: raw_see = 0.0
+                                except: raw_see = None
 
                             records.append({
-                                "cycle_id": selected_cycle_id,
-                                "usn": usn,
-                                "course_code": cc,
-                                "see_raw": raw_see,
-                                "exam_status": stat 
+                                "cycle_id": selected_cycle_id, "usn": usn, "course_code": cc,
+                                "see_raw": raw_see, "exam_status": stat 
                             })
                         else: ignored_count += 1
                             
@@ -390,6 +389,7 @@ with t3:
                     else:
                         for i in range(0, len(records), 500): supabase.table("student_results").upsert(records[i:i+500]).execute()
                         st.success(f"✅ Successfully uploaded {len(records)} valid SEE records.")
+                        if ignored_count > 0: st.warning(f"⚠️ Blocked {ignored_count} unregistered records.")
 
     with col_s2:
         st.markdown("**Manual Entry**")
@@ -511,18 +511,17 @@ with t5:
         except Exception as e: st.error(f"Error fetching data: {e}")
 
 # ----------------------------------------------------
-# TAB 6: PUBLISH LEDGERS & CARDS (Upgraded LEDGER)
+# TAB 6: PUBLISH LEDGERS & CARDS (Perfectly Sorted Columns)
 # ----------------------------------------------------
 with t6:
     st.subheader("Generate Ledgers & Marks Cards")
-    st.info("The system automatically checks the `course_registrations` table. Any student missing marks for a registered subject will explicitly show as **PENDING**.")
     
     if st.button("🖨️ Generate Master Ledger & PDFs"):
         with st.spinner("Compiling institutional ledgers (Paginating Database)..."):
             try:
                 regs_data = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
                 if not regs_data:
-                    st.error("No course registrations found for this cycle. Cannot compile ledgers.")
+                    st.error("No course registrations found for this cycle.")
                     st.stop()
                 
                 stu_courses = {}
@@ -556,14 +555,16 @@ with t6:
                             cr = float(mc.get('credits', 0))
                             r = res_map.get((usn, cc))
                             
-                            # 🟢 PENDING CHECK: Missing record, Grade PND, or Exam Status PENDING
-                            if not r or r.get('grade') in ['PND', 'PENDING'] or r.get('exam_status') in ['PND', 'PENDING']:
+                            # 🟢 STRICT NULL / PENDING CHECK 🟢
+                            see_missing = not r or pd.isna(r.get('see_raw')) or r.get('see_raw') is None
+                            
+                            if see_missing or r.get('grade') in ['PND', 'PENDING'] or r.get('exam_status') == 'PENDING':
                                 has_pending = True
                                 cie_disp = str(r['cie_marks']) if (r and pd.notna(r.get('cie_marks'))) else "PND"
                                 
                                 results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': cie_disp, 'see': "-", 'tot': "-", 'grade': "PND", 'gp': "-", 'pass': False})
                                 
-                                # 🟢 4-COLUMN LEDGER EXPANSION 🟢
+                                # 🟢 4-COLUMN LEDGER 🟢
                                 ledger_dict[f"{cc}_CIE"] = cie_disp
                                 ledger_dict[f"{cc}_SEE"] = "PND"
                                 ledger_dict[f"{cc}_Tot"] = "PND"
@@ -576,7 +577,7 @@ with t6:
                                 
                                 results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': str(cie_val), 'see': str(see_val), 'tot': str(tot_val), 'grade': str(grd_val), 'gp': str(r.get('grade_points', 0)), 'pass': r.get('is_pass', False)})
                                 
-                                # 🟢 4-COLUMN LEDGER EXPANSION 🟢
+                                # 🟢 4-COLUMN LEDGER 🟢
                                 ledger_dict[f"{cc}_CIE"] = cie_val
                                 ledger_dict[f"{cc}_SEE"] = see_val
                                 ledger_dict[f"{cc}_Tot"] = tot_val
@@ -597,8 +598,26 @@ with t6:
                         zf.writestr(f"Marks_Cards/{usn}.pdf", pdf_buf.getvalue())
                         
                 df_ledger = pd.DataFrame(ledger_rows)
-                ledger_zip = io.BytesIO()
                 
+                # 🟢 PERFECT ALPHABETICAL COLUMN SORTING LOGIC 🟢
+                base_cols = ['USN', 'Name', 'Branch']
+                end_cols = ['SGPA', 'Result']
+                
+                # Custom sorting so CIE comes before SEE, Tot, Grd.
+                def sort_key(col_name):
+                    if col_name.endswith('_CIE'): return (col_name[:-4], 1)
+                    if col_name.endswith('_SEE'): return (col_name[:-4], 2)
+                    if col_name.endswith('_Tot'): return (col_name[:-4], 3)
+                    if col_name.endswith('_Grd'): return (col_name[:-4], 4)
+                    return (col_name, 5)
+
+                course_cols = [c for c in df_ledger.columns if c not in base_cols + end_cols]
+                course_cols.sort(key=sort_key)
+                
+                ordered_cols = base_cols + course_cols + end_cols
+                df_ledger = df_ledger[ordered_cols]
+                
+                ledger_zip = io.BytesIO()
                 with zipfile.ZipFile(ledger_zip, "w") as branch_zf:
                     for b_name, b_df in df_ledger.groupby('Branch'):
                         branch_excel = io.BytesIO()
@@ -606,7 +625,7 @@ with t6:
                             b_df.dropna(axis=1, how='all').to_excel(writer, index=False)
                         branch_zf.writestr(f"Ledger_{str(b_name)}.xlsx", branch_excel.getvalue())
                 
-                st.success(f"✅ Successfully compiled {len(ledger_rows)} records into ZIP! (Ledgers now contain CIE, SEE, Total, and Grade)")
+                st.success(f"✅ Successfully compiled {len(ledger_rows)} records into ZIP! (Perfectly Sorted Columns)")
                 c1, c2 = st.columns(2)
                 with c1: st.download_button("📊 Branch Ledgers (ZIP)", ledger_zip.getvalue(), f"Branch_Ledgers_{active_cycle_name}.zip")
                 with c2: st.download_button("📄 Marks Cards (ZIP)", pdf_zip_buffer.getvalue(), f"Marks_Cards_{active_cycle_name}.zip")
