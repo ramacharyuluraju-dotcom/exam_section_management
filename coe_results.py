@@ -231,6 +231,7 @@ t1, t2, t3, t4, t5, t6 = st.tabs([
     "4. Grading Engine", 
     "5. Moderation", 
     "6. Publish Ledgers"
+    "7. CoE Dashboard"
 ])
 
 # ----------------------------------------------------
@@ -671,3 +672,93 @@ with t6:
                 with c1: st.download_button("📊 Branch Ledgers (ZIP)", ledger_zip.getvalue(), f"Branch_Ledgers_{active_cycle_name}.zip")
                 with c2: st.download_button("📄 Marks Cards (ZIP)", pdf_zip_buffer.getvalue(), f"Marks_Cards_{active_cycle_name}.zip")
             except Exception as e: st.error(f"Generation Error: {e}")
+
+# ----------------------------------------------------
+# TAB 7: CoE DASHBOARD
+# ----------------------------------------------------
+with t7:
+    st.subheader("📊 Institutional Analytics Dashboard")
+    st.write("Real-time statistics for the active exam cycle.")
+    
+    if st.button("🔄 Refresh Statistics", type="primary"):
+        with st.spinner("Compiling institutional metrics..."):
+            try:
+                # Fetch data using the Limit-Buster
+                res_data = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
+                
+                if not res_data:
+                    st.warning("No data available to analyze for this cycle.")
+                else:
+                    df = pd.DataFrame(res_data)
+                    
+                    # Map branches for branch-wise analysis
+                    stu_data = fetch_all_records("master_students", "usn, branch_code")
+                    branch_map = {str(r['usn']).strip().upper(): r.get('branch_code', 'UNKNOWN') for r in stu_data}
+                    df['Branch'] = df['usn'].map(branch_map)
+
+                    # Calculate Top-Level Metrics
+                    total_evals = len(df)
+                    pending_evals = len(df[df['grade'] == 'PND'])
+                    failed_evals = len(df[df['grade'] == 'F'])
+                    passed_evals = total_evals - pending_evals - failed_evals
+                    
+                    completed_evals = total_evals - pending_evals
+                    pass_pct = (passed_evals / completed_evals * 100) if completed_evals > 0 else 0
+                    
+                    # Display Top Metrics
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Total Evaluations", f"{total_evals:,}")
+                    col2.metric("Pending SEE Marks", f"{pending_evals:,}", delta="-Requires Action" if pending_evals > 0 else "All Clear", delta_color="inverse")
+                    col3.metric("Evaluated Pass Rate", f"{pass_pct:.1f}%")
+                    col4.metric("Total Fails", f"{failed_evals:,}")
+                    
+                    st.markdown("---")
+                    
+                    # Visualizations
+                    chart_col1, chart_col2 = st.columns(2)
+                    
+                    with chart_col1:
+                        st.markdown("##### 📈 Grade Distribution")
+                        # Exclude pending from grade distribution
+                        df_graded = df[df['grade'] != 'PND']
+                        if not df_graded.empty:
+                            grade_counts = df_graded['grade'].value_counts().reset_index()
+                            grade_counts.columns = ['Grade', 'Count']
+                            # Sort custom order
+                            grade_order = ['O', 'A+', 'A', 'B+', 'B', 'C', 'P', 'F', 'AB', 'MP']
+                            grade_counts['Grade'] = pd.Categorical(grade_counts['Grade'], categories=grade_order, ordered=True)
+                            grade_counts = grade_counts.sort_values('Grade')
+                            
+                            st.bar_chart(grade_counts.set_index('Grade'), color="#4CAF50")
+                        else:
+                            st.info("No graded data to display.")
+
+                    with chart_col2:
+                        st.markdown("##### 🏢 Branch-wise Pass Rates")
+                        branch_stats = []
+                        for branch, group in df_graded.groupby('Branch'):
+                            b_total = len(group)
+                            b_pass = len(group[group['is_pass'] == True])
+                            b_rate = (b_pass / b_total) * 100 if b_total > 0 else 0
+                            branch_stats.append({'Branch': branch, 'Pass Rate %': b_rate})
+                        
+                        if branch_stats:
+                            df_branch = pd.DataFrame(branch_stats).set_index('Branch')
+                            st.bar_chart(df_branch, color="#2196F3")
+                        else:
+                            st.info("No branch data to display.")
+
+                    # Actionable Alerts Section
+                    st.markdown("---")
+                    st.subheader("⚠️ Actionable Alerts")
+                    
+                    pending_df = df[df['grade'] == 'PND']
+                    if not pending_df.empty:
+                        pending_by_course = pending_df['course_code'].value_counts()
+                        for course, count in pending_by_course.items():
+                            st.error(f"Missing SEE Marks for **{count}** students in subject **{course}**.")
+                    else:
+                        st.success("🎉 All clear! All evaluated subjects have full marks uploaded.")
+
+            except Exception as e:
+                st.error(f"Dashboard Error: {e}")
