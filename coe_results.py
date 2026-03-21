@@ -221,43 +221,25 @@ with t1:
             m_col = find_column(df_cie, ['cie_marks', 'cie', 'ia marks', 'internals'])
             
             if not (usn_col and cc_col and m_col):
-                st.error("Missing standard columns. Ensure USN, Course Code, and CIE Marks exist.")
+                st.error("Missing standard columns.")
             else:
-                with st.spinner("Validating against registrations (Limit-Proof)..."):
-                    # 🟢 LIMIT BUSTER APPLIED 🟢
+                with st.spinner("Validating against registrations..."):
                     regs = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
                     valid_pairs = set((str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()) for r in regs)
                     
                     records = []
                     ignored_count = 0
-                    
                     for _, r in df_cie.iterrows():
-                        usn = clean_str(r[usn_col])
-                        cc = clean_str(r[cc_col])
-                        
+                        usn, cc = clean_str(r[usn_col]), clean_str(r[cc_col])
                         if (usn, cc) in valid_pairs:
-                            records.append({
-                                "cycle_id": selected_cycle_id,
-                                "usn": usn,
-                                "course_code": cc,
-                                "cie_marks": float(r[m_col]) if pd.notna(r[m_col]) else 0.0,
-                                "exam_status": "PENDING"
-                            })
-                        else:
-                            ignored_count += 1
+                            records.append({"cycle_id": selected_cycle_id, "usn": usn, "course_code": cc, "cie_marks": float(r[m_col]) if pd.notna(r[m_col]) else 0.0, "exam_status": "PENDING"})
+                        else: ignored_count += 1
                             
-                    if not records:
-                        st.error(f"❌ Upload Failed. None of the {len(df_cie)} records matched registered students for {active_cycle_name}.")
+                    if not records: st.error("No matching registered students found.")
                     else:
-                        try:
-                            for i in range(0, len(records), 500):
-                                supabase.table("student_results").upsert(records[i:i+500]).execute()
-                            st.success(f"✅ Successfully uploaded {len(records)} valid CIE records. Marked as PENDING.")
-                            if ignored_count > 0:
-                                st.warning(f"⚠️ Blocked {ignored_count} records (Students were not registered for those courses in this cycle).")
-                        except Exception as e:
-                            st.error(f"Database Error: {e}")
-                    
+                        for i in range(0, len(records), 500): supabase.table("student_results").upsert(records[i:i+500]).execute()
+                        st.success(f"✅ Successfully uploaded {len(records)} records.")
+
     with col_c2:
         st.markdown("**Manual Entry**")
         with st.form("manual_cie"):
@@ -357,13 +339,11 @@ with t2:
                 except Exception as e: st.error(f"Error: {e}")
 
 # ----------------------------------------------------
-# TAB 3: SEE CONSOLIDATION (Secured by Registration Firewall)
+# TAB 3: SEE CONSOLIDATION 
 # ----------------------------------------------------
 with t3:
     st.subheader("SEE Marks Consolidation")
-    st.info("Marks are securely cross-checked against official Course Registrations for this cycle.")
     col_s1, col_s2 = st.columns(2)
-    
     with col_s1:
         st.markdown("**Bulk CSV Upload**")
         f_see = st.file_uploader("Upload CSV (Required: usn, course_code, see_marks, status)", type='csv', key="see_up")
@@ -376,8 +356,7 @@ with t3:
             
             if not (usn_col and cc_col and m_col): st.error("Missing standard columns.")
             else:
-                with st.spinner("Validating against registrations (Limit-Proof)..."):
-                    # 🟢 LIMIT BUSTER APPLIED 🟢
+                with st.spinner("Validating against registrations..."):
                     regs = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
                     valid_pairs = set((str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()) for r in regs)
                     
@@ -385,9 +364,7 @@ with t3:
                     ignored_count = 0
                     
                     for _, r in df_see.iterrows():
-                        usn = clean_str(r[usn_col])
-                        cc = clean_str(r[cc_col])
-                        
+                        usn, cc = clean_str(r[usn_col]), clean_str(r[cc_col])
                         if (usn, cc) in valid_pairs:
                             stat = clean_str(r[stat_col]) if stat_col else "PRESENT"
                             m_val = str(r[m_col]).strip().upper()
@@ -407,19 +384,12 @@ with t3:
                                 "see_raw": raw_see,
                                 "exam_status": stat 
                             })
-                        else:
-                            ignored_count += 1
+                        else: ignored_count += 1
                             
-                    if not records:
-                        st.error(f"❌ Upload Failed. None of the {len(df_see)} records matched registered students for {active_cycle_name}.")
+                    if not records: st.error("❌ Upload Failed. No valid records.")
                     else:
-                        try:
-                            for i in range(0, len(records), 500):
-                                supabase.table("student_results").upsert(records[i:i+500]).execute()
-                            st.success(f"✅ Successfully uploaded {len(records)} valid SEE records.")
-                            if ignored_count > 0:
-                                st.warning(f"⚠️ Blocked {ignored_count} records (Students were not registered for those courses in this cycle).")
-                        except Exception as e: st.error(f"Database Error: {e}")
+                        for i in range(0, len(records), 500): supabase.table("student_results").upsert(records[i:i+500]).execute()
+                        st.success(f"✅ Successfully uploaded {len(records)} valid SEE records.")
 
     with col_s2:
         st.markdown("**Manual Entry**")
@@ -431,33 +401,27 @@ with t3:
             
             if st.form_submit_button("Save SEE Mark"):
                 regs = supabase.table("course_registrations").select("*").eq("cycle_id", selected_cycle_id).eq("usn", s_usn).eq("course_code", s_cc).execute().data
-                if not regs:
-                    st.error(f"❌ Student {s_usn} is NOT registered for {s_cc} in this cycle.")
+                if not regs: st.error(f"❌ Student {s_usn} is NOT registered for {s_cc}.")
                 else:
-                    try:
-                        supabase.table("student_results").upsert({
-                            "cycle_id": selected_cycle_id, "usn": s_usn, "course_code": s_cc, 
-                            "see_raw": s_marks, "exam_status": s_stat
-                        }).execute()
-                        st.success("✅ Saved to Database.")
-                    except Exception as e: st.error(f"Error: {e}")
+                    supabase.table("student_results").upsert({
+                        "cycle_id": selected_cycle_id, "usn": s_usn, "course_code": s_cc, 
+                        "see_raw": s_marks, "exam_status": s_stat
+                    }).execute()
+                    st.success("✅ Saved to Database.")
 
 # ----------------------------------------------------
-# TAB 4: GRADING ENGINE (Limit-Proof)
+# TAB 4: GRADING ENGINE
 # ----------------------------------------------------
 with t4:
     st.subheader("Result & Grading Processor")
     if st.button("⚙️ Execute Master Grading Algorithm", type="primary"):
         with st.spinner("Processing ALL records (bypassing 1000 row limit)..."):
             try:
-                # 🟢 FETCH ALL RESULTS RECURSIVELY 🟢
                 raw_res = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
-                
                 if not raw_res:
-                    st.error("No marks found for this cycle. Complete CIE and SEE entry first.")
+                    st.error("No marks found for this cycle.")
                     st.stop()
                     
-                # Fetch Masters
                 stu_res = fetch_all_records("master_students", "usn, branch_code")
                 branch_map = {str(r['usn']).strip().upper(): r['branch_code'] for r in stu_res}
                 
@@ -490,7 +454,7 @@ with t4:
                 for i in range(0, len(updates), 500):
                     supabase.table("student_results").upsert(updates[i:i+500]).execute()
                     
-                st.success(f"✅ Grading calculated for {len(updates)} records successfully! (Limit-Busting Engine applied)")
+                st.success(f"✅ Grading calculated for {len(updates)} records successfully!")
             except Exception as e: st.error(f"Error: {e}")
 
 # ----------------------------------------------------
@@ -502,10 +466,10 @@ with t5:
     if mod_usn:
         try:
             fail_res = supabase.table("student_results").select("*").eq("cycle_id", selected_cycle_id).eq("usn", mod_usn).eq("is_pass", False).execute()
-            if not fail_res.data: st.success(f"🎉 Student {mod_usn} has no failing subjects in this cycle!")
+            if not fail_res.data: st.success(f"🎉 Student {mod_usn} has no failing subjects!")
             else:
-                actual_fails = [r for r in fail_res.data if r['grade'] != 'PND']
-                if not actual_fails: st.warning(f"Student {mod_usn} is PENDING in their subjects. Cannot apply grace marks until SEE marks are uploaded.")
+                actual_fails = [r for r in fail_res.data if r['grade'] not in ['PND', 'PENDING']]
+                if not actual_fails: st.warning(f"Student {mod_usn} is PENDING in their subjects. Cannot apply grace marks yet.")
                 else:
                     stu_res = supabase.table("master_students").select("branch_code").eq("usn", mod_usn).execute()
                     student_branch = stu_res.data[0]['branch_code'] if stu_res.data else ""
@@ -547,7 +511,7 @@ with t5:
         except Exception as e: st.error(f"Error fetching data: {e}")
 
 # ----------------------------------------------------
-# TAB 6: PUBLISH LEDGERS & CARDS (Limit-Proof)
+# TAB 6: PUBLISH LEDGERS & CARDS (Upgraded LEDGER)
 # ----------------------------------------------------
 with t6:
     st.subheader("Generate Ledgers & Marks Cards")
@@ -556,7 +520,6 @@ with t6:
     if st.button("🖨️ Generate Master Ledger & PDFs"):
         with st.spinner("Compiling institutional ledgers (Paginating Database)..."):
             try:
-                # 🟢 FETCH ALL RECURSIVELY 🟢
                 regs_data = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
                 if not regs_data:
                     st.error("No course registrations found for this cycle. Cannot compile ledgers.")
@@ -593,21 +556,40 @@ with t6:
                             cr = float(mc.get('credits', 0))
                             r = res_map.get((usn, cc))
                             
-                            if not r or r.get('grade') == 'PND':
+                            # 🟢 PENDING CHECK: Missing record, Grade PND, or Exam Status PENDING
+                            if not r or r.get('grade') in ['PND', 'PENDING'] or r.get('exam_status') in ['PND', 'PENDING']:
                                 has_pending = True
-                                cie_disp = str(r['cie_marks']) if (r and r.get('cie_marks', 0) > 0) else "PND"
+                                cie_disp = str(r['cie_marks']) if (r and pd.notna(r.get('cie_marks'))) else "PND"
+                                
                                 results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': cie_disp, 'see': "-", 'tot': "-", 'grade': "PND", 'gp': "-", 'pass': False})
-                                ledger_dict[f"{cc}_Tot"] = "PND"; ledger_dict[f"{cc}_Grd"] = "PND"
+                                
+                                # 🟢 4-COLUMN LEDGER EXPANSION 🟢
+                                ledger_dict[f"{cc}_CIE"] = cie_disp
+                                ledger_dict[f"{cc}_SEE"] = "PND"
+                                ledger_dict[f"{cc}_Tot"] = "PND"
+                                ledger_dict[f"{cc}_Grd"] = "PND"
                             else:
-                                results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': str(r['cie_marks']), 'see': str(r['see_scaled']), 'tot': str(r['total_marks']), 'grade': str(r['grade']), 'gp': str(r['grade_points']), 'pass': r['is_pass']})
-                                ledger_dict[f"{cc}_Tot"] = r['total_marks']; ledger_dict[f"{cc}_Grd"] = r['grade']
+                                cie_val = r.get('cie_marks', 0)
+                                see_val = r.get('see_scaled', 0)
+                                tot_val = r.get('total_marks', 0)
+                                grd_val = r.get('grade', 'F')
+                                
+                                results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': str(cie_val), 'see': str(see_val), 'tot': str(tot_val), 'grade': str(grd_val), 'gp': str(r.get('grade_points', 0)), 'pass': r.get('is_pass', False)})
+                                
+                                # 🟢 4-COLUMN LEDGER EXPANSION 🟢
+                                ledger_dict[f"{cc}_CIE"] = cie_val
+                                ledger_dict[f"{cc}_SEE"] = see_val
+                                ledger_dict[f"{cc}_Tot"] = tot_val
+                                ledger_dict[f"{cc}_Grd"] = grd_val
+                                
                                 total_cr_attempted += cr
-                                total_gp_earned += (r['grade_points'] * cr)
-                                if not r['is_pass']: pass_flag = False
+                                total_gp_earned += (r.get('grade_points', 0) * cr)
+                                if not r.get('is_pass', False): pass_flag = False
                             
                         sgpa = (total_gp_earned / total_cr_attempted) if total_cr_attempted > 0 else 0.0
                         ledger_dict['SGPA'] = round(sgpa, 2) if not has_pending else "---"
                         ledger_dict['Result'] = "PENDING" if has_pending else ("PASS" if pass_flag else "FAIL")
+                        
                         ledger_rows.append(ledger_dict)
                         
                         pdf_buf = io.BytesIO()
@@ -616,6 +598,7 @@ with t6:
                         
                 df_ledger = pd.DataFrame(ledger_rows)
                 ledger_zip = io.BytesIO()
+                
                 with zipfile.ZipFile(ledger_zip, "w") as branch_zf:
                     for b_name, b_df in df_ledger.groupby('Branch'):
                         branch_excel = io.BytesIO()
@@ -623,7 +606,7 @@ with t6:
                             b_df.dropna(axis=1, how='all').to_excel(writer, index=False)
                         branch_zf.writestr(f"Ledger_{str(b_name)}.xlsx", branch_excel.getvalue())
                 
-                st.success(f"✅ Successfully compiled {len(ledger_rows)} records into ZIP! (Limit-Busting Engine applied)")
+                st.success(f"✅ Successfully compiled {len(ledger_rows)} records into ZIP! (Ledgers now contain CIE, SEE, Total, and Grade)")
                 c1, c2 = st.columns(2)
                 with c1: st.download_button("📊 Branch Ledgers (ZIP)", ledger_zip.getvalue(), f"Branch_Ledgers_{active_cycle_name}.zip")
                 with c2: st.download_button("📄 Marks Cards (ZIP)", pdf_zip_buffer.getvalue(), f"Marks_Cards_{active_cycle_name}.zip")
