@@ -32,6 +32,28 @@ def find_column(df, candidates):
             return df.columns[cols.index(candidate.upper())]
     return None
 
+# 🟢 SUPABASE LIMIT BUSTER 🟢
+def fetch_all_records(table_name, select_query="*", filters=None):
+    """Recursively fetches all records from a Supabase table bypassing the 1000 row limit."""
+    all_data = []
+    start = 0
+    step = 1000
+    
+    while True:
+        query = supabase.table(table_name).select(select_query).range(start, start + step - 1)
+        if filters:
+            for col, val in filters.items():
+                query = query.eq(col, val)
+        
+        res = query.execute()
+        if not res.data:
+            break
+        all_data.extend(res.data)
+        if len(res.data) < step:
+            break
+        start += step
+    return all_data
+
 # ==========================================
 # 2. UNIVERSAL GRADING ALGORITHM
 # ==========================================
@@ -201,9 +223,9 @@ with t1:
             if not (usn_col and cc_col and m_col):
                 st.error("Missing standard columns. Ensure USN, Course Code, and CIE Marks exist.")
             else:
-                with st.spinner("Validating against registrations..."):
-                    # 🟢 THE REGISTRATION FIREWALL 🟢
-                    regs = supabase.table("course_registrations").select("usn, course_code").eq("cycle_id", selected_cycle_id).execute().data
+                with st.spinner("Validating against registrations (Limit-Proof)..."):
+                    # 🟢 LIMIT BUSTER APPLIED 🟢
+                    regs = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
                     valid_pairs = set((str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()) for r in regs)
                     
                     records = []
@@ -354,9 +376,9 @@ with t3:
             
             if not (usn_col and cc_col and m_col): st.error("Missing standard columns.")
             else:
-                with st.spinner("Validating against registrations..."):
-                    # 🟢 THE REGISTRATION FIREWALL 🟢
-                    regs = supabase.table("course_registrations").select("usn, course_code").eq("cycle_id", selected_cycle_id).execute().data
+                with st.spinner("Validating against registrations (Limit-Proof)..."):
+                    # 🟢 LIMIT BUSTER APPLIED 🟢
+                    regs = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
                     valid_pairs = set((str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()) for r in regs)
                     
                     records = []
@@ -421,63 +443,55 @@ with t3:
                     except Exception as e: st.error(f"Error: {e}")
 
 # ----------------------------------------------------
-# TAB 4: GRADING ENGINE 
+# TAB 4: GRADING ENGINE (Limit-Proof)
 # ----------------------------------------------------
 with t4:
     st.subheader("Result & Grading Processor")
     if st.button("⚙️ Execute Master Grading Algorithm", type="primary"):
-        with st.spinner("Fetching rules and Calculating Totals..."):
+        with st.spinner("Processing ALL records (bypassing 1000 row limit)..."):
             try:
-                raw_res = supabase.table("student_results").select("*").eq("cycle_id", selected_cycle_id).execute()
-                if not raw_res.data:
+                # 🟢 FETCH ALL RESULTS RECURSIVELY 🟢
+                raw_res = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
+                
+                if not raw_res:
                     st.error("No marks found for this cycle. Complete CIE and SEE entry first.")
                     st.stop()
                     
-                stu_res = supabase.table("master_students").select("usn, branch_code").execute()
-                branch_map = {str(r['usn']).strip().upper(): r['branch_code'] for r in stu_res.data}
+                # Fetch Masters
+                stu_res = fetch_all_records("master_students", "usn, branch_code")
+                branch_map = {str(r['usn']).strip().upper(): r['branch_code'] for r in stu_res}
                 
                 branch_res = supabase.table("master_branches").select("branch_code, program_type").execute()
                 pg_branches = [r['branch_code'] for r in branch_res.data if str(r['program_type']).upper() == 'PG']
 
-                crs_res = supabase.table("master_courses").select("course_code, credits, max_see, max_cie, total_marks").execute()
-                credit_map = {r['course_code']: float(r['credits'] or 0) for r in crs_res.data}
-                max_see_map = {r['course_code']: float(r['max_see'] or 50) for r in crs_res.data}
-                max_cie_map = {r['course_code']: float(r['max_cie'] or 50) for r in crs_res.data}
-                paper_max_map = {r['course_code']: float(r['total_marks'] or 100) for r in crs_res.data}
+                crs_res = fetch_all_records("master_courses", "course_code, credits, max_see, max_cie, total_marks")
+                credit_map = {r['course_code']: float(r['credits'] or 0) for r in crs_res}
+                max_see_map = {r['course_code']: float(r['max_see'] or 50) for r in crs_res}
+                max_cie_map = {r['course_code']: float(r['max_cie'] or 50) for r in crs_res}
+                paper_max_map = {r['course_code']: float(r['total_marks'] or 100) for r in crs_res}
                 
                 updates = []
-                for row in raw_res.data:
-                    usn = str(row['usn']).strip().upper()
-                    cc = row['course_code']
+                for row in raw_res:
+                    usn, cc = str(row['usn']).strip().upper(), row['course_code']
+                    cred = credit_map.get(cc, 4.0)
+                    m_see, m_cie, conducted_for = max_see_map.get(cc, 50.0), max_cie_map.get(cc, 50.0), paper_max_map.get(cc, 100.0)
                     
-                    cred = credit_map.get(cc, 4.0) if cc in credit_map else 4.0
-                    m_see = max_see_map.get(cc, 50.0) 
-                    m_cie = max_cie_map.get(cc, 50.0)
-                    conducted_for = paper_max_map.get(cc, 100.0)
+                    is_pg = branch_map.get(usn, "") in pg_branches
+                    status = row.get('exam_status') or 'PENDING'
                     
-                    student_branch = branch_map.get(usn, "")
-                    is_pg = student_branch in pg_branches
-                    
-                    status = row.get('exam_status')
-                    if not status: status = 'PENDING'
-                    
-                    scaled_see, tot, grd, gp, is_pass = apply_grading_rules(
-                        row['cie_marks'], row['see_raw'], status, 
-                        cred, m_cie, m_see, conducted_for, is_pg
-                    )
-                    earned = cred if is_pass else 0.0
+                    scaled_see, tot, grd, gp, is_pass = apply_grading_rules(row['cie_marks'], row['see_raw'], status, cred, m_cie, m_see, conducted_for, is_pg)
                     
                     updates.append({
                         "cycle_id": selected_cycle_id, "usn": usn, "course_code": cc,
                         "see_scaled": scaled_see, "total_marks": tot, "grade": grd,
-                        "grade_points": gp, "credits_earned": earned, "is_pass": is_pass
+                        "grade_points": gp, "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass
                     })
                     
                 for i in range(0, len(updates), 500):
                     supabase.table("student_results").upsert(updates[i:i+500]).execute()
                     
-                st.success(f"✅ Grading calculated for {len(updates)} records successfully!")
-            except Exception as e: st.error(f"Error during calculation: {e}")
+                st.success(f"✅ Grading calculated for {len(updates)} records successfully! (Limit-Busting Engine applied)")
+            except Exception as e: st.error(f"Error: {e}")
 
 # ----------------------------------------------------
 # TAB 5: MODERATION (GRACE MARKS)
@@ -533,89 +547,67 @@ with t5:
         except Exception as e: st.error(f"Error fetching data: {e}")
 
 # ----------------------------------------------------
-# TAB 6: PUBLISH LEDGERS & CARDS 
+# TAB 6: PUBLISH LEDGERS & CARDS (Limit-Proof)
 # ----------------------------------------------------
 with t6:
     st.subheader("Generate Ledgers & Marks Cards")
     st.info("The system automatically checks the `course_registrations` table. Any student missing marks for a registered subject will explicitly show as **PENDING**.")
     
     if st.button("🖨️ Generate Master Ledger & PDFs"):
-        with st.spinner("Compiling institutional ledgers against Registrations..."):
+        with st.spinner("Compiling institutional ledgers (Paginating Database)..."):
             try:
-                regs_data = supabase.table("course_registrations").select("usn, course_code").eq("cycle_id", selected_cycle_id).execute().data
+                # 🟢 FETCH ALL RECURSIVELY 🟢
+                regs_data = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
                 if not regs_data:
                     st.error("No course registrations found for this cycle. Cannot compile ledgers.")
                     st.stop()
                 
                 stu_courses = {}
                 for r in regs_data:
-                    u = str(r['usn']).strip().upper()
-                    c = str(r['course_code']).strip().upper()
+                    u, c = clean_str(r['usn']), clean_str(r['course_code'])
                     if u not in stu_courses: stu_courses[u] = []
                     stu_courses[u].append(c)
 
-                res_data = supabase.table("student_results").select("*").eq("cycle_id", selected_cycle_id).execute().data
-                res_map = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): r for r in res_data}
+                res_data = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
+                res_map = {(clean_str(r['usn']), clean_str(r['course_code'])): r for r in res_data}
                 
-                stu_res = supabase.table("master_students").select("usn, full_name, branch_code").execute().data
-                name_map = {str(r['usn']).strip().upper(): (r.get('full_name') or "Unknown Student") for r in stu_res}
-                branch_map = {str(r['usn']).strip().upper(): (r.get('branch_code') or "UNKNOWN_BRANCH") for r in stu_res}
+                stu_res = fetch_all_records("master_students", "usn, full_name, branch_code")
+                name_map = {clean_str(r['usn']): r.get('full_name', "Unknown") for r in stu_res}
+                branch_map = {clean_str(r['usn']): r.get('branch_code', "UNKNOWN") for r in stu_res}
                 
-                crs_res = supabase.table("master_courses").select("course_code, title, credits").execute().data
-                crs_map = {str(c['course_code']).strip().upper(): c for c in crs_res}
+                crs_data = fetch_all_records("master_courses", "course_code, title, credits")
+                crs_map = {clean_str(c['course_code']): c for c in crs_data}
                 
                 ledger_rows = []
                 pdf_zip_buffer = io.BytesIO()
                 
                 with zipfile.ZipFile(pdf_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                     for usn, courses in stu_courses.items():
-                        name = name_map.get(usn, "Unknown")
-                        branch = branch_map.get(usn, "UNKNOWN_BRANCH")
-                        
-                        total_cr_attempted = 0.0
-                        total_gp_earned = 0.0
-                        results_list = []
-                        
+                        name, branch = name_map.get(usn, "Unknown"), branch_map.get(usn, "UNKNOWN")
+                        total_cr_attempted, total_gp_earned, results_list = 0.0, 0.0, []
                         ledger_dict = {'USN': usn, 'Name': name, 'Branch': branch}
-                        pass_flag = True
-                        has_pending = False
+                        pass_flag, has_pending = True, False
                         
                         for cc in courses:
                             mc = crs_map.get(cc, {})
-                            title = mc.get('title', cc)
                             cr = float(mc.get('credits', 0))
-                            
                             r = res_map.get((usn, cc))
                             
-                            if not r or r.get('exam_status') == 'PENDING' or r.get('grade') == 'PND':
+                            if not r or r.get('grade') == 'PND':
                                 has_pending = True
-                                cie_disp = str(r['cie_marks']) if (r and r.get('cie_marks') > 0) else "PENDING"
-                                results_list.append({
-                                    'code': cc, 'title': title, 'cr': cr,
-                                    'cie': cie_disp, 'see': "PENDING", 'tot': "PENDING",
-                                    'grade': "PENDING", 'gp': "-", 'pass': False
-                                })
-                                ledger_dict[f"{cc}_Tot"] = "PENDING"
-                                ledger_dict[f"{cc}_Grd"] = "PENDING"
+                                cie_disp = str(r['cie_marks']) if (r and r.get('cie_marks', 0) > 0) else "PND"
+                                results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': cie_disp, 'see': "-", 'tot': "-", 'grade': "PND", 'gp': "-", 'pass': False})
+                                ledger_dict[f"{cc}_Tot"] = "PND"; ledger_dict[f"{cc}_Grd"] = "PND"
                             else:
-                                results_list.append({
-                                    'code': cc, 'title': title, 'cr': cr,
-                                    'cie': str(r['cie_marks']), 'see': str(r['see_scaled']), 'tot': str(r['total_marks']),
-                                    'grade': str(r['grade']), 'gp': str(r['grade_points']), 'pass': r['is_pass']
-                                })
-                                ledger_dict[f"{cc}_Tot"] = r['total_marks']
-                                ledger_dict[f"{cc}_Grd"] = r['grade']
-                                
+                                results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': str(r['cie_marks']), 'see': str(r['see_scaled']), 'tot': str(r['total_marks']), 'grade': str(r['grade']), 'gp': str(r['grade_points']), 'pass': r['is_pass']})
+                                ledger_dict[f"{cc}_Tot"] = r['total_marks']; ledger_dict[f"{cc}_Grd"] = r['grade']
                                 total_cr_attempted += cr
                                 total_gp_earned += (r['grade_points'] * cr)
                                 if not r['is_pass']: pass_flag = False
                             
                         sgpa = (total_gp_earned / total_cr_attempted) if total_cr_attempted > 0 else 0.0
                         ledger_dict['SGPA'] = round(sgpa, 2) if not has_pending else "---"
-                        
-                        if has_pending: ledger_dict['Result'] = "PENDING"
-                        else: ledger_dict['Result'] = "PASS" if pass_flag else "FAIL"
-                        
+                        ledger_dict['Result'] = "PENDING" if has_pending else ("PASS" if pass_flag else "FAIL")
                         ledger_rows.append(ledger_dict)
                         
                         pdf_buf = io.BytesIO()
@@ -623,26 +615,16 @@ with t6:
                         zf.writestr(f"Marks_Cards/{usn}.pdf", pdf_buf.getvalue())
                         
                 df_ledger = pd.DataFrame(ledger_rows)
+                ledger_zip = io.BytesIO()
+                with zipfile.ZipFile(ledger_zip, "w") as branch_zf:
+                    for b_name, b_df in df_ledger.groupby('Branch'):
+                        branch_excel = io.BytesIO()
+                        with pd.ExcelWriter(branch_excel, engine='xlsxwriter') as writer:
+                            b_df.dropna(axis=1, how='all').to_excel(writer, index=False)
+                        branch_zf.writestr(f"Ledger_{str(b_name)}.xlsx", branch_excel.getvalue())
                 
-                ledger_zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(ledger_zip_buffer, "w", zipfile.ZIP_DEFLATED) as branch_zf:
-                    for branch_name, branch_df in df_ledger.groupby('Branch'):
-                        safe_branch = str(branch_name).replace("/", "_").replace("\\", "_")
-                        branch_df_clean = branch_df.dropna(axis=1, how='all')
-                        
-                        branch_excel_buf = io.BytesIO()
-                        with pd.ExcelWriter(branch_excel_buf, engine='xlsxwriter') as writer:
-                            branch_df_clean.to_excel(writer, sheet_name=safe_branch[:31], index=False)
-                            
-                        branch_zf.writestr(f"Ledger_{safe_branch}.xlsx", branch_excel_buf.getvalue())
-                
-                st.success("✅ Ledgers and PDFs Generated successfully!")
-                
-                col_d1, col_d2 = st.columns(2)
-                with col_d1:
-                    st.download_button("📊 Download Branch Ledgers (.zip)", ledger_zip_buffer.getvalue(), f"Branch_Ledgers_{active_cycle_name}.zip", "application/zip")
-                with col_d2:
-                    st.download_button("📄 Download Marks Cards (.zip)", pdf_zip_buffer.getvalue(), f"Marks_Cards_{active_cycle_name}.zip", "application/zip")
-                    
-            except Exception as e:
-                st.error(f"Generation Error: {e}")
+                st.success(f"✅ Successfully compiled {len(ledger_rows)} records into ZIP! (Limit-Busting Engine applied)")
+                c1, c2 = st.columns(2)
+                with c1: st.download_button("📊 Branch Ledgers (ZIP)", ledger_zip.getvalue(), f"Branch_Ledgers_{active_cycle_name}.zip")
+                with c2: st.download_button("📄 Marks Cards (ZIP)", pdf_zip_buffer.getvalue(), f"Marks_Cards_{active_cycle_name}.zip")
+            except Exception as e: st.error(f"Generation Error: {e}")
