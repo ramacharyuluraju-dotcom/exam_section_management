@@ -126,36 +126,56 @@ with tabs[0]:
             st.error("Error retrieving cycle details. Please re-select from sidebar.")
 
 # ==========================================
-# 2. CREATE NEW CYCLE (MULTIPLE ALLOWED)
+# 2. CREATE NEW CYCLE (DYNAMIC PARENT LINKING)
 # ==========================================
 with tabs[1]:
     st.markdown("### 🆕 Initiate New Exam Session")
-    st.info("Parallel cycles allowed (e.g., manage UG Semester 1 and PG Semester 3 simultaneously).")
+    st.info("Parallel cycles allowed. Link Make-up/Arrear exams to their original Regular cycle.")
     
-    with st.form("new_cycle_form", clear_on_submit=True):
-        c_name = st.text_input("Cycle Name", placeholder="e.g., UG Sem-1 Regular Feb-2026")
+    # Standard inputs instead of st.form to allow dynamic UI updates
+    c_name = st.text_input("Cycle Name", placeholder="e.g., UG Sem-1 Make-up March-2026")
+    
+    col1, col2 = st.columns(2)
+    c_ay = col1.text_input("Academic Year", value="2025-26")
+    c_type = col2.selectbox("Exam Type", ["Regular", "Supplementary", "Summer", "Revaluation", "Make-up"])
+    
+    # 🟢 DYNAMIC PARENT CYCLE SELECTOR 🟢
+    parent_cycle_id = None
+    if c_type != "Regular":
+        st.markdown("🔗 **Link to Parent Exam Cycle**")
+        st.caption("Select the original Regular exam cycle where the students' CIE marks and registrations reside.")
         
-        col1, col2 = st.columns(2)
-        c_ay = col1.text_input("Academic Year", value="2025-26")
-        c_type = col2.selectbox("Exam Type", ["Regular", "Supplementary", "Summer", "Revaluation", "Make-up"])
-        
-        if st.form_submit_button("🚀 Start Exam Lifecycle"):
-            if c_name:
-                new_cycle = {
-                    "cycle_name": c_name,
-                    "academic_year": c_ay,
-                    "exam_type": c_type,
-                    "status_code": 1,
-                    "is_active": True
-                }
-                try:
-                    supabase.table("exam_cycles").insert(new_cycle).execute()
-                    st.success(f"Exam Cycle '{c_name}' initiated!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Could not create cycle: {e}")
-            else:
-                st.error("Please provide a name for the new cycle.")
+        try:
+            # Fetch all existing cycles to populate the dropdown
+            existing_cycles = supabase.table("exam_cycles").select("cycle_id, cycle_name").execute().data
+            if existing_cycles:
+                # Map the display name to the integer ID
+                cycle_dict = {f"{c['cycle_name']} (ID: {c['cycle_id']})": int(c['cycle_id']) for c in existing_cycles}
+                selected_parent = st.selectbox("Select Parent Cycle", options=["None"] + list(cycle_dict.keys()))
+                
+                if selected_parent != "None":
+                    parent_cycle_id = cycle_dict[selected_parent]
+        except Exception as e:
+            st.error("Could not load existing cycles for linking.")
+
+    if st.button("🚀 Start Exam Lifecycle", type="primary"):
+        if c_name:
+            new_cycle = {
+                "cycle_name": c_name,
+                "academic_year": c_ay,
+                "exam_type": c_type,
+                "status_code": 1,
+                "is_active": True,
+                "parent_cycle_id": parent_cycle_id # Saves the integer link to DB
+            }
+            try:
+                supabase.table("exam_cycles").insert(new_cycle).execute()
+                st.success(f"Exam Cycle '{c_name}' initiated successfully!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not create cycle: {e}")
+        else:
+            st.error("Please provide a name for the new cycle.")
 
 # ==========================================
 # 3. CYCLE HISTORY & RESTORE
@@ -174,7 +194,7 @@ with tabs[2]:
             
             st.divider()
             
-            # --- NEW: RESTORE FEATURE ---
+            # --- RESTORE FEATURE ---
             st.markdown("### 🔄 Reopen an Archived Cycle")
             st.info("Accidentally closed a cycle? Reopen it here to continue processing marks and results.")
             
