@@ -32,7 +32,6 @@ def find_column(df, candidates):
             return df.columns[cols.index(candidate.upper())]
     return None
 
-# 🟢 THE "0" BUG FIX PARSER 🟢
 def safe_float(val, default):
     """Safely converts a value to float, correctly preserving literal 0s."""
     if val is None:
@@ -46,25 +45,20 @@ def safe_float(val, default):
     except:
         return float(default)
 
-# 🟢 SUPABASE LIMIT BUSTER 🟢
 def fetch_all_records(table_name, select_query="*", filters=None):
     """Recursively fetches all records from a Supabase table bypassing the 1000 row limit."""
     all_data = []
     start = 0
     step = 1000
-    
     while True:
         query = supabase.table(table_name).select(select_query).range(start, start + step - 1)
         if filters:
             for col, val in filters.items():
                 query = query.eq(col, val)
-        
         res = query.execute()
-        if not res.data:
-            break
+        if not res.data: break
         all_data.extend(res.data)
-        if len(res.data) < step:
-            break
+        if len(res.data) < step: break
         start += step
     return all_data
 
@@ -74,17 +68,15 @@ def fetch_all_records(table_name, select_query="*", filters=None):
 def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=50, exam_conducted_for=100, is_pg=False):
     is_internal_only = (max_see == 0)
     
-    # 🟢 THE AUTO-HEALER 🟢
+    # Auto-Healer
     if not is_internal_only:
         if pd.notna(see_raw) and see_raw is not None and str(see_raw).strip() != "":
-            if not status or status in ['PENDING', 'PND']:
-                status = 'PRESENT'
+            if not status or status in ['PENDING', 'PND']: status = 'PRESENT'
     else:
         if pd.notna(cie_raw) and cie_raw is not None and str(cie_raw).strip() != "":
-            if not status or status in ['PENDING', 'PND']:
-                status = 'PRESENT'
+            if not status or status in ['PENDING', 'PND']: status = 'PRESENT'
 
-    # 🟢 STRICT PENDING LOCKS 🟢
+    # Strict Pending Locks
     if not is_internal_only:
         if status in ['PENDING', 'PND'] or not status or pd.isna(see_raw) or see_raw is None: 
             return 0, cie_raw, 'PND', 0, False, status
@@ -92,7 +84,6 @@ def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=5
         if status in ['PENDING', 'PND'] or not status or pd.isna(cie_raw) or cie_raw is None:
             return 0, cie_raw, 'PND', 0, False, status
             
-    # Standard Status Overrides
     if status in ['ABSENT', 'AB']: return 0, 0, 'AB', 0, False, 'ABSENT'
     if status in ['MALPRACTICE', 'MP']: return 0, 0, 'MP', 0, False, 'MALPRACTICE'
     if status in ['WITHHELD', 'WH']: return 0, 0, 'WH', 0, False, 'WITHHELD'
@@ -224,27 +215,25 @@ if not selected_cycle_id:
 st.title("🏆 Results & Grading Engine")
 st.info(f"📍 **Active Context:** Processing data strictly for Cycle: **{active_cycle_name}**")
 
-# 🟢 7 TABS DEFINED HERE 🟢
-t1, t2, t3, t4, t5, t6, t7 = st.tabs([
+# 🟢 8 TABS TO SUPPORT NEW ARCHITECTURE 🟢
+t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs([
     "1. CIE Consolidator", 
     "2. Bundle Decoder", 
     "3. SEE Consolidator", 
     "4. Grading Engine", 
-    "5. Moderation", 
+    "5. Moderation (Audit Logged)", 
     "6. Publish Ledgers",
-    "7. CoE Dashboard"
+    "7. CoE Dashboard",
+    "8. Arrear & Make-up Engine"
 ])
 
 # ----------------------------------------------------
-# TAB 1: CIE ENTRY
+# TAB 1: CIE ENTRY 
 # ----------------------------------------------------
 with t1:
     st.subheader("Department Internals (CIE) Consolidation")
-    st.info("Marks are securely cross-checked against official Course Registrations for this cycle.")
     col_c1, col_c2 = st.columns(2)
-    
     with col_c1:
-        st.markdown("**Bulk CSV Upload**")
         f_cie = st.file_uploader("Upload CSV (Required: usn, course_code, cie_marks)", type='csv', key="cie_up")
         if f_cie and st.button("🚀 Process Bulk CIE"):
             df_cie = pd.read_csv(f_cie)
@@ -252,24 +241,17 @@ with t1:
             cc_col = find_column(df_cie, ['course_code', 'course code', 'subject code'])
             m_col = find_column(df_cie, ['cie_marks', 'cie', 'ia marks', 'internals'])
             
-            if not (usn_col and cc_col and m_col):
-                st.error("Missing standard columns.")
+            if not (usn_col and cc_col and m_col): st.error("Missing standard columns.")
             else:
                 with st.spinner("Validating against registrations..."):
                     regs = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
                     valid_pairs = set((str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()) for r in regs)
                     
-                    records = []
-                    ignored_count = 0
+                    records, ignored_count = [], 0
                     for _, r in df_cie.iterrows():
                         usn, cc = clean_str(r[usn_col]), clean_str(r[cc_col])
                         if (usn, cc) in valid_pairs:
-                            records.append({
-                                "cycle_id": selected_cycle_id, 
-                                "usn": usn, 
-                                "course_code": cc, 
-                                "cie_marks": safe_float(r[m_col], None)
-                            })
+                            records.append({"cycle_id": selected_cycle_id, "usn": usn, "course_code": cc, "cie_marks": safe_float(r[m_col], None)})
                         else: ignored_count += 1
                             
                     if not records: st.error("No matching registered students found.")
@@ -279,25 +261,16 @@ with t1:
                         if ignored_count > 0: st.warning(f"⚠️ Blocked {ignored_count} records (Not registered).")
 
     with col_c2:
-        st.markdown("**Manual Entry**")
         with st.form("manual_cie"):
             m_usn = st.text_input("USN").strip().upper()
             m_cc = st.text_input("Course Code").strip().upper()
             m_marks = st.number_input("CIE Marks", min_value=0.0, max_value=100.0, value=0.0, step=0.5)
-            
             if st.form_submit_button("Save CIE Mark"):
                 regs = supabase.table("course_registrations").select("*").eq("cycle_id", selected_cycle_id).eq("usn", m_usn).eq("course_code", m_cc).execute().data
-                if not regs:
-                    st.error(f"❌ Student {m_usn} is NOT registered for {m_cc} in this cycle.")
+                if not regs: st.error(f"❌ Student {m_usn} is NOT registered for {m_cc}.")
                 else:
-                    try:
-                        supabase.table("student_results").upsert({
-                            "cycle_id": selected_cycle_id, "usn": m_usn, "course_code": m_cc, 
-                            "cie_marks": m_marks
-                        }).execute()
-                        st.success("✅ Saved.")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+                    supabase.table("student_results").upsert({"cycle_id": selected_cycle_id, "usn": m_usn, "course_code": m_cc, "cie_marks": m_marks}).execute()
+                    st.success("✅ Saved.")
 
 # ----------------------------------------------------
 # TAB 2: BUNDLE DECODER UTILITY
@@ -305,14 +278,11 @@ with t1:
 with t2:
     st.subheader("🔐 Standalone Bundle Decoder")
     col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        key_file = st.file_uploader("1. Upload MASTER_SECRET_KEY.xlsx", type=['xlsx'])
-    with col_d2:
-        bundle_files = st.file_uploader("2. Upload Evaluator Bundles (.xlsx)", type=['xlsx'], accept_multiple_files=True)
+    with col_d1: key_file = st.file_uploader("1. Upload MASTER_SECRET_KEY.xlsx", type=['xlsx'])
+    with col_d2: bundle_files = st.file_uploader("2. Upload Evaluator Bundles (.xlsx)", type=['xlsx'], accept_multiple_files=True)
 
     if st.button("🔓 Generate Decoded CSV", type="primary"):
-        if not key_file or not bundle_files:
-            st.warning("⚠️ Please upload both the Master Key and at least one Evaluator Bundle.")
+        if not key_file or not bundle_files: st.warning("⚠️ Please upload both the Master Key and at least one Evaluator Bundle.")
         else:
             with st.spinner("Decrypting Dummy IDs and extracting marks..."):
                 try:
@@ -338,8 +308,7 @@ with t2:
                                 for _, r in df_bun.iterrows():
                                     d_id = str(r[dummy_col]).strip().upper()
                                     m_val = r[marks_col]
-                                    if len(d_id) > 2 and d_id != "NAN":
-                                        extracted_data.append({'Dummy_ID': d_id, 'SEE_Raw_Val': m_val})
+                                    if len(d_id) > 2 and d_id != "NAN": extracted_data.append({'Dummy_ID': d_id, 'SEE_Raw_Val': m_val})
                         except: pass
                     
                     if extracted_data:
@@ -347,10 +316,8 @@ with t2:
                         final_df = pd.merge(key_df, marks_df, on='Dummy_ID', how='inner')
                         processed_records = []
                         for _, r in final_df.iterrows():
-                            raw_val = r.get('SEE_Raw_Val', '')
-                            m_val = str(raw_val).strip().upper()
-                            stat = "PRESENT"
-                            raw_see = 0.0
+                            m_val = str(r.get('SEE_Raw_Val', '')).strip().upper()
+                            stat, raw_see = "PRESENT", 0.0
                             
                             if m_val in ['AB', 'ABSENT']: stat = 'ABSENT'
                             elif m_val in ['MP', 'MAL', 'MALPRACTICE']: stat = 'MALPRACTICE'
@@ -376,9 +343,7 @@ with t2:
 with t3:
     st.subheader("SEE Marks Consolidation")
     col_s1, col_s2 = st.columns(2)
-    
     with col_s1:
-        st.markdown("**Bulk CSV Upload**")
         f_see = st.file_uploader("Upload CSV (Required: usn, course_code, see_marks, status)", type='csv', key="see_up")
         if f_see and st.button("🚀 Process Bulk SEE"):
             df_see = pd.read_csv(f_see)
@@ -393,9 +358,7 @@ with t3:
                     regs = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
                     valid_pairs = set((str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()) for r in regs)
                     
-                    records = []
-                    ignored_count = 0
-                    
+                    records, ignored_count = [], 0
                     for _, r in df_see.iterrows():
                         usn, cc = clean_str(r[usn_col]), clean_str(r[cc_col])
                         if (usn, cc) in valid_pairs:
@@ -410,10 +373,7 @@ with t3:
                                 try: raw_see = float(m_val)
                                 except: raw_see = None
 
-                            records.append({
-                                "cycle_id": selected_cycle_id, "usn": usn, "course_code": cc,
-                                "see_raw": raw_see, "exam_status": stat 
-                            })
+                            records.append({"cycle_id": selected_cycle_id, "usn": usn, "course_code": cc, "see_raw": raw_see, "exam_status": stat})
                         else: ignored_count += 1
                             
                     if not records: st.error("❌ Upload Failed. No valid records.")
@@ -423,21 +383,16 @@ with t3:
                         if ignored_count > 0: st.warning(f"⚠️ Blocked {ignored_count} unregistered records.")
 
     with col_s2:
-        st.markdown("**Manual Entry**")
         with st.form("manual_see"):
             s_usn = st.text_input("USN").strip().upper()
             s_cc = st.text_input("Course Code").strip().upper()
             s_marks = st.number_input("SEE Marks (Raw Paper Score)", min_value=0.0, max_value=100.0, value=0.0)
             s_stat = st.selectbox("Status", ["PRESENT", "ABSENT", "MALPRACTICE", "WITHHELD"])
-            
             if st.form_submit_button("Save SEE Mark"):
                 regs = supabase.table("course_registrations").select("*").eq("cycle_id", selected_cycle_id).eq("usn", s_usn).eq("course_code", s_cc).execute().data
                 if not regs: st.error(f"❌ Student {s_usn} is NOT registered for {s_cc}.")
                 else:
-                    supabase.table("student_results").upsert({
-                        "cycle_id": selected_cycle_id, "usn": s_usn, "course_code": s_cc, 
-                        "see_raw": s_marks, "exam_status": s_stat
-                    }).execute()
+                    supabase.table("student_results").upsert({"cycle_id": selected_cycle_id, "usn": s_usn, "course_code": s_cc, "see_raw": s_marks, "exam_status": s_stat}).execute()
                     st.success("✅ Saved to Database.")
 
 # ----------------------------------------------------
@@ -490,10 +445,11 @@ with t4:
             except Exception as e: st.error(f"Error: {e}")
 
 # ----------------------------------------------------
-# TAB 5: MODERATION (GRACE MARKS)
+# TAB 5: MODERATION (GRACE MARKS & AUDIT)
 # ----------------------------------------------------
 with t5:
-    st.subheader("⚖️ Moderation & Grace Marks")
+    st.subheader("⚖️ Moderation & Grace Marks (Audited)")
+    st.info("All grace marks applied here are logged permanently to the `marks_audit_log` table for compliance.")
     mod_usn = st.text_input("Enter Student USN to review failing subjects:").strip().upper()
     if mod_usn:
         try:
@@ -517,7 +473,7 @@ with t5:
                         cc = r['course_code']
                         mc = crs_map.get(cc, {})
                         title = mc.get('title', cc)
-                        c_cie, c_see, c_tot, c_grade = r['cie_marks'], r['see_raw'], r['total_marks'], r['grade']
+                        c_cie, c_see, c_tot, c_grade = safe_float(r['cie_marks'], 0), safe_float(r['see_raw'], 0), safe_float(r['total_marks'], 0), str(r['grade'])
                         
                         with st.expander(f"⚠️ {cc} - {title} (Current Grade: {c_grade})"):
                             st.markdown(f"**Current Marks:** CIE: `{c_cie}` | SEE Raw: `{c_see}` | Scaled SEE: `{r['see_scaled']}` | Total: `{c_tot}`")
@@ -525,26 +481,42 @@ with t5:
                                 col_m1, col_m2 = st.columns(2)
                                 grace_target = col_m1.radio("Add Grace Marks To:", ["SEE Exam", "CIE (Internals)"])
                                 grace_marks = col_m2.number_input("Grace Marks to Add", min_value=1.0, max_value=10.0, step=1.0, value=1.0)
+                                grace_reason = st.text_input("Reason for Moderation (Required for Audit):")
+                                
                                 if st.form_submit_button("✨ Apply Grace Marks & Recalculate"):
-                                    new_cie = c_cie + grace_marks if grace_target == "CIE (Internals)" else c_cie
-                                    new_see = c_see + grace_marks if grace_target == "SEE Exam" else c_see
-                                    cred = safe_float(mc.get('credits'), 4.0)
-                                    m_cie = safe_float(mc.get('max_cie'), 50.0)
-                                    m_see = safe_float(mc.get('max_see'), 50.0)
-                                    conducted_for = safe_float(mc.get('total_marks'), 100.0)
-                                    
-                                    scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(new_cie, new_see, r['exam_status'], cred, m_cie, m_see, conducted_for, is_pg)
-                                    
-                                    update_data = {
-                                        "cycle_id": selected_cycle_id, "usn": mod_usn, "course_code": cc,
-                                        "cie_marks": new_cie, "see_raw": new_see, "see_scaled": scaled_see,
-                                        "total_marks": tot, "grade": grd, "grade_points": gp,
-                                        "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass,
-                                        "exam_status": healed_status
-                                    }
-                                    supabase.table("student_results").upsert(update_data).execute()
-                                    if is_pass: st.success(f"✅ Grace marks applied! Passed with Grade **{grd}**.")
-                                    else: st.warning(f"⚠️ Grace marks applied, but student still failing. New Grade: **{grd}**.")
+                                    if not grace_reason:
+                                        st.error("Audit reason is required.")
+                                    else:
+                                        new_cie = c_cie + grace_marks if grace_target == "CIE (Internals)" else c_cie
+                                        new_see = c_see + grace_marks if grace_target == "SEE Exam" else c_see
+                                        cred = safe_float(mc.get('credits'), 4.0)
+                                        m_cie, m_see, conducted_for = safe_float(mc.get('max_cie'), 50.0), safe_float(mc.get('max_see'), 50.0), safe_float(mc.get('total_marks'), 100.0)
+                                        
+                                        scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(new_cie, new_see, r['exam_status'], cred, m_cie, m_see, conducted_for, is_pg)
+                                        
+                                        # 🟢 WRITE TO AUDIT LOG 🟢
+                                        audit_payload = {
+                                            "cycle_id": selected_cycle_id, "usn": mod_usn, "course_code": cc,
+                                            "change_type": "MODERATION - GRACE",
+                                            "old_cie": c_cie, "old_see": c_see, "old_grade": c_grade,
+                                            "new_cie": new_cie, "new_see": new_see, "new_grade": grd,
+                                            "reason": f"{grace_reason} (+{grace_marks} to {grace_target})"
+                                        }
+                                        try: supabase.table("marks_audit_log").insert(audit_payload).execute()
+                                        except Exception as e: st.warning("Audit Log Warning: Log table might not exist yet. Run the SQL script.")
+
+                                        # 🟢 UPDATE RESULTS WITH TRACKING FLAGS 🟢
+                                        update_data = {
+                                            "cycle_id": selected_cycle_id, "usn": mod_usn, "course_code": cc,
+                                            "cie_marks": new_cie, "see_raw": new_see, "see_scaled": scaled_see,
+                                            "total_marks": tot, "grade": grd, "grade_points": gp,
+                                            "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass,
+                                            "exam_status": healed_status,
+                                            "is_graced": True, "grace_marks_added": float(grace_marks)
+                                        }
+                                        supabase.table("student_results").upsert(update_data).execute()
+                                        if is_pass: st.success(f"✅ Grace marks applied and audited! Passed with Grade **{grd}**.")
+                                        else: st.warning(f"⚠️ Audited, but student still failing. New Grade: **{grd}**.")
         except Exception as e: st.error(f"Error fetching data: {e}")
 
 # ----------------------------------------------------
@@ -552,9 +524,8 @@ with t5:
 # ----------------------------------------------------
 with t6:
     st.subheader("Generate Ledgers & Marks Cards")
-    
     if st.button("🖨️ Generate Master Ledger & PDFs"):
-        with st.spinner("Compiling institutional ledgers (Paginating Database)..."):
+        with st.spinner("Compiling institutional ledgers..."):
             try:
                 regs_data = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
                 if not regs_data:
@@ -590,38 +561,27 @@ with t6:
                         for cc in courses:
                             mc = crs_map.get(cc, {})
                             cr = safe_float(mc.get('credits'), 0.0)
-                            
                             is_internal_only = (safe_float(mc.get('max_see'), 50.0) == 0.0)
                             r = res_map.get((usn, cc))
                             
-                            if not is_internal_only:
-                                see_missing = not r or pd.isna(r.get('see_raw')) or r.get('see_raw') is None
-                            else:
-                                see_missing = False # Internal subjects do not require SEE marks
+                            if not is_internal_only: see_missing = not r or pd.isna(r.get('see_raw')) or r.get('see_raw') is None
+                            else: see_missing = False
                             
                             if see_missing or not r or r.get('grade') in ['PND', 'PENDING'] or r.get('exam_status') in ['PND', 'PENDING']:
                                 has_pending = True
                                 cie_disp = str(r['cie_marks']) if (r and pd.notna(r.get('cie_marks'))) else "PND"
                                 see_disp = "-" if is_internal_only else "PND"
-                                
                                 results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': cie_disp, 'see': see_disp, 'tot': "-", 'grade': "PND", 'gp': "-", 'pass': False})
-                                
-                                ledger_dict[f"{cc}_CIE"] = cie_disp
-                                ledger_dict[f"{cc}_SEE"] = see_disp
-                                ledger_dict[f"{cc}_Tot"] = "PND"
-                                ledger_dict[f"{cc}_Grd"] = "PND"
+                                ledger_dict[f"{cc}_CIE"] = cie_disp; ledger_dict[f"{cc}_SEE"] = see_disp
+                                ledger_dict[f"{cc}_Tot"] = "PND"; ledger_dict[f"{cc}_Grd"] = "PND"
                             else:
                                 cie_val = r.get('cie_marks', 0)
                                 see_val = r.get('see_scaled', 0)
                                 tot_val = r.get('total_marks', 0)
                                 grd_val = r.get('grade', 'F')
-                                
                                 results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': str(cie_val), 'see': str(see_val) if not is_internal_only else "-", 'tot': str(tot_val), 'grade': str(grd_val), 'gp': str(r.get('grade_points', 0)), 'pass': r.get('is_pass', False)})
-                                
-                                ledger_dict[f"{cc}_CIE"] = cie_val
-                                ledger_dict[f"{cc}_SEE"] = "-" if is_internal_only else see_val
-                                ledger_dict[f"{cc}_Tot"] = tot_val
-                                ledger_dict[f"{cc}_Grd"] = grd_val
+                                ledger_dict[f"{cc}_CIE"] = cie_val; ledger_dict[f"{cc}_SEE"] = "-" if is_internal_only else see_val
+                                ledger_dict[f"{cc}_Tot"] = tot_val; ledger_dict[f"{cc}_Grd"] = grd_val
                                 
                                 total_cr_attempted += cr
                                 total_gp_earned += (r.get('grade_points', 0) * cr)
@@ -632,28 +592,21 @@ with t6:
                         ledger_dict['Result'] = "PENDING" if has_pending else ("PASS" if pass_flag else "FAIL")
                         
                         ledger_rows.append(ledger_dict)
-                        
                         pdf_buf = io.BytesIO()
                         generate_marks_card_pdf(pdf_buf, usn, name, results_list, sgpa, has_pending)
                         zf.writestr(f"Marks_Cards/{usn}.pdf", pdf_buf.getvalue())
                         
                 df_ledger = pd.DataFrame(ledger_rows)
-                
-                base_cols = ['USN', 'Name', 'Branch']
-                end_cols = ['SGPA', 'Result']
-                
+                base_cols = ['USN', 'Name', 'Branch']; end_cols = ['SGPA', 'Result']
                 def sort_key(col_name):
                     if col_name.endswith('_CIE'): return (col_name[:-4], 1)
                     if col_name.endswith('_SEE'): return (col_name[:-4], 2)
                     if col_name.endswith('_Tot'): return (col_name[:-4], 3)
                     if col_name.endswith('_Grd'): return (col_name[:-4], 4)
                     return (col_name, 5)
-
                 course_cols = [c for c in df_ledger.columns if c not in base_cols + end_cols]
                 course_cols.sort(key=sort_key)
-                
-                ordered_cols = base_cols + course_cols + end_cols
-                df_ledger = df_ledger[ordered_cols]
+                df_ledger = df_ledger[base_cols + course_cols + end_cols]
                 
                 ledger_zip = io.BytesIO()
                 with zipfile.ZipFile(ledger_zip, "w") as branch_zf:
@@ -674,34 +627,24 @@ with t6:
 # ----------------------------------------------------
 with t7:
     st.subheader("📊 Institutional Analytics Dashboard")
-    st.write("Real-time statistics for the active exam cycle.")
-    
     if st.button("🔄 Refresh Statistics", type="primary"):
         with st.spinner("Compiling institutional metrics..."):
             try:
-                # Fetch data using the Limit-Buster
                 res_data = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
-                
-                if not res_data:
-                    st.warning("No data available to analyze for this cycle.")
+                if not res_data: st.warning("No data available.")
                 else:
                     df = pd.DataFrame(res_data)
-                    
-                    # Map branches for branch-wise analysis
                     stu_data = fetch_all_records("master_students", "usn, branch_code")
                     branch_map = {str(r['usn']).strip().upper(): r.get('branch_code', 'UNKNOWN') for r in stu_data}
                     df['Branch'] = df['usn'].map(branch_map)
 
-                    # Calculate Top-Level Metrics
                     total_evals = len(df)
                     pending_evals = len(df[df['grade'].isin(['PND', 'PENDING'])])
                     failed_evals = len(df[df['grade'] == 'F'])
                     passed_evals = total_evals - pending_evals - failed_evals
-                    
                     completed_evals = total_evals - pending_evals
                     pass_pct = (passed_evals / completed_evals * 100) if completed_evals > 0 else 0
                     
-                    # Display Top Metrics
                     col1, col2, col3, col4 = st.columns(4)
                     col1.metric("Total Evaluations", f"{total_evals:,}")
                     col2.metric("Pending SEE Marks", f"{pending_evals:,}", delta="-Requires Action" if pending_evals > 0 else "All Clear", delta_color="inverse")
@@ -709,25 +652,16 @@ with t7:
                     col4.metric("Total Fails", f"{failed_evals:,}")
                     
                     st.markdown("---")
-                    
-                    # Visualizations
                     chart_col1, chart_col2 = st.columns(2)
-                    
                     with chart_col1:
                         st.markdown("##### 📈 Grade Distribution")
-                        # Exclude pending from grade distribution
                         df_graded = df[~df['grade'].isin(['PND', 'PENDING'])]
                         if not df_graded.empty:
                             grade_counts = df_graded['grade'].value_counts().reset_index()
                             grade_counts.columns = ['Grade', 'Count']
-                            # Sort custom order
                             grade_order = ['O', 'A+', 'A', 'B+', 'B', 'C', 'P', 'F', 'AB', 'MP']
                             grade_counts['Grade'] = pd.Categorical(grade_counts['Grade'], categories=grade_order, ordered=True)
-                            grade_counts = grade_counts.sort_values('Grade').set_index('Grade')
-                            
-                            st.bar_chart(grade_counts['Count'], color="#4CAF50")
-                        else:
-                            st.info("No graded data to display.")
+                            st.bar_chart(grade_counts.sort_values('Grade').set_index('Grade')['Count'], color="#4CAF50")
 
                     with chart_col2:
                         st.markdown("##### 🏢 Branch-wise Pass Rates")
@@ -735,26 +669,56 @@ with t7:
                         for branch, group in df_graded.groupby('Branch'):
                             b_total = len(group)
                             b_pass = len(group[group['is_pass'] == True])
-                            b_rate = (b_pass / b_total) * 100 if b_total > 0 else 0
-                            branch_stats.append({'Branch': branch, 'Pass Rate %': b_rate})
-                        
-                        if branch_stats:
-                            df_branch = pd.DataFrame(branch_stats).set_index('Branch')
-                            st.bar_chart(df_branch['Pass Rate %'], color="#2196F3")
-                        else:
-                            st.info("No branch data to display.")
+                            branch_stats.append({'Branch': branch, 'Pass Rate %': (b_pass / b_total) * 100 if b_total > 0 else 0})
+                        if branch_stats: st.bar_chart(pd.DataFrame(branch_stats).set_index('Branch')['Pass Rate %'], color="#2196F3")
 
-                    # Actionable Alerts Section
                     st.markdown("---")
                     st.subheader("⚠️ Actionable Alerts")
-                    
                     pending_df = df[df['grade'].isin(['PND', 'PENDING'])]
                     if not pending_df.empty:
-                        pending_by_course = pending_df['course_code'].value_counts()
-                        for course, count in pending_by_course.items():
+                        for course, count in pending_df['course_code'].value_counts().items():
                             st.error(f"Missing SEE Marks for **{count}** students in subject **{course}**.")
-                    else:
-                        st.success("🎉 All clear! All evaluated subjects have full marks uploaded.")
+                    else: st.success("🎉 All clear! All evaluated subjects have full marks uploaded.")
+            except Exception as e: st.error(f"Dashboard Error: {e}")
 
-            except Exception as e:
-                st.error(f"Dashboard Error: {e}")
+# ----------------------------------------------------
+# TAB 8: ARREAR & MAKE-UP ENGINE
+# ----------------------------------------------------
+with t8:
+    st.subheader("⚙️ Arrear & Make-up Exam Manager")
+    st.info("Use this tool to pull a student's historical CIE marks from a previous Regular Exam into the current Make-up/Arrear Cycle.")
+    
+    with st.form("makeup_engine"):
+        mu_usn = st.text_input("Student USN").strip().upper()
+        mu_cc = st.text_input("Course Code (Arrear Subject)").strip().upper()
+        parent_cycle = st.text_input("Parent Cycle ID (The Cycle ID where they took the regular CIEs)").strip()
+        
+        if st.form_submit_button("🔁 Pull CIE to Current Cycle"):
+            if not mu_usn or not mu_cc or not parent_cycle:
+                st.error("All fields are required.")
+            else:
+                # 1. Verify student is officially registered for the Make-up exam in the CURRENT cycle
+                regs = supabase.table("course_registrations").select("*").eq("cycle_id", selected_cycle_id).eq("usn", mu_usn).eq("course_code", mu_cc).execute().data
+                if not regs:
+                    st.error(f"❌ Student {mu_usn} is not officially registered for {mu_cc} in the current Make-up Cycle ({selected_cycle_id}).")
+                else:
+                    # 2. Look for the historical marks in the Parent Cycle
+                    parent_record = supabase.table("student_results").select("cie_marks").eq("cycle_id", parent_cycle).eq("usn", mu_usn).eq("course_code", mu_cc).execute().data
+                    if not parent_record:
+                        st.error(f"❌ Could not find a historical record for {mu_usn} in Cycle {parent_cycle}.")
+                    else:
+                        old_cie = safe_float(parent_record[0].get('cie_marks'), 0)
+                        
+                        # 3. Safely Upsert into the CURRENT cycle with PENDING status for the new SEE
+                        new_record = {
+                            "cycle_id": selected_cycle_id,
+                            "usn": mu_usn,
+                            "course_code": mu_cc,
+                            "cie_marks": old_cie,
+                            "exam_status": "PENDING"
+                        }
+                        try:
+                            supabase.table("student_results").upsert(new_record).execute()
+                            st.success(f"✅ Success! Pulled historical CIE mark ({old_cie}) into Current Cycle. SEE is now PENDING.")
+                        except Exception as e:
+                            st.error(f"Database Error: {e}")
