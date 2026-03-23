@@ -686,30 +686,92 @@ with t7:
 # ----------------------------------------------------
 with t8:
     st.subheader("⚙️ Arrear & Make-up Exam Manager")
-    st.info("Use this tool to pull a student's historical CIE marks from a previous Regular Exam into the current Make-up/Arrear Cycle.")
     
-    with st.form("makeup_engine"):
-        mu_usn = st.text_input("Student USN").strip().upper()
-        mu_cc = st.text_input("Course Code (Arrear Subject)").strip().upper()
-        parent_cycle = st.text_input("Parent Cycle ID (The Cycle ID where they took the regular CIEs)").strip()
+    # Check the database for the Smart Parent Link
+    cycle_info = supabase.table("exam_cycles").select("exam_type, parent_cycle_id").eq("cycle_id", selected_cycle_id).execute().data
+    parent_id = cycle_info[0].get("parent_cycle_id") if cycle_info else None
+    
+    if parent_id:
+        st.success(f"🔗 **Smart Link Active:** This cycle is officially linked to **Parent Cycle ID: {parent_id}**.")
+        st.info("The system can automatically cross-reference all Make-up registrations and pull their historical CIE marks in one click.")
         
-        if st.form_submit_button("🔁 Pull CIE to Current Cycle"):
-            if not mu_usn or not mu_cc or not parent_cycle:
+        # --- BULK SYNC FEATURE (ENTERPRISE UPGRADE) ---
+        if st.button("🔄 1-Click Auto-Sync All Make-up Registrations", type="primary"):
+            with st.spinner("Fetching registrations and cross-referencing parent cycle..."):
+                try:
+                    # 1. Get all students registered for this current Make-up cycle
+                    current_regs = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
+                    
+                    if not current_regs:
+                        st.warning("No students are currently registered for this Make-up cycle.")
+                    else:
+                        # 2. Fetch all results from the Parent Cycle
+                        parent_results = fetch_all_records("student_results", "usn, course_code, cie_marks", {"cycle_id": parent_id})
+                        # Create a quick lookup dictionary: {(USN, Course): CIE}
+                        parent_dict = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): safe_float(r.get('cie_marks'), 0) for r in parent_results}
+                        
+                        updates = []
+                        missing_history = 0
+                        
+                        # 3. Match registrations to historical marks
+                        for reg in current_regs:
+                            u = str(reg['usn']).strip().upper()
+                            c = str(reg['course_code']).strip().upper()
+                            
+                            if (u, c) in parent_dict:
+                                updates.append({
+                                    "cycle_id": selected_cycle_id,
+                                    "usn": u,
+                                    "course_code": c,
+                                    "cie_marks": parent_dict[(u, c)],
+                                    "exam_status": "PENDING" # Reset SEE for the new exam
+                                })
+                            else:
+                                missing_history += 1
+                                
+                        # 4. Bulk Upsert
+                        if updates:
+                            for i in range(0, len(updates), 500):
+                                supabase.table("student_results").upsert(updates[i:i+500]).execute()
+                            st.success(f"✅ Successfully synced historical CIE marks for {len(updates)} registered students! Their SEE status is now set to PENDING.")
+                            if missing_history > 0:
+                                st.warning(f"⚠️ {missing_history} registered students did not have historical CIE marks in the parent cycle.")
+                        else:
+                            st.error("Could not find any matching historical CIE marks for the registered students.")
+                except Exception as e:
+                    st.error(f"Sync failed: {e}")
+                    
+        st.divider()
+    else:
+        st.warning("⚠️ This active cycle is NOT linked to a Parent Cycle. You must manually enter the Parent Cycle ID for each student, or update the cycle settings.")
+
+    # --- INDIVIDUAL PULL FEATURE (MANUAL OVERRIDE) ---
+    st.markdown("#### 👤 Individual Student Pull (Manual Override)")
+    with st.form("makeup_engine"):
+        col_m1, col_m2, col_m3 = st.columns(3)
+        mu_usn = col_m1.text_input("Student USN").strip().upper()
+        mu_cc = col_m2.text_input("Course Code").strip().upper()
+        
+        # Disable parent input if smart link is active to prevent typos
+        if parent_id:
+            manual_parent = str(parent_id)
+            col_m3.text_input("Parent Cycle ID", value=manual_parent, disabled=True)
+        else:
+            manual_parent = col_m3.text_input("Parent Cycle ID (Required)").strip()
+            
+        if st.form_submit_button("🔁 Pull Single CIE"):
+            if not mu_usn or not mu_cc or not manual_parent:
                 st.error("All fields are required.")
             else:
-                # 1. Verify student is officially registered for the Make-up exam in the CURRENT cycle
                 regs = supabase.table("course_registrations").select("*").eq("cycle_id", selected_cycle_id).eq("usn", mu_usn).eq("course_code", mu_cc).execute().data
                 if not regs:
-                    st.error(f"❌ Student {mu_usn} is not officially registered for {mu_cc} in the current Make-up Cycle ({selected_cycle_id}).")
+                    st.error(f"❌ Student {mu_usn} is not officially registered for {mu_cc} in the current Make-up cycle.")
                 else:
-                    # 2. Look for the historical marks in the Parent Cycle
-                    parent_record = supabase.table("student_results").select("cie_marks").eq("cycle_id", parent_cycle).eq("usn", mu_usn).eq("course_code", mu_cc).execute().data
+                    parent_record = supabase.table("student_results").select("cie_marks").eq("cycle_id", manual_parent).eq("usn", mu_usn).eq("course_code", mu_cc).execute().data
                     if not parent_record:
-                        st.error(f"❌ Could not find a historical record for {mu_usn} in Cycle {parent_cycle}.")
+                        st.error(f"❌ Could not find a historical record for {mu_usn} in Parent Cycle {manual_parent}.")
                     else:
                         old_cie = safe_float(parent_record[0].get('cie_marks'), 0)
-                        
-                        # 3. Safely Upsert into the CURRENT cycle with PENDING status for the new SEE
                         new_record = {
                             "cycle_id": selected_cycle_id,
                             "usn": mu_usn,
