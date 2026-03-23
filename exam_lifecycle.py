@@ -7,7 +7,7 @@ from utils import init_db, clean_data_for_db
 supabase = init_db()
 
 st.title("⏳ Exam Lifecycle Management")
-st.sidebar.markdown("### Operational Phase: COE Office")
+st.markdown("#### 🏢 Operational Phase: COE Office") # Moved out of the sidebar for a cleaner UI
 
 # --- GLOBAL CONTEXT ---
 # Pulls the active cycle directly from the session state managed by app.py
@@ -132,7 +132,6 @@ with tabs[1]:
     st.markdown("### 🆕 Initiate New Exam Session")
     st.info("Parallel cycles allowed. Link Make-up/Arrear exams to their original Regular cycle.")
     
-    # Standard inputs instead of st.form to allow dynamic UI updates
     c_name = st.text_input("Cycle Name", placeholder="e.g., UG Sem-1 Make-up March-2026")
     
     col1, col2 = st.columns(2)
