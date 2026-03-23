@@ -33,7 +33,6 @@ def find_column(df, candidates):
     return None
 
 def safe_float(val, default):
-    """Safely converts a value to float, correctly preserving literal 0s."""
     if val is None:
         return float(default)
     try:
@@ -46,7 +45,6 @@ def safe_float(val, default):
         return float(default)
 
 def fetch_all_records(table_name, select_query="*", filters=None):
-    """Recursively fetches all records from a Supabase table bypassing the 1000 row limit."""
     all_data = []
     start = 0
     step = 1000
@@ -68,7 +66,6 @@ def fetch_all_records(table_name, select_query="*", filters=None):
 def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=50, exam_conducted_for=100, is_pg=False):
     is_internal_only = (max_see == 0)
     
-    # Auto-Healer
     if not is_internal_only:
         if pd.notna(see_raw) and see_raw is not None and str(see_raw).strip() != "":
             if not status or status in ['PENDING', 'PND']: status = 'PRESENT'
@@ -76,7 +73,6 @@ def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=5
         if pd.notna(cie_raw) and cie_raw is not None and str(cie_raw).strip() != "":
             if not status or status in ['PENDING', 'PND']: status = 'PRESENT'
 
-    # Strict Pending Locks
     if not is_internal_only:
         if status in ['PENDING', 'PND'] or not status or pd.isna(see_raw) or see_raw is None: 
             return 0, cie_raw, 'PND', 0, False, status
@@ -140,6 +136,25 @@ def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=5
         elif pct >= 0.45: return see_scaled, total, 'C', 5, True, status
         elif pct >= 0.40: return see_scaled, total, 'P', 4, True, status
         else: return see_scaled, total, 'F', 0, False, status
+
+# 🟢 REVALUATION ALGORITHM 🟢
+def calculate_nearest_two_max(v1, v2, v3):
+    """Calculates final score based on max of nearest two valuations."""
+    vals = [v for v in [v1, v2, v3] if v is not None and pd.notna(v) and str(v).strip() != '']
+    vals = [float(v) for v in vals]
+    
+    if len(vals) == 0: return None
+    if len(vals) == 1: return vals[0]
+    if len(vals) == 2: return max(vals) # If only 2 exist, max of those two
+    
+    if len(vals) >= 3:
+        val1, val2, val3 = vals[:3]
+        d12, d23, d13 = abs(val1 - val2), abs(val2 - val3), abs(val1 - val3)
+        min_diff = min(d12, d23, d13)
+        
+        if min_diff == d12: return max(val1, val2)
+        elif min_diff == d23: return max(val2, val3)
+        else: return max(val1, val3)
 
 # ==========================================
 # 3. PDF MARKS CARD GENERATOR
@@ -215,16 +230,17 @@ if not selected_cycle_id:
 st.title("🏆 Results & Grading Engine")
 st.info(f"📍 **Active Context:** Processing data strictly for Cycle: **{active_cycle_name}**")
 
-# 🟢 8 TABS TO SUPPORT NEW ARCHITECTURE 🟢
-t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs([
+# 🟢 9 TABS INCORPORATING REVALUATION 🟢
+t1, t2, t3, t4, t5, t6, t7, t8, t9 = st.tabs([
     "1. CIE Consolidator", 
     "2. Bundle Decoder", 
     "3. SEE Consolidator", 
     "4. Grading Engine", 
-    "5. Moderation (Audit Logged)", 
+    "5. Moderation", 
     "6. Publish Ledgers",
     "7. CoE Dashboard",
-    "8. Arrear & Make-up Engine"
+    "8. Make-up Engine",
+    "9. Revaluation Engine"
 ])
 
 # ----------------------------------------------------
@@ -494,7 +510,6 @@ with t5:
                                         
                                         scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(new_cie, new_see, r['exam_status'], cred, m_cie, m_see, conducted_for, is_pg)
                                         
-                                        # 🟢 WRITE TO AUDIT LOG 🟢
                                         audit_payload = {
                                             "cycle_id": selected_cycle_id, "usn": mod_usn, "course_code": cc,
                                             "change_type": "MODERATION - GRACE",
@@ -503,9 +518,8 @@ with t5:
                                             "reason": f"{grace_reason} (+{grace_marks} to {grace_target})"
                                         }
                                         try: supabase.table("marks_audit_log").insert(audit_payload).execute()
-                                        except Exception as e: st.warning("Audit Log Warning: Log table might not exist yet. Run the SQL script.")
+                                        except Exception as e: st.warning("Audit Log Warning: Log table might not exist yet.")
 
-                                        # 🟢 UPDATE RESULTS WITH TRACKING FLAGS 🟢
                                         update_data = {
                                             "cycle_id": selected_cycle_id, "usn": mod_usn, "course_code": cc,
                                             "cie_marks": new_cie, "see_raw": new_see, "see_scaled": scaled_see,
@@ -686,101 +700,160 @@ with t7:
 # ----------------------------------------------------
 with t8:
     st.subheader("⚙️ Arrear & Make-up Exam Manager")
-    
-    # Check the database for the Smart Parent Link
     cycle_info = supabase.table("exam_cycles").select("exam_type, parent_cycle_id").eq("cycle_id", selected_cycle_id).execute().data
     parent_id = cycle_info[0].get("parent_cycle_id") if cycle_info else None
     
     if parent_id:
         st.success(f"🔗 **Smart Link Active:** This cycle is officially linked to **Parent Cycle ID: {parent_id}**.")
         st.info("The system can automatically cross-reference all Make-up registrations and pull their historical CIE marks in one click.")
-        
-        # --- BULK SYNC FEATURE (ENTERPRISE UPGRADE) ---
         if st.button("🔄 1-Click Auto-Sync All Make-up Registrations", type="primary"):
             with st.spinner("Fetching registrations and cross-referencing parent cycle..."):
                 try:
-                    # 1. Get all students registered for this current Make-up cycle
                     current_regs = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
-                    
-                    if not current_regs:
-                        st.warning("No students are currently registered for this Make-up cycle.")
+                    if not current_regs: st.warning("No students are currently registered for this Make-up cycle.")
                     else:
-                        # 2. Fetch all results from the Parent Cycle
                         parent_results = fetch_all_records("student_results", "usn, course_code, cie_marks", {"cycle_id": parent_id})
-                        # Create a quick lookup dictionary: {(USN, Course): CIE}
                         parent_dict = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): safe_float(r.get('cie_marks'), 0) for r in parent_results}
+                        updates, missing_history = [], 0
                         
-                        updates = []
-                        missing_history = 0
-                        
-                        # 3. Match registrations to historical marks
                         for reg in current_regs:
-                            u = str(reg['usn']).strip().upper()
-                            c = str(reg['course_code']).strip().upper()
-                            
+                            u, c = str(reg['usn']).strip().upper(), str(reg['course_code']).strip().upper()
                             if (u, c) in parent_dict:
-                                updates.append({
-                                    "cycle_id": selected_cycle_id,
-                                    "usn": u,
-                                    "course_code": c,
-                                    "cie_marks": parent_dict[(u, c)],
-                                    "exam_status": "PENDING" # Reset SEE for the new exam
-                                })
-                            else:
-                                missing_history += 1
+                                updates.append({"cycle_id": selected_cycle_id, "usn": u, "course_code": c, "cie_marks": parent_dict[(u, c)], "exam_status": "PENDING"})
+                            else: missing_history += 1
                                 
-                        # 4. Bulk Upsert
                         if updates:
-                            for i in range(0, len(updates), 500):
-                                supabase.table("student_results").upsert(updates[i:i+500]).execute()
+                            for i in range(0, len(updates), 500): supabase.table("student_results").upsert(updates[i:i+500]).execute()
                             st.success(f"✅ Successfully synced historical CIE marks for {len(updates)} registered students! Their SEE status is now set to PENDING.")
-                            if missing_history > 0:
-                                st.warning(f"⚠️ {missing_history} registered students did not have historical CIE marks in the parent cycle.")
-                        else:
-                            st.error("Could not find any matching historical CIE marks for the registered students.")
-                except Exception as e:
-                    st.error(f"Sync failed: {e}")
-                    
+                            if missing_history > 0: st.warning(f"⚠️ {missing_history} registered students did not have historical CIE marks in the parent cycle.")
+                        else: st.error("Could not find any matching historical CIE marks for the registered students.")
+                except Exception as e: st.error(f"Sync failed: {e}")
         st.divider()
     else:
         st.warning("⚠️ This active cycle is NOT linked to a Parent Cycle. You must manually enter the Parent Cycle ID for each student, or update the cycle settings.")
 
-    # --- INDIVIDUAL PULL FEATURE (MANUAL OVERRIDE) ---
     st.markdown("#### 👤 Individual Student Pull (Manual Override)")
     with st.form("makeup_engine"):
         col_m1, col_m2, col_m3 = st.columns(3)
         mu_usn = col_m1.text_input("Student USN").strip().upper()
         mu_cc = col_m2.text_input("Course Code").strip().upper()
         
-        # Disable parent input if smart link is active to prevent typos
         if parent_id:
             manual_parent = str(parent_id)
             col_m3.text_input("Parent Cycle ID", value=manual_parent, disabled=True)
-        else:
-            manual_parent = col_m3.text_input("Parent Cycle ID (Required)").strip()
+        else: manual_parent = col_m3.text_input("Parent Cycle ID (Required)").strip()
             
         if st.form_submit_button("🔁 Pull Single CIE"):
-            if not mu_usn or not mu_cc or not manual_parent:
-                st.error("All fields are required.")
+            if not mu_usn or not mu_cc or not manual_parent: st.error("All fields are required.")
             else:
                 regs = supabase.table("course_registrations").select("*").eq("cycle_id", selected_cycle_id).eq("usn", mu_usn).eq("course_code", mu_cc).execute().data
-                if not regs:
-                    st.error(f"❌ Student {mu_usn} is not officially registered for {mu_cc} in the current Make-up cycle.")
+                if not regs: st.error(f"❌ Student {mu_usn} is not officially registered for {mu_cc} in the current Make-up cycle.")
                 else:
                     parent_record = supabase.table("student_results").select("cie_marks").eq("cycle_id", manual_parent).eq("usn", mu_usn).eq("course_code", mu_cc).execute().data
-                    if not parent_record:
-                        st.error(f"❌ Could not find a historical record for {mu_usn} in Parent Cycle {manual_parent}.")
+                    if not parent_record: st.error(f"❌ Could not find a historical record for {mu_usn} in Parent Cycle {manual_parent}.")
                     else:
                         old_cie = safe_float(parent_record[0].get('cie_marks'), 0)
-                        new_record = {
-                            "cycle_id": selected_cycle_id,
-                            "usn": mu_usn,
-                            "course_code": mu_cc,
-                            "cie_marks": old_cie,
-                            "exam_status": "PENDING"
-                        }
                         try:
-                            supabase.table("student_results").upsert(new_record).execute()
+                            supabase.table("student_results").upsert({"cycle_id": selected_cycle_id, "usn": mu_usn, "course_code": mu_cc, "cie_marks": old_cie, "exam_status": "PENDING"}).execute()
                             st.success(f"✅ Success! Pulled historical CIE mark ({old_cie}) into Current Cycle. SEE is now PENDING.")
-                        except Exception as e:
-                            st.error(f"Database Error: {e}")
+                        except Exception as e: st.error(f"Database Error: {e}")
+
+# ----------------------------------------------------
+# TAB 9: REVALUATION ENGINE (MULTI-VALUATION)
+# ----------------------------------------------------
+with t9:
+    st.subheader("🔍 Revaluation & Multi-Valuation Engine")
+    st.info("Upload CSV files containing multiple valuation marks. The system will apply the **'Max out of nearest two'** rule and update the final SEE score.")
+    
+    with st.expander("View CSV Template Guide"):
+        st.write("Columns: `usn, course_code, v1, v2, v3` (Leave V2 or V3 blank if not applicable).")
+        st.code("usn,course_code,v1,v2,v3\n1AM25BA001,25MBA101,40,60,62\n1AM25BA002,25MBA102,45,48,")
+
+    f_reval = st.file_uploader("Upload Revaluation CSV", type='csv', key="reval_up")
+    
+    if f_reval and st.button("🚀 Process Revaluations"):
+        df_rev = pd.read_csv(f_reval)
+        usn_col = find_column(df_rev, ['usn', 'student id'])
+        cc_col = find_column(df_rev, ['course_code', 'course code', 'subject code'])
+        v1_col = find_column(df_rev, ['v1', 'v1_marks', 'valuation 1'])
+        v2_col = find_column(df_rev, ['v2', 'v2_marks', 'valuation 2'])
+        v3_col = find_column(df_rev, ['v3', 'v3_marks', 'valuation 3'])
+        
+        if not (usn_col and cc_col and v1_col):
+            st.error("Missing standard columns. Please ensure USN, Course Code, and at least V1 are present.")
+        else:
+            with st.spinner("Processing 'Nearest Two' rules and generating audit logs..."):
+                try:
+                    # Fetch all current database records to grab CIE and calculate new totals
+                    db_res = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
+                    db_map = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): r for r in db_res}
+                    
+                    # Fetch course max marks and branches for PG/UG scaling
+                    crs_res = fetch_all_records("master_courses", "course_code, credits, max_see, max_cie, total_marks")
+                    crs_map = {r['course_code']: r for r in crs_res}
+                    
+                    stu_res = fetch_all_records("master_students", "usn, branch_code")
+                    branch_map = {str(r['usn']).strip().upper(): r.get('branch_code', '') for r in stu_res}
+                    pg_branches = [r['branch_code'] for r in supabase.table("master_branches").select("branch_code, program_type").execute().data if str(r['program_type']).upper() == 'PG']
+
+                    updates_list = []
+                    audit_list = []
+                    
+                    for _, r in df_rev.iterrows():
+                        u = clean_str(r[usn_col])
+                        c = clean_str(r[cc_col])
+                        
+                        if (u, c) in db_map:
+                            db_row = db_map[(u, c)]
+                            old_see = db_row.get('see_raw')
+                            old_grade = db_row.get('grade')
+                            
+                            v1_val = r[v1_col] if pd.notna(r[v1_col]) else None
+                            v2_val = r[v2_col] if v2_col and pd.notna(r[v2_col]) else None
+                            v3_val = r[v3_col] if v3_col and pd.notna(r[v3_col]) else None
+                            
+                            # 🟢 APPLY THE NEAREST TWO RULE 🟢
+                            final_raw_see = calculate_nearest_two_max(v1_val, v2_val, v3_val)
+                            
+                            if final_raw_see is not None:
+                                # Prepare for Grading Recalculation
+                                mc = crs_map.get(c, {})
+                                cred = safe_float(mc.get('credits'), 4.0)
+                                m_cie, m_see, conducted_for = safe_float(mc.get('max_cie'), 50.0), safe_float(mc.get('max_see'), 50.0), safe_float(mc.get('total_marks'), 100.0)
+                                is_pg = branch_map.get(u) in pg_branches
+                                
+                                scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(db_row['cie_marks'], final_raw_see, "PRESENT", cred, m_cie, m_see, conducted_for, is_pg)
+                                
+                                updates_list.append({
+                                    "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                    "v1_marks": v1_val, "v2_marks": v2_val, "v3_marks": v3_val,
+                                    "see_raw": final_raw_see, "see_scaled": scaled_see,
+                                    "total_marks": tot, "grade": grd, "grade_points": gp,
+                                    "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass,
+                                    "exam_status": healed_status
+                                })
+                                
+                                # Log to Audit Trail
+                                audit_list.append({
+                                    "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                    "change_type": "MULTI-VALUATION (Nearest Two)",
+                                    "old_see": old_see, "old_grade": old_grade,
+                                    "new_see": final_raw_see, "new_grade": grd,
+                                    "reason": f"V1:{v1_val}, V2:{v2_val}, V3:{v3_val} -> Final:{final_raw_see}"
+                                })
+
+                    if updates_list:
+                        # 1. Update Results
+                        for i in range(0, len(updates_list), 500):
+                            supabase.table("student_results").upsert(updates_list[i:i+500]).execute()
+                        # 2. Update Audit Logs
+                        for i in range(0, len(audit_list), 500):
+                            try: supabase.table("marks_audit_log").insert(audit_list[i:i+500]).execute()
+                            except: pass # Fails silently if audit log table missing
+                        
+                        st.success(f"✅ Revaluation Processed! {len(updates_list)} records evaluated using 'Nearest Two' rule. Final grades recalculared and securely logged.")
+                    else:
+                        st.warning("No matching students/courses found in the database for the uploaded records.")
+                        
+                except Exception as e:
+                    st.error(f"Processing Error: {e}")
