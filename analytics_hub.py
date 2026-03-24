@@ -235,7 +235,7 @@ with t3:
                 with col_img:
                     # 🟢 BULLETPROOF PHOTO FETCHER 🟢
                     photo_url = "https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png" 
-                    base_url = f"https://supabase.com/dashboard/project/zlsxqsfssczyvkjyitdg/storage/files/buckets/StakeHolders_Photos/{search_usn}"
+                    base_url = f"https://zlsxqsfssczyvkjyitdg.supabase.co/storage/v1/object/public/StakeHolders_Photos/{search_usn}"
                     
                     # We manually check the live URL for all common extensions
                     for ext in ['.jpg', '.jpeg', '.png', '.JPG', '.PNG', '.JPEG', 'webp']:
