@@ -36,8 +36,9 @@ def fetch_all_records(table_name, select_query="*", filters=None):
 def fetch_student_photo(usn):
     """Securely fetches photo bytes using the native Supabase Python SDK."""
     clean_usn = str(usn).strip().upper()
-    # Check all common image extensions safely
-    for ext in ['.jpg', '.jpeg', '.png', '.JPG', '.PNG', '.JPEG', 'webp']:
+    
+    # 🟢 FIX: Added .webp and .WEBP to the checklist!
+    for ext in ['.jpg', '.jpeg', '.png', '.webp', '.JPG', '.PNG', '.JPEG', '.WEBP']:
         try:
             res = supabase.storage.from_("StakeHolders_Photos").download(f"{clean_usn}{ext}")
             if res:
