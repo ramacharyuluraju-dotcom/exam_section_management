@@ -235,7 +235,7 @@ with t3:
                     # 🟢 SUPABASE PUBLIC PHOTO URL GENERATOR 🟢
                     # We format the URL directly using your project ID and bucket.
                     # Assuming photos are uploaded as USN.jpg (e.g., 1AM25CS001.jpg). 
-                    photo_url = f"https://zlsxqsfssczyvkjyitdg.supabase.co/storage/v1/object/public/{PHOTO_BUCKET}/{search_usn}.jpg"
+                    photo_url = f"https://supabase.com/dashboard/project/zlsxqsfssczyvkjyitdg/storage/files/buckets/StakeHolders_Photos/{search_usn}.jpg"
                     
                     st.markdown(
                         f"""
