@@ -132,59 +132,87 @@ def fetch_rooms():
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
 # ==========================================
-# 3. ALLOCATION ENGINE (Anti-Fragmentation)
+# 3. ALLOCATION ENGINE (Anti-Fragmentation & Sequential Fallback)
 # ==========================================
 
 def run_allocation(df_students, df_rooms):
-    branches = df_students['Branch'].unique()
-    branch_queues = {b: df_students[df_students['Branch'] == b].sort_values('USN').to_dict('records') for b in branches}
+    # Sort students initially by Subject and USN to guarantee order
+    df_students = df_students.sort_values(['Subject Code', 'USN'])
     
+    branches = df_students['Branch'].unique()
+    queues = {}
+    for branch in branches:
+        queues[branch] = df_students[df_students['Branch'] == branch].to_dict('records')
+        
     def get_candidate(exclude_list, needed_space, diff_code=None):
-        cands = [b for b in branch_queues if len(branch_queues[b]) > 0 and b not in exclude_list]
+        cands = [b for b in queues if len(queues[b]) > 0 and b not in exclude_list]
         if not cands: return None
         
         if diff_code:
-            diff_cands = [b for b in cands if branch_queues[b][0]['Subject Code'] != diff_code]
+            diff_cands = [b for b in cands if queues[b][0]['Subject Code'] != diff_code]
             if diff_cands: cands = diff_cands
             
-        good_cands = [b for b in cands if not (len(branch_queues[b]) <= 20 and len(branch_queues[b]) > needed_space)]
-        
-        if good_cands: return max(good_cands, key=lambda x: len(branch_queues[x]))
-        else: return None
+        good_cands = [b for b in cands if not (len(queues[b]) <= 20 and len(queues[b]) > needed_space)]
+        if good_cands: return max(good_cands, key=lambda x: len(queues[x]))
+        else: return max(cands, key=lambda x: len(queues[x])) # Fallback to biggest remaining
 
     allotment_rows = []
+    from itertools import zip_longest
     
     for _, room in df_rooms.iterrows():
         room_no = room['room_no']
         capacity = int(room['capacity'])
         half_cap = capacity // 2
         
-        if all(len(q) == 0 for q in branch_queues.values()): break
+        if all(len(q) == 0 for q in queues.values()): break
 
-        pile_1 = []
-        while len(pile_1) < half_cap:
-            needed = half_cap - len(pile_1)
-            curr_left = get_candidate(exclude_list=[], needed_space=needed)
-            if not curr_left: break 
-            take = min(needed, len(branch_queues[curr_left]))
-            pile_1.extend(branch_queues[curr_left][:take])
-            del branch_queues[curr_left][:take]
-
-        pile_2 = []
-        left_code = pile_1[0]['Subject Code'] if pile_1 else None
+        remaining_branches = [b for b in queues if len(queues[b]) > 0]
         
-        while len(pile_2) < (capacity - len(pile_1)):
-            needed = (capacity - len(pile_1)) - len(pile_2)
-            curr_right = get_candidate(exclude_list=[], needed_space=needed, diff_code=left_code)
-            if not curr_right: break 
-            take = min(needed, len(branch_queues[curr_right]))
-            pile_2.extend(branch_queues[curr_right][:take])
-            del branch_queues[curr_right][:take]
-
+        # 🟢 THE HOMOGENOUS BYPASS: Check distinct subjects left 🟢
+        remaining_subjects = set()
+        for b in remaining_branches:
+            if queues[b]: remaining_subjects.add(queues[b][0]['Subject Code'])
+            
+        is_homogenous = len(remaining_subjects) == 1
         room_students = []
-        for s1, s2 in zip_longest(pile_1, pile_2):
-            if s1: room_students.append(s1)
-            if s2: room_students.append(s2)
+        
+        if is_homogenous:
+            # Only ONE exam subject left -> Fill sequentially perfectly!
+            while len(room_students) < capacity:
+                remaining = [b for b in queues if len(queues[b]) > 0]
+                if not remaining: break
+                
+                # Take from the largest available queue sequentially
+                biggest = max(remaining, key=lambda x: len(queues[x]))
+                take = min(capacity - len(room_students), len(queues[biggest]))
+                room_students.extend(queues[biggest][:take])
+                del queues[biggest][:take]
+                
+        else:
+            # Multiple subjects -> Use Zig Zag Anti-Cheat
+            pile_1 = []
+            while len(pile_1) < half_cap:
+                needed = half_cap - len(pile_1)
+                curr_left = get_candidate(exclude_list=[], needed_space=needed)
+                if not curr_left: break 
+                take = min(needed, len(queues[curr_left]))
+                pile_1.extend(queues[curr_left][:take])
+                del queues[curr_left][:take]
+
+            pile_2 = []
+            left_code = pile_1[0]['Subject Code'] if pile_1 else None
+            
+            while len(pile_2) < (capacity - len(pile_1)):
+                needed = (capacity - len(pile_1)) - len(pile_2)
+                curr_right = get_candidate(exclude_list=[], needed_space=needed, diff_code=left_code)
+                if not curr_right: break 
+                take = min(needed, len(queues[curr_right]))
+                pile_2.extend(queues[curr_right][:take])
+                del queues[curr_right][:take]
+
+            for s1, s2 in zip_longest(pile_1, pile_2):
+                if s1: room_students.append(s1)
+                if s2: room_students.append(s2)
 
         for idx, s in enumerate(room_students):
             allotment_rows.append({
@@ -195,7 +223,7 @@ def run_allocation(df_students, df_rooms):
             })
 
     return pd.DataFrame(allotment_rows)
-
+    
 # ==========================================
 # 4. DOCUMENT GENERATORS
 # ==========================================
