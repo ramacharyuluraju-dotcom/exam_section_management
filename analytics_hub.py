@@ -10,8 +10,9 @@ supabase = init_db()
 st.title("🌐 Global Analytics & Student 360°")
 st.markdown("#### 📈 Institutional Intelligence Hub")
 
-def clean_str(val):
-    return str(val).strip().upper() if pd.notna(val) else ""
+# Your specific Supabase Project details for Photos
+PROJECT_ID = "zlsxqsfssczyvkjyitdg"
+PHOTO_BUCKET = "StakeHolders_Photos"
 
 def safe_float(val, default=0.0):
     if val is None: return float(default)
@@ -20,7 +21,7 @@ def safe_float(val, default=0.0):
         return float(val)
     except: return float(default)
 
-@st.cache_data(ttl=300) # Cache for 5 minutes to keep dashboard fast
+@st.cache_data(ttl=300) 
 def fetch_all_records(table_name, select_query="*", filters=None):
     all_data = []
     start, step = 0, 1000
@@ -45,13 +46,13 @@ t1, t2, t3 = st.tabs([
 ])
 
 # ----------------------------------------------------
-# TAB 1: INSTITUTIONAL OVERVIEW
+# TAB 1: INSTITUTIONAL OVERVIEW (Strict Master Check)
 # ----------------------------------------------------
 with t1:
     st.subheader("University Demographics & Exam Status")
     
     with st.spinner("Compiling institutional data..."):
-        # Fetch Data
+        # Strictly rely on master_students for demographic truth
         students = fetch_all_records("master_students", "usn, branch_code")
         branches = fetch_all_records("master_branches", "branch_code, program_type, branch_name")
         cycles = fetch_all_records("exam_cycles", "cycle_id, cycle_name, is_active, status_code")
@@ -72,10 +73,10 @@ with t1:
             
             # Top Metrics
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total Enrolled Students", f"{total_students:,}")
+            c1.metric("Official Master Students", f"{total_students:,}")
             c2.metric("UG Students", f"{ug_count:,}")
             c3.metric("PG Students", f"{pg_count:,}")
-            c4.metric("Active / Ongoing Exams", f"{active_cycles}")
+            c4.metric("Active Exam Cycles", f"{active_cycles}")
             
             st.markdown("---")
             
@@ -99,17 +100,15 @@ with t1:
                     st.bar_chart(status_counts.set_index('Status'), color="#2196F3")
 
 # ----------------------------------------------------
-# TAB 2: EXAM CYCLE ANALYTICS (Historical)
+# TAB 2: EXAM CYCLE ANALYTICS 
 # ----------------------------------------------------
 with t2:
     st.subheader("Historical Cycle Analytics")
-    st.info("Select any active or archived exam cycle to view its comprehensive grading statistics.")
     
     cycles_data = fetch_all_records("exam_cycles", "cycle_id, cycle_name, is_active")
     if not cycles_data:
         st.warning("No exam cycles found in the database.")
     else:
-        # Sort so active cycles are at the top
         cycles_data.sort(key=lambda x: x.get('is_active', False), reverse=True)
         cycle_dict = {f"{c['cycle_name']} {'(ACTIVE)' if c.get('is_active') else '(CLOSED)'}": c['cycle_id'] for c in cycles_data}
         
@@ -124,17 +123,25 @@ with t2:
                         st.warning("No result data available for this cycle yet.")
                     else:
                         df = pd.DataFrame(res_data)
+                        
+                        # Fetch master students to flag ghosts
                         stu_data = fetch_all_records("master_students", "usn, branch_code")
-                        branch_map = {str(r['usn']).strip().upper(): r.get('branch_code', 'UNKNOWN') for r in stu_data}
-                        df['Branch'] = df['usn'].map(branch_map)
+                        branch_map = {str(r['usn']).strip().upper(): r.get('branch_code') for r in stu_data}
+                        
+                        # Map branches. If not in branch_map, it's a Ghost!
+                        df['Branch'] = df['usn'].map(lambda x: branch_map.get(x, '⚠️ GHOST STUDENT'))
 
                         total_evals = len(df)
+                        ghost_count = len(df[df['Branch'] == '⚠️ GHOST STUDENT'])
                         pending_evals = len(df[df['grade'].isin(['PND', 'PENDING'])])
                         failed_evals = len(df[df['grade'] == 'F'])
                         passed_evals = total_evals - pending_evals - failed_evals
                         completed_evals = total_evals - pending_evals
                         pass_pct = (passed_evals / completed_evals * 100) if completed_evals > 0 else 0
                         
+                        if ghost_count > 0:
+                            st.error(f"🚨 WARNING: Found {ghost_count} 'Ghost Students' in this exam cycle. These USNs have exam marks but do not exist in the Master Students table.")
+
                         col1, col2, col3, col4 = st.columns(4)
                         col1.metric("Total Evaluations", f"{total_evals:,}")
                         col2.metric("Pending/Missing Marks", f"{pending_evals:,}")
@@ -167,21 +174,23 @@ with t2:
                     st.error(f"Dashboard Error: {e}")
 
 # ----------------------------------------------------
-# TAB 3: STUDENT 360° PROFILE
+# TAB 3: STUDENT 360° PROFILE (Strict Master Validation)
 # ----------------------------------------------------
 with t3:
     st.subheader("👤 Student 360° Profile")
-    st.info("Search for a student to view their complete academic history, cumulative performance, and profile details.")
+    st.info("Search for a student to view their cumulative performance. Student MUST be registered in the Master list.")
     
     search_usn = st.text_input("🔍 Enter Student USN:").strip().upper()
     
     if search_usn and st.button("Search Student"):
-        with st.spinner("Retrieving full student dossier..."):
-            # 1. Fetch Master Profile
+        with st.spinner("Verifying Master Profile and retrieving dossier..."):
+            
+            # 1. STRICT GATEKEEPER: Check master_students first!
             stu_profile = supabase.table("master_students").select("*").eq("usn", search_usn).execute().data
             
             if not stu_profile:
-                st.error(f"❌ No student found with USN: {search_usn}")
+                st.error(f"❌ USN '{search_usn}' not found in Master Database.")
+                st.warning("This is a 'Ghost Record'. Please register the student in the Master Setup before viewing analytics.")
             else:
                 profile = stu_profile[0]
                 branch_code = profile.get('branch_code', 'N/A')
@@ -191,10 +200,10 @@ with t3:
                 prog_type = branch_info[0].get('program_type', 'N/A') if branch_info else 'N/A'
                 branch_name = branch_info[0].get('branch_name', branch_code) if branch_info else branch_code
                 
-                # 2. Fetch Complete Results History
+                # 2. Fetch Results History
                 results_history = supabase.table("student_results").select("*").eq("usn", search_usn).execute().data
                 
-                # Fetch Cycle Names & Course Credits for context
+                # Fetch Mappings
                 cycles_map = {c['cycle_id']: c['cycle_name'] for c in fetch_all_records("exam_cycles", "cycle_id, cycle_name")}
                 courses_map = {c['course_code']: c for c in fetch_all_records("master_courses", "course_code, title, credits")}
                 
@@ -223,11 +232,22 @@ with t3:
                 col_img, col_det, col_met = st.columns([1, 2, 1.5])
                 
                 with col_img:
-                    # Placeholder for Student Photo (Can link to Supabase Storage later)
-                    st.image("https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png", width=150)
+                    # 🟢 SUPABASE PUBLIC PHOTO URL GENERATOR 🟢
+                    # We format the URL directly using your project ID and bucket.
+                    # Assuming photos are uploaded as USN.jpg (e.g., 1AM25CS001.jpg). 
+                    photo_url = f"https://{PROJECT_ID}.supabase.co/storage/v1/object/public/{PHOTO_BUCKET}/{search_usn}.jpg"
+                    
+                    st.markdown(
+                        f"""
+                        <div style="width: 150px; height: 180px; border-radius: 10px; overflow: hidden; border: 2px solid #ddd; background-color: #f0f0f0; display: flex; align-items: center; justify-content: center;">
+                            <img src="{photo_url}" onerror="this.src='https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png'" style="width: 100%; height: 100%; object-fit: cover;"/>
+                        </div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
                 
                 with col_det:
-                    st.markdown(f"### {profile.get('full_name', 'Unknown Name')}")
+                    st.markdown(f"### {profile.get('full_name', 'Name Not Provided')}")
                     st.markdown(f"**USN:** `{search_usn}`")
                     st.markdown(f"**Program:** {prog_type.upper()} | **Branch:** {branch_name}")
                     st.markdown(f"**Admission Year:** {profile.get('admission_year', 'N/A')} | **Current Sem:** {profile.get('current_semester', 'N/A')}")
@@ -235,7 +255,7 @@ with t3:
                 
                 with col_met:
                     st.metric("Cumulative GPA (CGPA)", f"{cgpa:.2f}")
-                    st.metric("Total Credits Earned", f"{sum(safe_float(r.get('credits_earned', 0)) for r in results_history)}")
+                    st.metric("Total Credits Attempted", f"{total_credits_attempted}")
                     st.metric("Active Backlogs", f"{active_backlogs}", delta_color="inverse")
 
                 # --- RENDER ACADEMIC HISTORY ---
@@ -244,16 +264,15 @@ with t3:
                 if not results_history:
                     st.info("No exam records found for this student.")
                 else:
-                    # Group results by Exam Cycle
                     df_res = pd.DataFrame(results_history)
-                    df_res['Cycle Name'] = df_res['cycle_id'].map(lambda x: cycles_map.get(x, f"Cycle {x}"))
-                    df_res['Subject Title'] = df_res['course_code'].map(lambda x: courses_map.get(x, {}).get('title', x))
+                    df_res['Cycle Name'] = df_res['cycle_id'].map(lambda x: cycles_map.get(x, f"Cycle ID: {x}"))
+                    df_res['Subject Title'] = df_res['course_code'].map(lambda x: courses_map.get(x, {}).get('title', 'Unknown Title'))
                     df_res['Credits'] = df_res['course_code'].map(lambda x: safe_float(courses_map.get(x, {}).get('credits', 0)))
                     
                     for cycle_name, group in df_res.groupby('Cycle Name'):
                         with st.expander(f"📖 {cycle_name} (Evaluated Subjects: {len(group)})"):
                             
-                            # Calculate SGPA for this specific cycle
+                            # Calculate SGPA
                             cyc_cr = group['Credits'].sum()
                             cyc_gp = (group['grade_points'] * group['Credits']).sum()
                             sgpa = (cyc_gp / cyc_cr) if cyc_cr > 0 else 0.0
