@@ -22,12 +22,10 @@ def clean_data_for_db(df, expected_cols, numeric_cols=None):
                 df[col] = df[col].astype(str).replace('-', np.nan).replace(' ', np.nan)
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
     
-    df = df.replace([np.inf, -np.inf], np.nan).astype(object).where(pd.notnull(df), None)
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.where(pd.notnull(df), None)
     
     records = df.to_dict('records')
-    for r in records:
-        for k, v in r.items():
-            if pd.isna(v): r[k] = None
     return records
 
 # --- NEW: MULTI-CYCLE SWITCHBOARD LOGIC ---
@@ -41,35 +39,46 @@ def global_cycle_selector(supabase):
     st.sidebar.subheader("🎯 Context Selector")
     
     try:
-        # Fetch all cycles that are marked as active
-        res = supabase.table("exam_cycles").select("cycle_id, cycle_name").eq("is_active", True).execute()
+        # 🟢 UPGRADE: Now fetching exam_type and parent_cycle_id directly!
+        res = supabase.table("exam_cycles").select("cycle_id, cycle_name, exam_type, parent_cycle_id").eq("is_active", True).execute()
         
         if not res.data:
             st.sidebar.warning("No active cycles available. Create one in Lifecycle Management.")
             st.session_state.active_cycle_id = None
             st.session_state.active_cycle_name = None
+            st.session_state.active_exam_type = None
+            st.session_state.active_parent_id = None
             return None
 
-        # Prepare dictionary for selector
-        options = {r['cycle_name']: r['cycle_id'] for r in res.data}
+        # Create a lookup dictionary mapping the name to the FULL cycle data object
+        cycle_lookup = {r['cycle_name']: r for r in res.data}
+        cycle_names = list(cycle_lookup.keys())
         
         # Determine index to keep selection consistent across page refreshes
         default_index = 0
-        if "active_cycle_name" in st.session_state and st.session_state.active_cycle_name in options:
-            default_index = list(options.keys()).index(st.session_state.active_cycle_name)
+        if "active_cycle_name" in st.session_state and st.session_state.active_cycle_name in cycle_names:
+            default_index = cycle_names.index(st.session_state.active_cycle_name)
 
         selected_name = st.sidebar.selectbox(
             "Select Working Cycle:",
-            options=list(options.keys()),
+            options=cycle_names,
             index=default_index,
             help="All data on this page will filter based on this selection."
         )
 
-        # Update Session State
-        st.session_state.active_cycle_id = options[selected_name]
-        st.session_state.active_cycle_name = selected_name
+        # Get the full data object for the selected cycle
+        selected_data = cycle_lookup[selected_name]
 
-        st.sidebar.success(f"Current: **{selected_name}**")
+        # 🟢 UPGRADE: Storing everything in session state so ALL pages know the exact context immediately
+        st.session_state.active_cycle_id = selected_data['cycle_id']
+        st.session_state.active_cycle_name = selected_data['cycle_name']
+        st.session_state.active_exam_type = selected_data.get('exam_type', 'Regular')
+        st.session_state.active_parent_id = selected_data.get('parent_cycle_id')
+
+        # Display a nice visual confirmation of the type in the sidebar
+        st.sidebar.success(f"Context: **{selected_name}**")
+        st.sidebar.caption(f"⚙️ **Exam Type:** `{st.session_state.active_exam_type}`")
+        
         return st.session_state.active_cycle_id
 
     except Exception as e:
