@@ -232,24 +232,38 @@ with t3:
                 
                 col_img, col_det, col_met = st.columns([1, 2, 1.5])
                 
+               import urllib.request
+                
                 with col_img:
-                    # 🟢 BULLETPROOF PHOTO FETCHER 🟢
+                    # 🟢 BULLETPROOF FETCHER (WITH BOT-BYPASS) 🟢
                     photo_url = "https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png" 
-                    base_url = f"https://zlsxqsfssczyvkjyitdg.supabase.co/storage/v1/object/public/StakeHolders_Photos/{search_usn}"
+                    project_id = "zlsxqsfssczyvkjyitdg"
+                    bucket = "StakeHolders_Photos"
                     
-                    # We manually check the live URL for all common extensions
-                    for ext in ['.jpg', '.jpeg', '.png', '.JPG', '.PNG', '.JPEG', 'webp']:
+                    # Ensure USN is perfectly clean
+                    clean_usn = search_usn.strip().upper()
+                    base_url = f"https://{project_id}.supabase.co/storage/v1/object/public/{bucket}/{clean_usn}"
+                    
+                    found = False
+                    # Check all formats
+                    for ext in ['.jpg', '.jpeg', '.png', '.JPG', '.PNG', '.JPEG']:
                         test_url = base_url + ext
                         try:
-                            # Send a rapid "HEAD" request just to see if the file exists (returns 200 OK)
-                            req = urllib.request.Request(test_url, method='HEAD')
-                            with urllib.request.urlopen(req, timeout=1.5) as response:
-                                if response.status == 200:
+                            # 1. Add User-Agent so Supabase doesn't block the Python request!
+                            # 2. Use a GET request instead of HEAD (some CDNs block HEAD)
+                            req = urllib.request.Request(
+                                test_url, 
+                                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                            )
+                            with urllib.request.urlopen(req, timeout=2.0) as response:
+                                if response.getcode() == 200:
                                     photo_url = test_url
-                                    break # Found it! Stop searching.
+                                    found = True
+                                    break # Image found, stop searching!
                         except Exception:
-                            continue # File doesn't exist with this extension, try the next one
+                            continue # Image not found with this extension, try the next
                     
+                    # Render the image
                     st.markdown(
                         f"""
                         <div style="width: 150px; height: 180px; border-radius: 10px; overflow: hidden; border: 2px solid #ddd; background-color: #f0f0f0; display: flex; align-items: center; justify-content: center;">
@@ -258,6 +272,11 @@ with t3:
                         """, 
                         unsafe_allow_html=True
                     )
+                    
+                    # 🟢 DIAGNOSTIC TOOL: REMOVE THIS ONCE IT WORKS 🟢
+                    if not found:
+                        st.caption("⚠️ **Image Fetch Failed.**")
+                        st.caption(f"[Click here to test URL manually]({base_url}.jpg)")
                 
                 with col_det:
                     st.markdown(f"### {profile.get('full_name', 'Name Not Provided')}")
