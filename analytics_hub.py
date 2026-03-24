@@ -32,6 +32,20 @@ def fetch_all_records(table_name, select_query="*", filters=None):
         start += step
     return all_data
 
+@st.cache_data(ttl=3600)
+def fetch_student_photo(usn):
+    """Securely fetches photo bytes using the native Supabase Python SDK."""
+    clean_usn = str(usn).strip().upper()
+    # Check all common image extensions safely
+    for ext in ['.jpg', '.jpeg', '.png', '.JPG', '.PNG', '.JPEG']:
+        try:
+            res = supabase.storage.from_("StakeHolders_Photos").download(f"{clean_usn}{ext}")
+            if res:
+                return res  # Return the raw image bytes
+        except Exception:
+            continue  # Fails silently and tries the next extension
+    return None
+
 # ==========================================
 # UI TABS
 # ==========================================
@@ -211,10 +225,18 @@ with t3:
 
                 cgpa = (total_grade_points_earned / total_credits_attempted) if total_credits_attempted > 0 else 0.0
                 
-                # --- RENDER PROFILE UI (No Photo layout) ---
+                # --- RENDER PROFILE UI ---
                 st.markdown("---")
                 
-                col_det, col_met = st.columns([2, 1])
+                col_img, col_det, col_met = st.columns([1, 2, 1.5])
+                
+                with col_img:
+                    # 🟢 NATIVE STREAMLIT PHOTO RENDERER 🟢
+                    photo_bytes = fetch_student_photo(search_usn)
+                    if photo_bytes:
+                        st.image(photo_bytes, use_container_width=True)
+                    else:
+                        st.image("https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png", use_container_width=True)
                 
                 with col_det:
                     st.markdown(f"### 👤 {profile.get('full_name', 'Name Not Provided')}")
