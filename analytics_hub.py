@@ -10,10 +10,6 @@ supabase = init_db()
 st.title("🌐 Global Analytics & Student 360°")
 st.markdown("#### 📈 Institutional Intelligence Hub")
 
-# Your specific Supabase Project details for Photos
-PROJECT_ID = "zlsxqsfssczyvkjyitdg"
-PHOTO_BUCKET = "StakeHolders_Photos"
-
 def safe_float(val, default=0.0):
     if val is None: return float(default)
     try:
@@ -232,10 +228,28 @@ with t3:
                 col_img, col_det, col_met = st.columns([1, 2, 1.5])
                 
                 with col_img:
-                    # 🟢 SUPABASE PUBLIC PHOTO URL GENERATOR 🟢
-                    # We format the URL directly using your project ID and bucket.
-                    # Assuming photos are uploaded as USN.jpg (e.g., 1AM25CS001.jpg). 
-                    photo_url = f"https://supabase.com/dashboard/project/zlsxqsfssczyvkjyitdg/storage/files/buckets/StakeHolders_Photos/{search_usn}.jpg"
+                    # 🟢 SMART PHOTO FETCHER 🟢
+                    # Searches the bucket for the USN, regardless of whether it's a .jpg, .png, or .jpeg
+                    photo_url = "https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png" # Fallback
+                    
+                    try:
+                        # Search the bucket for the specific USN
+                        files = supabase.storage.from_("StakeHolders_Photos").list(search=search_usn)
+                        
+                        if files:
+                            matched_file = None
+                            for f in files:
+                                # Split by dot to remove extension, check if it matches the USN exactly
+                                if f['name'].split('.')[0].upper() == search_usn:
+                                    matched_file = f['name']
+                                    break
+                            
+                            # Generate the official public URL using the exact filename
+                            if matched_file:
+                                # Get the Supabase URL natively from the client
+                                photo_url = supabase.storage.from_("StakeHolders_Photos").get_public_url(matched_file)
+                    except Exception as e:
+                        pass # Fail silently and use the blank profile picture
                     
                     st.markdown(
                         f"""
