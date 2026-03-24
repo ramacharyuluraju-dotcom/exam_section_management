@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import urllib.request
 from utils import init_db
 
 # ==========================================
@@ -9,6 +10,10 @@ supabase = init_db()
 
 st.title("🌐 Global Analytics & Student 360°")
 st.markdown("#### 📈 Institutional Intelligence Hub")
+
+# --- YOUR SUPABASE PROJECT DETAILS FOR PHOTOS ---
+PROJECT_ID = "zlsxqsfssczyvkjyitdg"
+PHOTO_BUCKET = "StakeHolders_Photos"
 
 def safe_float(val, default=0.0):
     if val is None: return float(default)
@@ -228,28 +233,22 @@ with t3:
                 col_img, col_det, col_met = st.columns([1, 2, 1.5])
                 
                 with col_img:
-                    # 🟢 SMART PHOTO FETCHER 🟢
-                    # Searches the bucket for the USN, regardless of whether it's a .jpg, .png, or .jpeg
-                    photo_url = "https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png" # Fallback
+                    # 🟢 BULLETPROOF PHOTO FETCHER 🟢
+                    photo_url = "https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png" 
+                    base_url = f"https://supabase.com/dashboard/project/zlsxqsfssczyvkjyitdg/storage/files/buckets/{search_usn}"
                     
-                    try:
-                        # Search the bucket for the specific USN
-                        files = supabase.storage.from_("StakeHolders_Photos").list(search=search_usn)
-                        
-                        if files:
-                            matched_file = None
-                            for f in files:
-                                # Split by dot to remove extension, check if it matches the USN exactly
-                                if f['name'].split('.')[0].upper() == search_usn:
-                                    matched_file = f['name']
-                                    break
-                            
-                            # Generate the official public URL using the exact filename
-                            if matched_file:
-                                # Get the Supabase URL natively from the client
-                                photo_url = supabase.storage.from_("StakeHolders_Photos").get_public_url(matched_file)
-                    except Exception as e:
-                        pass # Fail silently and use the blank profile picture
+                    # We manually check the live URL for all common extensions
+                    for ext in ['.jpg', '.jpeg', '.png', '.JPG', '.PNG', '.JPEG', 'webp']:
+                        test_url = base_url + ext
+                        try:
+                            # Send a rapid "HEAD" request just to see if the file exists (returns 200 OK)
+                            req = urllib.request.Request(test_url, method='HEAD')
+                            with urllib.request.urlopen(req, timeout=1.5) as response:
+                                if response.status == 200:
+                                    photo_url = test_url
+                                    break # Found it! Stop searching.
+                        except Exception:
+                            continue # File doesn't exist with this extension, try the next one
                     
                     st.markdown(
                         f"""
@@ -264,8 +263,15 @@ with t3:
                     st.markdown(f"### {profile.get('full_name', 'Name Not Provided')}")
                     st.markdown(f"**USN:** `{search_usn}`")
                     st.markdown(f"**Program:** {prog_type.upper()} | **Branch:** {branch_name}")
-                    st.markdown(f"**Admission Year:** {profile.get('admission_year', 'N/A')} | **Current Sem:** {profile.get('current_semester', 'N/A')}")
-                    st.markdown(f"**Email:** {profile.get('email', 'N/A')} | **Phone:** {profile.get('phone', 'N/A')}")
+                    
+                    # Ensure defaults are handled cleanly if the columns are missing or null
+                    adm_year = profile.get('admission_year')
+                    curr_sem = profile.get('current_semester')
+                    st.markdown(f"**Admission Year:** {adm_year if pd.notna(adm_year) else 'N/A'} | **Current Sem:** {curr_sem if pd.notna(curr_sem) else 'N/A'}")
+                    
+                    email = profile.get('email')
+                    phone = profile.get('phone')
+                    st.markdown(f"**Email:** {email if pd.notna(email) else 'N/A'} | **Phone:** {phone if pd.notna(phone) else 'N/A'}")
                 
                 with col_met:
                     st.metric("Cumulative GPA (CGPA)", f"{cgpa:.2f}")
