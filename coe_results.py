@@ -479,74 +479,183 @@ if show_grading:
 # ----------------------------------------------------
 if show_mod:
     with t5:
-        st.subheader("⚖️ Moderation & Grace Marks (Audited)")
-        st.info("All grace marks applied here are logged permanently to the `marks_audit_log` table for compliance.")
-        mod_usn = st.text_input("Enter Student USN to review failing subjects:").strip().upper()
-        if mod_usn:
-            try:
-                fail_res = supabase.table("student_results").select("*").eq("cycle_id", selected_cycle_id).eq("usn", mod_usn).eq("is_pass", False).execute()
-                if not fail_res.data: st.success(f"🎉 Student {mod_usn} has no failing subjects!")
+        st.subheader("⚖️ Moderation & Grace Marks Engine")
+        st.info("Apply bulk moderation from random booklet sampling, or manually apply audited grace marks for specific students. All changes are permanently tracked.")
+        
+        mod_tabs = st.tabs(["📂 Bulk Moderation Upload", "👤 Manual Grace Marks (Audit)"])
+
+        # --- SUB-TAB 1: BULK MODERATION UPLOAD ---
+        with mod_tabs[0]:
+            st.markdown("#### Process Bulk Moderation Marks")
+            st.write("Upload a CSV of moderation scores. The engine will compare the Moderated Mark against the Original SEE Mark and permanently store the **Maximum** of the two.")
+            
+            with st.expander("View CSV Template Guide"):
+                st.code("usn,course_code,moderated_marks\n1AM25CS001,1BCEDS103,45\n1AM25CS042,1BCEDS103,38\n1AM25ME012,1BENG106,62")
+
+            f_mod = st.file_uploader("Upload Moderation CSV", type='csv', key="mod_bulk_up")
+
+            if f_mod and st.button("🚀 Execute Bulk Moderation", type="primary"):
+                df_mod = pd.read_csv(f_mod)
+                usn_col = find_column(df_mod, ['usn', 'student id'])
+                cc_col = find_column(df_mod, ['course_code', 'course code', 'subject code'])
+                m_col = find_column(df_mod, ['moderated_marks', 'moderation', 'marks'])
+
+                if not (usn_col and cc_col and m_col):
+                    st.error("Missing standard columns. Please ensure USN, Course Code, and Moderated Marks are present in the CSV.")
                 else:
-                    actual_fails = [r for r in fail_res.data if r['grade'] not in ['PND', 'PENDING']]
-                    if not actual_fails: st.warning(f"Student {mod_usn} is PENDING in their subjects. Cannot apply grace marks yet.")
+                    with st.spinner("Processing moderation rules, recalculating grades, and generating audit logs..."):
+                        try:
+                            # 1. Fetch current DB records
+                            db_res = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
+                            db_map = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): r for r in db_res}
+
+                            # 2. Fetch course max marks and branches for PG/UG scaling
+                            crs_res = fetch_all_records("master_courses", "course_code, credits, max_see, max_cie, total_marks")
+                            crs_map = {r['course_code']: r for r in crs_res}
+
+                            stu_res = fetch_all_records("master_students", "usn, branch_code")
+                            branch_map = {str(r['usn']).strip().upper(): r.get('branch_code', '') for r in stu_res}
+                            pg_branches = [r['branch_code'] for r in supabase.table("master_branches").select("branch_code, program_type").execute().data if str(r['program_type']).upper() == 'PG']
+
+                            updates_list = []
+                            audit_list = []
+                            no_change_count = 0
+
+                            for _, r in df_mod.iterrows():
+                                u = clean_str(r[usn_col])
+                                c = clean_str(r[cc_col])
+                                mod_mark = safe_float(r[m_col], None)
+
+                                if (u, c) in db_map and mod_mark is not None:
+                                    db_row = db_map[(u, c)]
+                                    old_see = safe_float(db_row.get('see_raw'), 0)
+                                    old_grade = db_row.get('grade')
+
+                                    # 🟢 THE CORE RULE: Keep the Maximum of Original vs Moderation 🟢
+                                    if mod_mark > old_see:
+                                        final_raw_see = mod_mark
+
+                                        # Recalculate Grades with the new higher SEE score
+                                        mc = crs_map.get(c, {})
+                                        cred = safe_float(mc.get('credits'), 4.0)
+                                        m_cie = safe_float(mc.get('max_cie'), 50.0)
+                                        m_see = safe_float(mc.get('max_see'), 50.0)
+                                        conducted_for = safe_float(mc.get('total_marks'), 100.0)
+                                        is_pg = branch_map.get(u) in pg_branches
+
+                                        scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(
+                                            db_row['cie_marks'], final_raw_see, db_row['exam_status'],
+                                            cred, m_cie, m_see, conducted_for, is_pg
+                                        )
+
+                                        updates_list.append({
+                                            "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                            "see_raw": final_raw_see, "see_scaled": scaled_see,
+                                            "total_marks": tot, "grade": grd, "grade_points": gp,
+                                            "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass,
+                                            "exam_status": healed_status
+                                        })
+
+                                        # Log the mathematical override
+                                        audit_list.append({
+                                            "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                            "change_type": "MODERATION - BULK",
+                                            "old_see": old_see, "old_grade": old_grade,
+                                            "new_see": final_raw_see, "new_grade": grd,
+                                            "reason": f"Original:{old_see} vs Mod:{mod_mark} -> Kept Mod"
+                                        })
+                                    else:
+                                        no_change_count += 1 # Moderation was lower/equal, skip it
+
+                            # 3. Commit to Database
+                            if updates_list:
+                                for i in range(0, len(updates_list), 500):
+                                    supabase.table("student_results").upsert(updates_list[i:i+500]).execute()
+                                for i in range(0, len(audit_list), 500):
+                                    try: supabase.table("marks_audit_log").insert(audit_list[i:i+500]).execute()
+                                    except: pass
+
+                                st.success(f"✅ Moderation Processed! {len(updates_list)} scores were mathematically upgraded. Final grades recalculated and logged.")
+                                if no_change_count > 0:
+                                    st.info(f"ℹ️ {no_change_count} records were safely ignored because the Original SEE was higher than or equal to the Moderated mark.")
+                            else:
+                                if no_change_count > 0:
+                                    st.warning(f"No records updated. {no_change_count} moderated marks were lower than or equal to the existing original marks.")
+                                else:
+                                    st.warning("No matching students/courses found in the database for the uploaded records.")
+
+                        except Exception as e:
+                            st.error(f"Processing Error: {e}")
+
+        # --- SUB-TAB 2: MANUAL GRACE MARKS ---
+        with mod_tabs[1]:
+            st.markdown("#### Individual Student Grace Marks")
+            mod_usn = st.text_input("Enter Student USN to review failing subjects:").strip().upper()
+            if mod_usn:
+                try:
+                    fail_res = supabase.table("student_results").select("*").eq("cycle_id", selected_cycle_id).eq("usn", mod_usn).eq("is_pass", False).execute()
+                    if not fail_res.data: st.success(f"🎉 Student {mod_usn} has no failing subjects!")
                     else:
-                        stu_res = supabase.table("master_students").select("branch_code").eq("usn", mod_usn).execute()
-                        student_branch = stu_res.data[0]['branch_code'] if stu_res.data else ""
-                        branch_res = supabase.table("master_branches").select("program_type").eq("branch_code", student_branch).execute()
-                        is_pg = (str(branch_res.data[0]['program_type']).upper() == 'PG') if branch_res.data else False
+                        actual_fails = [r for r in fail_res.data if r['grade'] not in ['PND', 'PENDING']]
+                        if not actual_fails: st.warning(f"Student {mod_usn} is PENDING in their subjects. Cannot apply grace marks yet.")
+                        else:
+                            stu_res = supabase.table("master_students").select("branch_code").eq("usn", mod_usn).execute()
+                            student_branch = stu_res.data[0]['branch_code'] if stu_res.data else ""
+                            branch_res = supabase.table("master_branches").select("program_type").eq("branch_code", student_branch).execute()
+                            is_pg = (str(branch_res.data[0]['program_type']).upper() == 'PG') if branch_res.data else False
 
-                        failed_course_codes = [r['course_code'] for r in actual_fails]
-                        crs_res = supabase.table("master_courses").select("course_code, title, credits, max_cie, max_see, total_marks").in_("course_code", failed_course_codes).execute()
-                        crs_map = {c['course_code']: c for c in crs_res.data}
-                        
-                        st.warning(f"Found {len(actual_fails)} failing subject(s) for {mod_usn}.")
-                        for r in actual_fails:
-                            cc = r['course_code']
-                            mc = crs_map.get(cc, {})
-                            title = mc.get('title', cc)
-                            c_cie, c_see, c_tot, c_grade = safe_float(r['cie_marks'], 0), safe_float(r['see_raw'], 0), safe_float(r['total_marks'], 0), str(r['grade'])
+                            failed_course_codes = [r['course_code'] for r in actual_fails]
+                            crs_res = supabase.table("master_courses").select("course_code, title, credits, max_cie, max_see, total_marks").in_("course_code", failed_course_codes).execute()
+                            crs_map = {c['course_code']: c for c in crs_res.data}
                             
-                            with st.expander(f"⚠️ {cc} - {title} (Current Grade: {c_grade})"):
-                                st.markdown(f"**Current Marks:** CIE: `{c_cie}` | SEE Raw: `{c_see}` | Scaled SEE: `{r['see_scaled']}` | Total: `{c_tot}`")
-                                with st.form(f"grace_form_{cc}"):
-                                    col_m1, col_m2 = st.columns(2)
-                                    grace_target = col_m1.radio("Add Grace Marks To:", ["SEE Exam", "CIE (Internals)"])
-                                    grace_marks = col_m2.number_input("Grace Marks to Add", min_value=1.0, max_value=10.0, step=1.0, value=1.0)
-                                    grace_reason = st.text_input("Reason for Moderation (Required for Audit):")
-                                    
-                                    if st.form_submit_button("✨ Apply Grace Marks & Recalculate"):
-                                        if not grace_reason:
-                                            st.error("Audit reason is required.")
-                                        else:
-                                            new_cie = c_cie + grace_marks if grace_target == "CIE (Internals)" else c_cie
-                                            new_see = c_see + grace_marks if grace_target == "SEE Exam" else c_see
-                                            cred = safe_float(mc.get('credits'), 4.0)
-                                            m_cie, m_see, conducted_for = safe_float(mc.get('max_cie'), 50.0), safe_float(mc.get('max_see'), 50.0), safe_float(mc.get('total_marks'), 100.0)
-                                            
-                                            scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(new_cie, new_see, r['exam_status'], cred, m_cie, m_see, conducted_for, is_pg)
-                                            
-                                            audit_payload = {
-                                                "cycle_id": selected_cycle_id, "usn": mod_usn, "course_code": cc,
-                                                "change_type": "MODERATION - GRACE",
-                                                "old_cie": c_cie, "old_see": c_see, "old_grade": c_grade,
-                                                "new_cie": new_cie, "new_see": new_see, "new_grade": grd,
-                                                "reason": f"{grace_reason} (+{grace_marks} to {grace_target})"
-                                            }
-                                            try: supabase.table("marks_audit_log").insert(audit_payload).execute()
-                                            except Exception as e: st.warning("Audit Log Warning: Log table might not exist yet.")
+                            st.warning(f"Found {len(actual_fails)} failing subject(s) for {mod_usn}.")
+                            for r in actual_fails:
+                                cc = r['course_code']
+                                mc = crs_map.get(cc, {})
+                                title = mc.get('title', cc)
+                                c_cie, c_see, c_tot, c_grade = safe_float(r['cie_marks'], 0), safe_float(r['see_raw'], 0), safe_float(r['total_marks'], 0), str(r['grade'])
+                                
+                                with st.expander(f"⚠️ {cc} - {title} (Current Grade: {c_grade})"):
+                                    st.markdown(f"**Current Marks:** CIE: `{c_cie}` | SEE Raw: `{c_see}` | Scaled SEE: `{r['see_scaled']}` | Total: `{c_tot}`")
+                                    with st.form(f"grace_form_{cc}"):
+                                        col_m1, col_m2 = st.columns(2)
+                                        grace_target = col_m1.radio("Add Grace Marks To:", ["SEE Exam", "CIE (Internals)"])
+                                        grace_marks = col_m2.number_input("Grace Marks to Add", min_value=1.0, max_value=10.0, step=1.0, value=1.0)
+                                        grace_reason = st.text_input("Reason for Moderation (Required for Audit):")
+                                        
+                                        if st.form_submit_button("✨ Apply Grace Marks & Recalculate"):
+                                            if not grace_reason:
+                                                st.error("Audit reason is required.")
+                                            else:
+                                                new_cie = c_cie + grace_marks if grace_target == "CIE (Internals)" else c_cie
+                                                new_see = c_see + grace_marks if grace_target == "SEE Exam" else c_see
+                                                cred = safe_float(mc.get('credits'), 4.0)
+                                                m_cie, m_see, conducted_for = safe_float(mc.get('max_cie'), 50.0), safe_float(mc.get('max_see'), 50.0), safe_float(mc.get('total_marks'), 100.0)
+                                                
+                                                scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(new_cie, new_see, r['exam_status'], cred, m_cie, m_see, conducted_for, is_pg)
+                                                
+                                                audit_payload = {
+                                                    "cycle_id": selected_cycle_id, "usn": mod_usn, "course_code": cc,
+                                                    "change_type": "MODERATION - GRACE",
+                                                    "old_cie": c_cie, "old_see": c_see, "old_grade": c_grade,
+                                                    "new_cie": new_cie, "new_see": new_see, "new_grade": grd,
+                                                    "reason": f"{grace_reason} (+{grace_marks} to {grace_target})"
+                                                }
+                                                try: supabase.table("marks_audit_log").insert(audit_payload).execute()
+                                                except Exception as e: st.warning("Audit Log Warning: Log table might not exist yet.")
 
-                                            update_data = {
-                                                "cycle_id": selected_cycle_id, "usn": mod_usn, "course_code": cc,
-                                                "cie_marks": new_cie, "see_raw": new_see, "see_scaled": scaled_see,
-                                                "total_marks": tot, "grade": grd, "grade_points": gp,
-                                                "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass,
-                                                "exam_status": healed_status,
-                                                "is_graced": True, "grace_marks_added": float(grace_marks)
-                                            }
-                                            supabase.table("student_results").upsert(update_data).execute()
-                                            if is_pass: st.success(f"✅ Grace marks applied and audited! Passed with Grade **{grd}**.")
-                                            else: st.warning(f"⚠️ Audited, but student still failing. New Grade: **{grd}**.")
-            except Exception as e: st.error(f"Error fetching data: {e}")
+                                                update_data = {
+                                                    "cycle_id": selected_cycle_id, "usn": mod_usn, "course_code": cc,
+                                                    "cie_marks": new_cie, "see_raw": new_see, "see_scaled": scaled_see,
+                                                    "total_marks": tot, "grade": grd, "grade_points": gp,
+                                                    "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass,
+                                                    "exam_status": healed_status,
+                                                    "is_graced": True, "grace_marks_added": float(grace_marks)
+                                                }
+                                                supabase.table("student_results").upsert(update_data).execute()
+                                                if is_pass: st.success(f"✅ Grace marks applied and audited! Passed with Grade **{grd}**.")
+                                                else: st.warning(f"⚠️ Audited, but student still failing. New Grade: **{grd}**.")
+                except Exception as e: st.error(f"Error fetching data: {e}")
 
 # ----------------------------------------------------
 # TAB BLOCK: LEDGERS (Used in ALL Contexts)
