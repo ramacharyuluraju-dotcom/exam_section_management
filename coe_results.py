@@ -484,10 +484,10 @@ if show_mod:
         
         mod_tabs = st.tabs(["📂 Bulk Moderation Upload", "👤 Manual Grace Marks (Audit)"])
 
-        # --- SUB-TAB 1: BULK MODERATION UPLOAD ---
+       # --- SUB-TAB 1: BULK MODERATION UPLOAD ---
         with mod_tabs[0]:
             st.markdown("#### Process Bulk Moderation Marks")
-            st.write("Upload a CSV of moderation scores. The engine will compare the Moderated Mark against the Original SEE Mark and permanently store the **Maximum** of the two.")
+            st.write("Upload a CSV of moderation scores. The engine will permanently log EVERY score for Third Valuation tracking, but will only update grades if the Moderated Mark is higher than the Original SEE.")
             
             with st.expander("View CSV Template Guide"):
                 st.code("usn,course_code,moderated_marks\n1AM25CS001,1BCEDS103,45\n1AM25CS042,1BCEDS103,38\n1AM25ME012,1BENG106,62")
@@ -503,7 +503,7 @@ if show_mod:
                 if not (usn_col and cc_col and m_col):
                     st.error("Missing standard columns. Please ensure USN, Course Code, and Moderated Marks are present in the CSV.")
                 else:
-                    with st.spinner("Processing moderation rules, recalculating grades, and generating audit logs..."):
+                    with st.spinner("Processing moderation rules, recalculating grades, and generating comprehensive audit logs..."):
                         try:
                             # 1. Fetch current DB records
                             db_res = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
@@ -531,7 +531,7 @@ if show_mod:
                                     old_see = safe_float(db_row.get('see_raw'), 0)
                                     old_grade = db_row.get('grade')
 
-                                    # 🟢 THE CORE RULE: Keep the Maximum of Original vs Moderation 🟢
+                                    # 🟢 THE CORE RULE: Keep the Maximum, but LOG EVERYTHING 🟢
                                     if mod_mark > old_see:
                                         final_raw_see = mod_mark
 
@@ -565,28 +565,40 @@ if show_mod:
                                             "reason": f"Original:{old_see} vs Mod:{mod_mark} -> Kept Mod"
                                         })
                                     else:
-                                        no_change_count += 1 # Moderation was lower/equal, skip it
+                                        no_change_count += 1 
+                                        
+                                        # 🟢 NEW: Log the ignored marks so we can calculate the +/- 15 difference later
+                                        audit_list.append({
+                                            "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                            "change_type": "MODERATION - BULK (IGNORED)",
+                                            "old_see": old_see, "old_grade": old_grade,
+                                            "new_see": old_see, "new_grade": old_grade, # Grade does not change
+                                            "reason": f"Original:{old_see} vs Mod:{mod_mark} -> Kept Original"
+                                        })
 
                             # 3. Commit to Database
-                            if updates_list:
-                                for i in range(0, len(updates_list), 500):
-                                    supabase.table("student_results").upsert(updates_list[i:i+500]).execute()
+                            if audit_list: # Trigger DB write if ANY audits exist (updates or ignores)
+                                if updates_list:
+                                    for i in range(0, len(updates_list), 500):
+                                        supabase.table("student_results").upsert(updates_list[i:i+500]).execute()
+                                        
                                 for i in range(0, len(audit_list), 500):
                                     try: supabase.table("marks_audit_log").insert(audit_list[i:i+500]).execute()
                                     except: pass
 
-                                st.success(f"✅ Moderation Processed! {len(updates_list)} scores were mathematically upgraded. Final grades recalculated and logged.")
-                                if no_change_count > 0:
-                                    st.info(f"ℹ️ {no_change_count} records were safely ignored because the Original SEE was higher than or equal to the Moderated mark.")
+                                total_processed = len(updates_list) + no_change_count
+                                st.success(f"✅ Moderation Completed & Logged! Processed {total_processed} total records.")
+                                
+                                col_res1, col_res2 = st.columns(2)
+                                col_res1.metric("Scores Upgraded (Mod > Orig)", len(updates_list))
+                                col_res2.metric("Scores Ignored (Orig >= Mod)", no_change_count)
+                                
+                                st.info("All moderation attempts have been written to the Audit Log. You can now use the logs to identify Third Valuation candidates (difference > 15).")
                             else:
-                                if no_change_count > 0:
-                                    st.warning(f"No records updated. {no_change_count} moderated marks were lower than or equal to the existing original marks.")
-                                else:
-                                    st.warning("No matching students/courses found in the database for the uploaded records.")
+                                st.warning("No matching students/courses found in the database for the uploaded records.")
 
                         except Exception as e:
                             st.error(f"Processing Error: {e}")
-
         # --- SUB-TAB 2: MANUAL GRACE MARKS ---
         with mod_tabs[1]:
             st.markdown("#### Individual Student Grace Marks")
