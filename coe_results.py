@@ -475,26 +475,25 @@ if show_grading:
                 except Exception as e: st.error(f"Error: {e}")
 
 # ----------------------------------------------------
-# TAB BLOCK: MODERATION
+# TAB BLOCK: MODERATION & THIRD VALUATION
 # ----------------------------------------------------
 if show_mod:
     with t5:
-        st.subheader("⚖️ Moderation & Grace Marks Engine")
-        st.info("Apply bulk moderation from random booklet sampling, or manually apply audited grace marks for specific students. All changes are permanently tracked.")
+        st.subheader("⚖️ Moderation & Third Valuation Engine")
+        st.info("Apply bulk moderation. If the difference between the Original Evaluator and Moderator is >= 15, the grade is frozen and flagged for Third Valuation.")
         
-        mod_tabs = st.tabs(["📂 Bulk Moderation Upload", "👤 Manual Grace Marks (Audit)"])
+        mod_tabs = st.tabs(["📂 Bulk Moderation Upload", "📥 Export 3rd Valuation List", "👤 Manual Grace Marks"])
 
-       # --- SUB-TAB 1: BULK MODERATION UPLOAD ---
+        # --- SUB-TAB 1: BULK MODERATION UPLOAD ---
         with mod_tabs[0]:
             st.markdown("#### Process Bulk Moderation Marks")
-            st.write("Upload a CSV of moderation scores. The engine will permanently log EVERY score for Third Valuation tracking, but will only update grades if the Moderated Mark is higher than the Original SEE.")
             
             with st.expander("View CSV Template Guide"):
-                st.code("usn,course_code,moderated_marks\n1AM25CS001,1BCEDS103,45\n1AM25CS042,1BCEDS103,38\n1AM25ME012,1BENG106,62")
+                st.code("usn,course_code,moderated_marks\n1AM25CS001,1BCEDS103,45\n1AM25CS042,1BCEDS103,38")
 
             f_mod = st.file_uploader("Upload Moderation CSV", type='csv', key="mod_bulk_up")
 
-            if f_mod and st.button("🚀 Execute Bulk Moderation", type="primary"):
+            if f_mod and st.button("🚀 Execute Moderation Rules", type="primary"):
                 df_mod = pd.read_csv(f_mod)
                 usn_col = find_column(df_mod, ['usn', 'student id'])
                 cc_col = find_column(df_mod, ['course_code', 'course code', 'subject code'])
@@ -503,23 +502,34 @@ if show_mod:
                 if not (usn_col and cc_col and m_col):
                     st.error("Missing standard columns. Please ensure USN, Course Code, and Moderated Marks are present in the CSV.")
                 else:
-                    with st.spinner("Processing moderation rules, recalculating grades, and generating comprehensive audit logs..."):
+                    with st.spinner("Analyzing True Original marks, checking 15-mark differences, and processing grades..."):
                         try:
                             # 1. Fetch current DB records
                             db_res = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
                             db_map = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): r for r in db_res}
 
-                            # 2. Fetch course max marks and branches for PG/UG scaling
+                            # 2. Fetch Audit Logs to establish the "TRUE ORIGINAL" marks
+                            # This prevents the original mark from being lost if CSV is uploaded twice
+                            audit_res = fetch_all_records("marks_audit_log", "usn, course_code, old_see, created_at", filters={"cycle_id": selected_cycle_id})
+                            audit_df = pd.DataFrame(audit_res)
+                            true_original_map = {}
+                            if not audit_df.empty:
+                                audit_df = audit_df.sort_values('created_at') # Sort oldest first
+                                for _, row in audit_df.iterrows():
+                                    key = (str(row['usn']).strip().upper(), str(row['course_code']).strip().upper())
+                                    if key not in true_original_map:
+                                        true_original_map[key] = safe_float(row['old_see'], 0) # The very first recorded mark!
+
+                            # 3. Fetch course info for grading recalculations
                             crs_res = fetch_all_records("master_courses", "course_code, credits, max_see, max_cie, total_marks")
                             crs_map = {r['course_code']: r for r in crs_res}
-
                             stu_res = fetch_all_records("master_students", "usn, branch_code")
                             branch_map = {str(r['usn']).strip().upper(): r.get('branch_code', '') for r in stu_res}
                             pg_branches = [r['branch_code'] for r in supabase.table("master_branches").select("branch_code, program_type").execute().data if str(r['program_type']).upper() == 'PG']
 
                             updates_list = []
                             audit_list = []
-                            no_change_count = 0
+                            stats = {"upgraded": 0, "ignored": 0, "third_val": 0}
 
                             for _, r in df_mod.iterrows():
                                 u = clean_str(r[usn_col])
@@ -528,56 +538,64 @@ if show_mod:
 
                                 if (u, c) in db_map and mod_mark is not None:
                                     db_row = db_map[(u, c)]
-                                    old_see = safe_float(db_row.get('see_raw'), 0)
+                                    current_db_see = safe_float(db_row.get('see_raw'), 0)
                                     old_grade = db_row.get('grade')
 
-                                    # 🟢 THE CORE RULE: Keep the Maximum, but LOG EVERYTHING 🟢
-                                    if mod_mark > old_see:
-                                        final_raw_see = mod_mark
+                                    # 🟢 THE MEMORY RULE: Get True Original, or fallback to current DB mark if never audited
+                                    true_orig_see = true_original_map.get((u, c), current_db_see)
+                                    
+                                    # 🟢 THE DIFFERENCE RULE: Calculate absolute difference
+                                    mark_diff = abs(mod_mark - true_orig_see)
 
-                                        # Recalculate Grades with the new higher SEE score
-                                        mc = crs_map.get(c, {})
-                                        cred = safe_float(mc.get('credits'), 4.0)
-                                        m_cie = safe_float(mc.get('max_cie'), 50.0)
-                                        m_see = safe_float(mc.get('max_see'), 50.0)
-                                        conducted_for = safe_float(mc.get('total_marks'), 100.0)
-                                        is_pg = branch_map.get(u) in pg_branches
-
-                                        scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(
-                                            db_row['cie_marks'], final_raw_see, db_row['exam_status'],
-                                            cred, m_cie, m_see, conducted_for, is_pg
-                                        )
-
-                                        updates_list.append({
-                                            "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
-                                            "see_raw": final_raw_see, "see_scaled": scaled_see,
-                                            "total_marks": tot, "grade": grd, "grade_points": gp,
-                                            "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass,
-                                            "exam_status": healed_status
-                                        })
-
-                                        # Log the mathematical override
+                                    if mark_diff >= 15:
+                                        # TRIGGER THIRD VALUATION (DO NOT UPDATE GRADES)
+                                        stats["third_val"] += 1
                                         audit_list.append({
                                             "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
-                                            "change_type": "MODERATION - BULK",
-                                            "old_see": old_see, "old_grade": old_grade,
-                                            "new_see": final_raw_see, "new_grade": grd,
-                                            "reason": f"Original:{old_see} vs Mod:{mod_mark} -> Kept Mod"
+                                            "change_type": "THIRD VALUATION PENDING",
+                                            "old_see": true_orig_see, "old_grade": old_grade,
+                                            "new_see": mod_mark, "new_grade": "FROZEN",
+                                            "reason": f"Diff is {mark_diff} (Orig:{true_orig_see}, Mod:{mod_mark}). Escalate to 3rd Val."
                                         })
                                     else:
-                                        no_change_count += 1 
-                                        
-                                        # 🟢 NEW: Log the ignored marks so we can calculate the +/- 15 difference later
-                                        audit_list.append({
-                                            "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
-                                            "change_type": "MODERATION - BULK (IGNORED)",
-                                            "old_see": old_see, "old_grade": old_grade,
-                                            "new_see": old_see, "new_grade": old_grade, # Grade does not change
-                                            "reason": f"Original:{old_see} vs Mod:{mod_mark} -> Kept Original"
-                                        })
+                                        # STANDARD LOGIC: Diff is < 15. Keep the Maximum.
+                                        if mod_mark > true_orig_see:
+                                            stats["upgraded"] += 1
+                                            
+                                            mc = crs_map.get(c, {})
+                                            cred, m_cie, m_see, conducted_for = safe_float(mc.get('credits'), 4.0), safe_float(mc.get('max_cie'), 50.0), safe_float(mc.get('max_see'), 50.0), safe_float(mc.get('total_marks'), 100.0)
+                                            is_pg = branch_map.get(u) in pg_branches
 
-                            # 3. Commit to Database
-                            if audit_list: # Trigger DB write if ANY audits exist (updates or ignores)
+                                            scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(
+                                                db_row['cie_marks'], mod_mark, db_row['exam_status'], cred, m_cie, m_see, conducted_for, is_pg
+                                            )
+
+                                            updates_list.append({
+                                                "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                                "see_raw": mod_mark, "see_scaled": scaled_see,
+                                                "total_marks": tot, "grade": grd, "grade_points": gp,
+                                                "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass, "exam_status": healed_status
+                                            })
+
+                                            audit_list.append({
+                                                "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                                "change_type": "MODERATION - APPLIED",
+                                                "old_see": true_orig_see, "old_grade": old_grade,
+                                                "new_see": mod_mark, "new_grade": grd,
+                                                "reason": f"Diff < 15. Kept Higher Mod ({mod_mark})."
+                                            })
+                                        else:
+                                            stats["ignored"] += 1
+                                            audit_list.append({
+                                                "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                                "change_type": "MODERATION - IGNORED",
+                                                "old_see": true_orig_see, "old_grade": old_grade,
+                                                "new_see": true_orig_see, "new_grade": old_grade,
+                                                "reason": f"Diff < 15. Kept Higher Orig ({true_orig_see})."
+                                            })
+
+                            # 4. Commit to Database
+                            if audit_list:
                                 if updates_list:
                                     for i in range(0, len(updates_list), 500):
                                         supabase.table("student_results").upsert(updates_list[i:i+500]).execute()
@@ -586,21 +604,51 @@ if show_mod:
                                     try: supabase.table("marks_audit_log").insert(audit_list[i:i+500]).execute()
                                     except: pass
 
-                                total_processed = len(updates_list) + no_change_count
-                                st.success(f"✅ Moderation Completed & Logged! Processed {total_processed} total records.")
-                                
-                                col_res1, col_res2 = st.columns(2)
-                                col_res1.metric("Scores Upgraded (Mod > Orig)", len(updates_list))
-                                col_res2.metric("Scores Ignored (Orig >= Mod)", no_change_count)
-                                
-                                st.info("All moderation attempts have been written to the Audit Log. You can now use the logs to identify Third Valuation candidates (difference > 15).")
+                                st.success("✅ Moderation Processed & Audited!")
+                                c1, c2, c3 = st.columns(3)
+                                c1.metric("⬆️ Upgraded (Mod > Orig)", stats["upgraded"])
+                                c2.metric("➖ Ignored (Orig >= Mod)", stats["ignored"])
+                                c3.metric("🚨 3rd Valuations Triggered", stats["third_val"], delta="Diff >= 15", delta_color="inverse")
                             else:
-                                st.warning("No matching students/courses found in the database for the uploaded records.")
+                                st.warning("No valid matching students/courses found in the database.")
 
                         except Exception as e:
                             st.error(f"Processing Error: {e}")
-        # --- SUB-TAB 2: MANUAL GRACE MARKS ---
+
+        # --- SUB-TAB 2: THIRD VALUATION EXPORT ---
         with mod_tabs[1]:
+            st.markdown("#### 🚨 Third Valuation Candidate List")
+            st.write("These students had a moderation difference of 15 or more. Their grades have been frozen until a Third Evaluator score is provided.")
+            
+            if st.button("🔍 Fetch Pending Third Valuations", type="primary"):
+                with st.spinner("Scanning Audit Logs..."):
+                    tv_logs = fetch_all_records("marks_audit_log", filters={"cycle_id": selected_cycle_id, "change_type": "THIRD VALUATION PENDING"})
+                    
+                    if not tv_logs:
+                        st.success("🎉 No pending Third Valuations found for this cycle!")
+                    else:
+                        df_tv = pd.DataFrame(tv_logs)
+                        # Clean up the display dataframe
+                        display_cols = ['usn', 'course_code', 'old_see', 'new_see', 'reason', 'created_at']
+                        df_tv_clean = df_tv[display_cols].rename(columns={
+                            'usn': 'USN', 'course_code': 'Course Code', 
+                            'old_see': 'Original Evaluator', 'new_see': 'Moderator Mark',
+                            'reason': 'System Audit Note', 'created_at': 'Timestamp'
+                        })
+                        
+                        st.dataframe(df_tv_clean, use_container_width=True, hide_index=True)
+                        
+                        # Generate CSV for download
+                        csv_data = df_tv_clean.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="📥 Download List as CSV (For 3rd Evaluator)",
+                            data=csv_data,
+                            file_name=f"Third_Valuation_Candidates_{selected_cycle_id}.csv",
+                            mime="text/csv",
+                        )
+
+        # --- SUB-TAB 3: MANUAL GRACE MARKS ---
+        with mod_tabs[2]:
             st.markdown("#### Individual Student Grace Marks")
             mod_usn = st.text_input("Enter Student USN to review failing subjects:").strip().upper()
             if mod_usn:
@@ -668,7 +716,7 @@ if show_mod:
                                                 if is_pass: st.success(f"✅ Grace marks applied and audited! Passed with Grade **{grd}**.")
                                                 else: st.warning(f"⚠️ Audited, but student still failing. New Grade: **{grd}**.")
                 except Exception as e: st.error(f"Error fetching data: {e}")
-
+                    
 # ----------------------------------------------------
 # TAB BLOCK: LEDGERS (Used in ALL Contexts)
 # ----------------------------------------------------
