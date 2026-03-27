@@ -15,10 +15,18 @@ def fetch_all_records(table_name, select_query="*", filters=None):
     all_data = []
     start, step = 0, 1000
     while True:
-        query = supabase.table(table_name).select(select_query).range(start, start + step - 1)
+        # 🟢 FIX: Initialize query first
+        query = supabase.table(table_name).select(select_query)
+        
+        # 🟢 FIX: Apply filters BEFORE the range limits
         if filters:
-            for col, val in filters.items(): query = query.eq(col, val)
+            for col, val in filters.items(): 
+                query = query.eq(col, val)
+                
+        # Apply pagination range last
+        query = query.range(start, start + step - 1)
         res = query.execute()
+        
         if not res.data: break
         all_data.extend(res.data)
         if len(res.data) < step: break
@@ -233,11 +241,14 @@ with tabs[3]:
         
         if st.button(f"Promote all Sem {target_sem} students to Sem {target_sem + 1}", type="primary"):
             with st.spinner("Updating student master records..."):
-                students = fetch_all_records("master_students", filters={"current_semester": target_sem})
+                # 🟢 FIX: Safe String Cast for DB Query
+                target_sem_str = str(target_sem)
+                students = fetch_all_records("master_students", filters={"current_semester": target_sem_str})
+                
                 if not students:
                     st.warning(f"No active students found in Semester {target_sem}.")
                 else:
-                    update_payload = [{"usn": s['usn'], "current_semester": target_sem + 1} for s in students]
+                    update_payload = [{"usn": s['usn'], "current_semester": str(target_sem + 1)} for s in students]
                     for i in range(0, len(update_payload), 1000):
                         supabase.table("master_students").upsert(update_payload[i:i+1000]).execute()
                     st.success(f"✅ {len(students)} students successfully promoted to Semester {target_sem + 1}!")
@@ -259,17 +270,16 @@ with tabs[3]:
 
         if st.button("🔍 Analyze Eligibility & Promote", type="primary"):
             with st.spinner("Analyzing complete academic histories..."):
-                students = fetch_all_records("master_students", filters={"current_semester": current_even_sem})
+                # 🟢 FIX: Safe String Cast for DB Query
+                current_even_sem_str = str(current_even_sem)
+                students = fetch_all_records("master_students", filters={"current_semester": current_even_sem_str})
+                
                 if not students:
                     st.warning(f"No active students found in Semester {current_even_sem}.")
                 else:
-                    # 1. Fetch EVERY result ever recorded (Now pulling cycle_id instead of created_at)
                     all_results = fetch_all_records("student_results", "usn, course_code, is_pass, credits_earned, cycle_id")
                     
-                    # 🟢 THE REAL-WORLD TIMELINE FIX 🟢
                     # Sort strictly by cycle_id. 
-                    # Cycle 1 (Regular) will ALWAYS process before Cycle 4 (Arrears), 
-                    # even if Cycle 1 was manually edited by a clerk today.
                     all_results.sort(key=lambda x: int(x.get('cycle_id', 0)))
                     
                     # 3. LATEST ATTEMPT RESOLVER
@@ -306,7 +316,7 @@ with tabs[3]:
                             is_eligible = total_credits >= threshold
                             
                         if is_eligible:
-                            eligible_students.append({"usn": usn, "current_semester": current_even_sem + 1})
+                            eligible_students.append({"usn": usn, "current_semester": str(current_even_sem + 1)})
                         else:
                             detained_students.append({"USN": usn, "Active Backlogs": active_backlogs, "Credits Earned": total_credits})
 
