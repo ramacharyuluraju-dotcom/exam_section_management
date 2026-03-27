@@ -491,7 +491,7 @@ if show_grading:
 if show_mod:
     with t5:
         st.subheader("⚖️ Moderation & Third Valuation Engine")
-        st.info("Apply bulk moderation. If the difference between the Original Evaluator and Moderator is >= 15, the grade is frozen and flagged for Third Valuation.")
+        st.info("Apply bulk moderation. If the difference between the Original Evaluator and Moderator is > 15, the grade is frozen and flagged for Third Valuation.")
         
         mod_tabs = st.tabs(["📂 Bulk Moderation Upload", "📥 Export 3rd Valuation List", "👤 Manual Grace Marks", "⚖️ 3rd Valuation Upload"])
 
@@ -513,7 +513,7 @@ if show_mod:
                 if not (usn_col and cc_col and m_col):
                     st.error("Missing standard columns. Please ensure USN, Course Code, and Moderated Marks are present in the CSV.")
                 else:
-                    with st.spinner("Analyzing True Original marks, checking 15-mark differences, and processing grades..."):
+                    with st.spinner("Analyzing True Original marks, checking > 15-mark differences, and processing grades..."):
                         try:
                             db_res = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
                             db_map = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): r for r in db_res}
@@ -551,7 +551,7 @@ if show_mod:
                                     true_orig_see = true_original_map.get((u, c), current_db_see)
                                     mark_diff = abs(mod_mark - true_orig_see)
 
-                                    if mark_diff >= 15:
+                                    if mark_diff > 15:
                                         stats["third_val"] += 1
                                         audit_list.append({
                                             "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
@@ -584,7 +584,7 @@ if show_mod:
                                                 "change_type": "MODERATION - APPLIED",
                                                 "old_see": true_orig_see, "old_grade": old_grade,
                                                 "new_see": mod_mark, "new_grade": grd,
-                                                "reason": f"Diff < 15. Kept Higher Mod ({mod_mark})."
+                                                "reason": f"Diff <= 15. Kept Higher Mod ({mod_mark})."
                                             })
                                         else:
                                             stats["ignored"] += 1
@@ -593,7 +593,7 @@ if show_mod:
                                                 "change_type": "MODERATION - IGNORED",
                                                 "old_see": true_orig_see, "old_grade": old_grade,
                                                 "new_see": true_orig_see, "new_grade": old_grade,
-                                                "reason": f"Diff < 15. Kept Higher Orig ({true_orig_see})."
+                                                "reason": f"Diff <= 15. Kept Higher Orig ({true_orig_see})."
                                             })
 
                             if audit_list:
@@ -609,7 +609,7 @@ if show_mod:
                                 c1, c2, c3 = st.columns(3)
                                 c1.metric("⬆️ Upgraded (Mod > Orig)", stats["upgraded"])
                                 c2.metric("➖ Ignored (Orig >= Mod)", stats["ignored"])
-                                c3.metric("🚨 3rd Valuations Triggered", stats["third_val"], delta="Diff >= 15", delta_color="inverse")
+                                c3.metric("🚨 3rd Valuations Triggered", stats["third_val"], delta="Diff > 15", delta_color="inverse")
                             else:
                                 st.warning("No valid matching students/courses found in the database.")
 
@@ -619,7 +619,7 @@ if show_mod:
         # --- SUB-TAB 2: THIRD VALUATION EXPORT ---
         with mod_tabs[1]:
             st.markdown("#### 🚨 Third Valuation Candidate List")
-            st.write("These students had a moderation difference of 15 or more. Their grades have been frozen until a Third Evaluator score is provided.")
+            st.write("These students had a moderation difference of more than 15. Their grades have been frozen until a Third Evaluator score is provided.")
             
             if st.button("🔍 Fetch Pending Third Valuations", type="primary"):
                 with st.spinner("Scanning Audit Logs..."):
