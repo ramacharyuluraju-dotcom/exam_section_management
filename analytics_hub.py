@@ -208,21 +208,28 @@ with t3:
                 cycles_map = {c['cycle_id']: c['cycle_name'] for c in fetch_all_records("exam_cycles", "cycle_id, cycle_name")}
                 courses_map = {c['course_code']: c for c in fetch_all_records("master_courses", "course_code, title, credits")}
                 
+                # 🟢 THE GLOBAL LATEST ATTEMPT RESOLVER 🟢
+                # We sort the history chronologically. Newer records overwrite older ones in the dictionary.
+                sorted_history = sorted(results_history, key=lambda x: str(x.get('created_at', x.get('cycle_id', ''))))
+                
+                latest_attempts = {}
+                for r in sorted_history:
+                    if r.get('grade') not in ['PND', 'PENDING', None]:
+                        latest_attempts[r.get('course_code')] = r
+                
                 total_credits_attempted = 0.0
                 total_grade_points_earned = 0.0
                 active_backlogs = 0
                 
-                for r in results_history:
-                    if r.get('grade') not in ['PND', 'PENDING', None]:
-                        c_code = r.get('course_code')
-                        cred = safe_float(courses_map.get(c_code, {}).get('credits', 0))
-                        gp = safe_float(r.get('grade_points', 0))
-                        
-                        total_credits_attempted += cred
-                        total_grade_points_earned += (gp * cred)
-                        
-                        if not r.get('is_pass', False):
-                            active_backlogs += 1
+                for c_code, r in latest_attempts.items():
+                    cred = safe_float(courses_map.get(c_code, {}).get('credits', 0))
+                    gp = safe_float(r.get('grade_points', 0))
+                    
+                    total_credits_attempted += cred
+                    total_grade_points_earned += (gp * cred)
+                    
+                    if not r.get('is_pass', False):
+                        active_backlogs += 1
 
                 cgpa = (total_grade_points_earned / total_credits_attempted) if total_credits_attempted > 0 else 0.0
                 
@@ -232,7 +239,6 @@ with t3:
                 col_img, col_det, col_met = st.columns([1, 2, 1.5])
                 
                 with col_img:
-                    # 🟢 NATIVE STREAMLIT PHOTO RENDERER 🟢
                     photo_bytes = fetch_student_photo(search_usn)
                     if photo_bytes:
                         st.image(photo_bytes, use_container_width=True)
@@ -258,7 +264,7 @@ with t3:
                     st.metric("Active Backlogs", f"{active_backlogs}", delta_color="inverse")
 
                 # --- RENDER ACADEMIC HISTORY ---
-                st.markdown("### 📚 Academic History (Cycle-wise)")
+                st.markdown("### 📚 Academic History (Cycle-wise Transcript)")
                 
                 if not results_history:
                     st.info("No exam records found for this student.")
