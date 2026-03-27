@@ -37,14 +37,13 @@ def fetch_student_photo(usn):
     """Securely fetches photo bytes using the native Supabase Python SDK."""
     clean_usn = str(usn).strip().upper()
     
-    # 🟢 FIX: Added .webp and .WEBP to the checklist!
     for ext in ['.jpg', '.jpeg', '.png', '.webp', '.JPG', '.PNG', '.JPEG', '.WEBP']:
         try:
             res = supabase.storage.from_("StakeHolders_Photos").download(f"{clean_usn}{ext}")
             if res:
-                return res  # Return the raw image bytes
+                return res
         except Exception:
-            continue  # Fails silently and tries the next extension
+            continue
     return None
 
 # ==========================================
@@ -209,8 +208,8 @@ with t3:
                 courses_map = {c['course_code']: c for c in fetch_all_records("master_courses", "course_code, title, credits")}
                 
                 # 🟢 THE GLOBAL LATEST ATTEMPT RESOLVER 🟢
-                # We sort the history chronologically. Newer records overwrite older ones in the dictionary.
-                sorted_history = sorted(results_history, key=lambda x: str(x.get('created_at', x.get('cycle_id', ''))))
+                # Sort strictly by cycle_id to establish the true chronological timeline
+                sorted_history = sorted(results_history, key=lambda x: int(x.get('cycle_id', 0)))
                 
                 latest_attempts = {}
                 for r in sorted_history:
