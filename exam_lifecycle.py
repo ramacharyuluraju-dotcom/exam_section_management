@@ -3,15 +3,31 @@ import pandas as pd
 from utils import init_db, clean_data_for_db
 
 # --- CONFIGURATION ---
-# Note: st.set_page_config removed because app.py handles it
 supabase = init_db()
 
 st.title("⏳ Exam Lifecycle Management")
-st.markdown("#### 🏢 Operational Phase: COE Office") # Moved out of the sidebar for a cleaner UI
+st.markdown("#### 🏢 Operational Phase: COE Office") 
 
-# --- GLOBAL CONTEXT ---
-# Pulls the active cycle directly from the session state managed by app.py
 active_cycle_id = st.session_state.get('active_cycle_id')
+
+# --- HELPER FUNCTIONS ---
+def fetch_all_records(table_name, select_query="*", filters=None):
+    all_data = []
+    start, step = 0, 1000
+    while True:
+        query = supabase.table(table_name).select(select_query).range(start, start + step - 1)
+        if filters:
+            for col, val in filters.items(): query = query.eq(col, val)
+        res = query.execute()
+        if not res.data: break
+        all_data.extend(res.data)
+        if len(res.data) < step: break
+        start += step
+    return all_data
+
+def safe_float(val, default=0.0):
+    try: return float(val) if val and pd.notna(val) else default
+    except: return default
 
 # --- STATUS DEFINITIONS ---
 PHASES = {
@@ -27,7 +43,7 @@ PHASES = {
     10: {"name": "Results Processing", "desc": "SEE marks entry and consolidation."}
 }
 
-tabs = st.tabs(["🚀 Active Lifecycle", "🆕 Create New Cycle", "📊 Cycle History"])
+tabs = st.tabs(["🚀 Active Lifecycle", "🆕 Create New Cycle", "📊 Cycle History", "🎓 Semester Promotion"])
 
 # ==========================================
 # 1. ACTIVE LIFECYCLE (CONTEXT-DRIVEN)
@@ -37,7 +53,6 @@ with tabs[0]:
         st.warning("Please select a cycle from the sidebar or create a new one to begin.")
         st.info("The multi-cycle logic allows you to manage UG, PG, or Supplementary exams in parallel.")
     else:
-        # Fetch the full details of the specific cycle selected in the sidebar
         try:
             res = supabase.table("exam_cycles").select("*").eq("cycle_id", active_cycle_id).single().execute()
             current_cycle = res.data
@@ -45,10 +60,8 @@ with tabs[0]:
             current_status = current_cycle.get('status_code', 1)
             phase_info = PHASES.get(current_status)
 
-            # Header Section
             st.subheader(f"Managing Session: {current_cycle['cycle_name']}")
             
-            # Progress Bar based on status code
             progress_val = current_status / 10
             st.progress(progress_val, text=f"Overall Progress: {int(progress_val*100)}%")
             
@@ -59,9 +72,6 @@ with tabs[0]:
 
             st.divider()
 
-            # --- PHASE-SPECIFIC LOGIC ---
-            
-            # STEP 1: TIMETABLE UPLOAD
             if current_status == 1:
                 st.markdown("### 📅 Step 1: Upload Exam Timetable")
                 st.info("Upload the CSV containing the schedule for this specific cycle.")
@@ -70,7 +80,6 @@ with tabs[0]:
                     st.write("Columns: `course_code, exam_date, session` (Morning/Afternoon)")
                     st.code("course_code,exam_date,session\n1BMATC101,2026-02-20,Morning")
                 
-                # Unique key prevents file mixups between different active cycles
                 f_tt = st.file_uploader("Upload Timetable CSV", type='csv', key=f"tt_uploader_{active_cycle_id}")
                 
                 if f_tt:
@@ -81,20 +90,17 @@ with tabs[0]:
                         expected = ['course_code', 'exam_date', 'session']
                         data = clean_data_for_db(df_tt, expected)
                         
-                        # Attach THIS specific cycle_id to the timetable rows
                         for row in data:
                             row['cycle_id'] = active_cycle_id
                         
                         try:
                             supabase.table("exam_timetable").upsert(data).execute()
-                            # Advance the status for this specific cycle
                             supabase.table("exam_cycles").update({"status_code": 2}).eq("cycle_id", active_cycle_id).execute()
                             st.success("Timetable Processed! Lifecycle advanced.")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Upload failed: {e}")
 
-            # STEPS 2-9: GENERAL PROGRESSION
             elif current_status < 10:
                 st.markdown(f"### ✅ Current Phase: {phase_info['name']}")
                 st.info(f"Context: {phase_info['desc']}")
@@ -113,20 +119,18 @@ with tabs[0]:
                             supabase.table("exam_cycles").update({"status_code": current_status - 1}).eq("cycle_id", active_cycle_id).execute()
                             st.rerun()
 
-            # STEP 10: ARCHIVING
             else:
                 st.balloons()
                 st.markdown("### 🏁 Lifecycle Completed")
                 st.success("All examinations and result processing for this cycle are concluded.")
                 if st.button("📁 Close & Archive This Cycle"):
-                    # This removes it from the sidebar selector but keeps the data in history
                     supabase.table("exam_cycles").update({"is_active": False}).eq("cycle_id", active_cycle_id).execute()
                     st.rerun()
         except Exception as e:
             st.error("Error retrieving cycle details. Please re-select from sidebar.")
 
 # ==========================================
-# 2. CREATE NEW CYCLE (DYNAMIC PARENT LINKING)
+# 2. CREATE NEW CYCLE 
 # ==========================================
 with tabs[1]:
     st.markdown("### 🆕 Initiate New Exam Session")
@@ -138,17 +142,14 @@ with tabs[1]:
     c_ay = col1.text_input("Academic Year", value="2025-26")
     c_type = col2.selectbox("Exam Type", ["Regular", "Supplementary", "Summer", "Revaluation", "Make-up"])
     
-    # 🟢 DYNAMIC PARENT CYCLE SELECTOR 🟢
     parent_cycle_id = None
     if c_type != "Regular":
         st.markdown("🔗 **Link to Parent Exam Cycle**")
         st.caption("Select the original Regular exam cycle where the students' CIE marks and registrations reside.")
         
         try:
-            # Fetch all existing cycles to populate the dropdown
             existing_cycles = supabase.table("exam_cycles").select("cycle_id, cycle_name").execute().data
             if existing_cycles:
-                # Map the display name to the integer ID
                 cycle_dict = {f"{c['cycle_name']} (ID: {c['cycle_id']})": int(c['cycle_id']) for c in existing_cycles}
                 selected_parent = st.selectbox("Select Parent Cycle", options=["None"] + list(cycle_dict.keys()))
                 
@@ -165,7 +166,7 @@ with tabs[1]:
                 "exam_type": c_type,
                 "status_code": 1,
                 "is_active": True,
-                "parent_cycle_id": parent_cycle_id # Saves the integer link to DB
+                "parent_cycle_id": parent_cycle_id 
             }
             try:
                 supabase.table("exam_cycles").insert(new_cycle).execute()
@@ -182,22 +183,18 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("Archived Exam Cycles")
     try:
-        # Fetch all closed cycles
         history = supabase.table("exam_cycles").select("*").eq("is_active", False).order("created_at", desc=True).execute()
         
         if history.data:
             hist_df = pd.DataFrame(history.data)
-            # Display history table
             cols = ['cycle_name', 'academic_year', 'exam_type', 'created_at']
             st.dataframe(hist_df[cols], use_container_width=True)
             
             st.divider()
             
-            # --- RESTORE FEATURE ---
             st.markdown("### 🔄 Reopen an Archived Cycle")
             st.info("Accidentally closed a cycle? Reopen it here to continue processing marks and results.")
             
-            # Create a dictionary mapping cycle names to their IDs
             cycle_options = {row['cycle_name']: row['cycle_id'] for row in history.data}
             
             col1, col2 = st.columns([3, 1])
@@ -205,11 +202,10 @@ with tabs[2]:
                 cycle_to_restore = st.selectbox("Select cycle to reopen:", options=list(cycle_options.keys()))
             
             with col2:
-                st.write("") # Spacing alignment
+                st.write("") 
                 st.write("")
                 if st.button("🔓 Reopen Cycle", type="primary"):
                     restore_id = cycle_options[cycle_to_restore]
-                    # Update database to make it active again
                     supabase.table("exam_cycles").update({"is_active": True}).eq("cycle_id", restore_id).execute()
                     
                     st.success(f"'{cycle_to_restore}' reopened! You can now select it in the sidebar.")
@@ -219,3 +215,116 @@ with tabs[2]:
             st.info("No archived cycles found.")
     except Exception as e:
         st.error(f"History currently unavailable: {e}")
+
+# ==========================================
+# 4. SEMESTER PROMOTION ENGINE
+# ==========================================
+with tabs[3]:
+    st.subheader("🎓 Master Semester Promotion")
+    st.info("Promote students to their next semester based on VTU progression rules. This tool scans their entire academic history across all past exam cycles.")
+
+    promo_tabs = st.tabs(["⏩ Odd to Even Promotion", "🚧 Even to Odd (Vertical Progression)"])
+
+    # --- ODD TO EVEN PROMOTION ---
+    with promo_tabs[0]:
+        st.write("Students moving from an Odd semester to an Even semester (e.g., 1st to 2nd) are promoted automatically without credit hurdles.")
+        odd_sems = [1, 3, 5, 7, 9]
+        target_sem = st.selectbox("Select current Odd Semester to promote:", odd_sems)
+        
+        if st.button(f"Promote all Sem {target_sem} students to Sem {target_sem + 1}", type="primary"):
+            with st.spinner("Updating student master records..."):
+                students = fetch_all_records("master_students", filters={"current_semester": target_sem})
+                if not students:
+                    st.warning(f"No active students found in Semester {target_sem}.")
+                else:
+                    update_payload = [{"usn": s['usn'], "current_semester": target_sem + 1} for s in students]
+                    for i in range(0, len(update_payload), 1000):
+                        supabase.table("master_students").upsert(update_payload[i:i+1000]).execute()
+                    st.success(f"✅ {len(students)} students successfully promoted to Semester {target_sem + 1}!")
+
+    # --- EVEN TO ODD PROMOTION (WITH HISTORICAL RESOLVER) ---
+    with promo_tabs[1]:
+        st.write("Vertical progression from Even to Odd requires students to meet VTU progression criteria.")
+        even_sems = [2, 4, 6, 8]
+        c_col1, c_col2 = st.columns(2)
+        current_even_sem = c_col1.selectbox("Select current Even Semester:", even_sems)
+        
+        progression_rule = c_col2.selectbox("VTU Progression Criteria:", [
+            "Max 4 Active Backlogs (Old Scheme)",
+            "Minimum Credits Earned (NEP Scheme)",
+            "No Active Backlogs from Previous Year"
+        ])
+        
+        threshold = st.number_input("Set Threshold (e.g., Max Backlogs or Min Credits):", value=4)
+
+        if st.button("🔍 Analyze Eligibility & Promote", type="primary"):
+            with st.spinner("Analyzing complete academic histories (Regular, Make-up, Reval)..."):
+                students = fetch_all_records("master_students", filters={"current_semester": current_even_sem})
+                if not students:
+                    st.warning(f"No active students found in Semester {current_even_sem}.")
+                else:
+                    # 1. Fetch EVERY result ever recorded
+                    all_results = fetch_all_records("student_results", "usn, course_code, is_pass, credits_earned, created_at")
+                    
+                    # 2. Sort by date so the newest record is processed last
+                    all_results.sort(key=lambda x: x.get('created_at', ''))
+                    
+                    # 3. LATEST ATTEMPT RESOLVER
+                    # This dictionary will naturally overwrite old Fails with new Passes
+                    latest_results = {}
+                    for r in all_results:
+                        u, c = r['usn'], r['course_code']
+                        if u not in latest_results: latest_results[u] = {}
+                        latest_results[u][c] = {
+                            "is_pass": r.get('is_pass', False),
+                            "credits": safe_float(r.get('credits_earned'), 0.0)
+                        }
+
+                    # 4. Calculate final clean metrics for each student
+                    eligible_students = []
+                    detained_students = []
+
+                    for s in students:
+                        usn = s['usn']
+                        total_credits = 0.0
+                        active_backlogs = 0
+                        
+                        student_courses = latest_results.get(usn, {})
+                        for course_code, data in student_courses.items():
+                            if data['is_pass']:
+                                total_credits += data['credits']
+                            else:
+                                active_backlogs += 1
+                                
+                        # 5. Apply the Rule
+                        is_eligible = False
+                        if "Backlogs" in progression_rule:
+                            is_eligible = active_backlogs <= threshold
+                        elif "Credits" in progression_rule:
+                            is_eligible = total_credits >= threshold
+                            
+                        if is_eligible:
+                            eligible_students.append({"usn": usn, "current_semester": current_even_sem + 1})
+                        else:
+                            detained_students.append({"USN": usn, "Active Backlogs": active_backlogs, "Credits Earned": total_credits})
+
+                    # 6. Execute Promotions
+                    if eligible_students:
+                        for i in range(0, len(eligible_students), 1000):
+                            supabase.table("master_students").upsert(eligible_students[i:i+1000]).execute()
+                        st.success(f"✅ {len(eligible_students)} students met the criteria and were promoted to Semester {current_even_sem + 1}!")
+                    else:
+                        st.warning("No students met the progression criteria.")
+                        
+                    if detained_students:
+                        st.error(f"🚫 {len(detained_students)} students failed to meet the vertical progression criteria and have been detained.")
+                        
+                        df_detained = pd.DataFrame(detained_students)
+                        st.dataframe(df_detained, use_container_width=True)
+                        
+                        st.download_button(
+                            label="📥 Download Detained Students CSV",
+                            data=df_detained.to_csv(index=False).encode('utf-8'),
+                            file_name=f"Detained_Students_Sem_{current_even_sem}.csv",
+                            mime="text/csv"
+                        )
