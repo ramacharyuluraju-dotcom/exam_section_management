@@ -918,121 +918,159 @@ if show_ledgers:
                     with c2: st.download_button("📄 Marks Cards (ZIP)", pdf_zip_buffer.getvalue(), f"Marks_Cards_{active_cycle_name}.zip")
                 except Exception as e: st.error(f"Generation Error: {e}")
 
-# ==========================================
-# 4. SEMESTER PROMOTION ENGINE
-# ==========================================
-with tabs[3]:
-    st.subheader("🎓 Master Semester Promotion")
-    st.info("Promote students to their next semester based on VTU progression rules. This tool scans their entire academic history across all past exam cycles.")
+# ----------------------------------------------------
+# TAB BLOCK: DASHBOARD (Used in ALL Contexts)
+# ----------------------------------------------------
+if show_dashboard:
+    with t7:
+        st.subheader("📊 Institutional Analytics Dashboard")
+        if st.button("🔄 Refresh Statistics", type="primary"):
+            with st.spinner("Compiling institutional metrics..."):
+                try:
+                    res_data = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
+                    if not res_data: st.warning("No data available.")
+                    else:
+                        df = pd.DataFrame(res_data)
+                        stu_data = fetch_all_records("master_students", "usn, branch_code")
+                        branch_map = {str(r['usn']).strip().upper(): r.get('branch_code', 'UNKNOWN') for r in stu_data}
+                        df['Branch'] = df['usn'].map(branch_map)
 
-    promo_tabs = st.tabs(["⏩ Odd to Even Promotion", "🚧 Even to Odd (Vertical Progression)"])
+                        total_evals = len(df)
+                        pending_evals = len(df[df['grade'].isin(['PND', 'PENDING'])])
+                        failed_evals = len(df[df['grade'] == 'F'])
+                        passed_evals = total_evals - pending_evals - failed_evals
+                        completed_evals = total_evals - pending_evals
+                        pass_pct = (passed_evals / completed_evals * 100) if completed_evals > 0 else 0
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("Total Evaluations", f"{total_evals:,}")
+                        col2.metric("Pending SEE Marks", f"{pending_evals:,}", delta="-Requires Action" if pending_evals > 0 else "All Clear", delta_color="inverse")
+                        col3.metric("Evaluated Pass Rate", f"{pass_pct:.1f}%")
+                        col4.metric("Total Fails", f"{failed_evals:,}")
+                        
+                        st.markdown("---")
+                        chart_col1, chart_col2 = st.columns(2)
+                        with chart_col1:
+                            st.markdown("##### 📈 Grade Distribution")
+                            df_graded = df[~df['grade'].isin(['PND', 'PENDING'])]
+                            if not df_graded.empty:
+                                grade_counts = df_graded['grade'].value_counts().reset_index()
+                                grade_counts.columns = ['Grade', 'Count']
+                                grade_order = ['O', 'A+', 'A', 'B+', 'B', 'C', 'P', 'F', 'AB', 'MP']
+                                grade_counts['Grade'] = pd.Categorical(grade_counts['Grade'], categories=grade_order, ordered=True)
+                                st.bar_chart(grade_counts.sort_values('Grade').set_index('Grade')['Count'], color="#4CAF50")
 
-    # --- ODD TO EVEN PROMOTION ---
-    with promo_tabs[0]:
-        st.write("Students moving from an Odd semester to an Even semester (e.g., 1st to 2nd) are promoted automatically without credit hurdles.")
-        odd_sems = [1, 3, 5, 7, 9]
-        target_sem = st.selectbox("Select current Odd Semester to promote:", odd_sems)
-        
-        if st.button(f"Promote all Sem {target_sem} students to Sem {target_sem + 1}", type="primary"):
-            with st.spinner("Updating student master records..."):
-                students = fetch_all_records("master_students", filters={"current_semester": target_sem})
-                if not students:
-                    st.warning(f"No active students found in Semester {target_sem}.")
-                else:
-                    update_payload = [{"usn": s['usn'], "current_semester": target_sem + 1} for s in students]
-                    for i in range(0, len(update_payload), 1000):
-                        supabase.table("master_students").upsert(update_payload[i:i+1000]).execute()
-                    st.success(f"✅ {len(students)} students successfully promoted to Semester {target_sem + 1}!")
+                        with chart_col2:
+                            st.markdown("##### 🏢 Branch-wise Pass Rates")
+                            branch_stats = []
+                            for branch, group in df_graded.groupby('Branch'):
+                                b_total = len(group)
+                                b_pass = len(group[group['is_pass'] == True])
+                                branch_stats.append({'Branch': branch, 'Pass Rate %': (b_pass / b_total) * 100 if b_total > 0 else 0})
+                            if branch_stats: st.bar_chart(pd.DataFrame(branch_stats).set_index('Branch')['Pass Rate %'], color="#2196F3")
 
-    # --- EVEN TO ODD PROMOTION (WITH HISTORICAL RESOLVER) ---
-    with promo_tabs[1]:
-        st.write("Vertical progression from Even to Odd requires students to meet VTU progression criteria.")
-        even_sems = [2, 4, 6, 8]
-        c_col1, c_col2 = st.columns(2)
-        current_even_sem = c_col1.selectbox("Select current Even Semester:", even_sems)
-        
-        progression_rule = c_col2.selectbox("VTU Progression Criteria:", [
-            "Max 4 Active Backlogs (Old Scheme)",
-            "Minimum Credits Earned (NEP Scheme)",
-            "No Active Backlogs from Previous Year"
-        ])
-        
-        threshold = st.number_input("Set Threshold (e.g., Max Backlogs or Min Credits):", value=4)
+                        st.markdown("---")
+                        st.subheader("⚠️ Actionable Alerts")
+                        pending_df = df[df['grade'].isin(['PND', 'PENDING'])]
+                        if not pending_df.empty:
+                            for course, count in pending_df['course_code'].value_counts().items():
+                                st.error(f"Missing SEE Marks for **{count}** students in subject **{course}**.")
+                        else: st.success("🎉 All clear! All evaluated subjects have full marks uploaded.")
+                except Exception as e: st.error(f"Dashboard Error: {e}")
 
-        if st.button("🔍 Analyze Eligibility & Promote", type="primary"):
-            with st.spinner("Analyzing complete academic histories..."):
-                students = fetch_all_records("master_students", filters={"current_semester": current_even_sem})
-                if not students:
-                    st.warning(f"No active students found in Semester {current_even_sem}.")
-                else:
-                    # 1. Fetch EVERY result ever recorded (Now pulling cycle_id instead of created_at)
-                    all_results = fetch_all_records("student_results", "usn, course_code, is_pass, credits_earned, cycle_id")
-                    
-                    # 🟢 THE REAL-WORLD TIMELINE FIX 🟢
-                    # Sort strictly by cycle_id. 
-                    # Cycle 1 (Regular) will ALWAYS process before Cycle 4 (Arrears), 
-                    # even if Cycle 1 was manually edited by a clerk today.
-                    all_results.sort(key=lambda x: int(x.get('cycle_id', 0)))
-                    
-                    # 3. LATEST ATTEMPT RESOLVER
-                    latest_results = {}
-                    for r in all_results:
-                        u, c = r['usn'], r['course_code']
-                        if u not in latest_results: latest_results[u] = {}
-                        latest_results[u][c] = {
-                            "is_pass": r.get('is_pass', False),
-                            "credits": safe_float(r.get('credits_earned'), 0.0)
-                        }
+# ----------------------------------------------------
+# TAB BLOCK: SEMESTER PROMOTION ENGINE
+# ----------------------------------------------------
+if show_promo:
+    with t8:
+        st.subheader("🎓 End of Cycle & Student Promotion")
+        st.info("Once 3rd valuation is complete and results are published, use this tool to promote students to their next semester based on VTU rules.")
 
-                    # 4. Calculate final clean metrics for each student
-                    eligible_students = []
-                    detained_students = []
+        promo_tabs = st.tabs(["⏩ Odd to Even Promotion", "🚧 Even to Odd (Vertical Progression)"])
 
-                    for s in students:
-                        usn = s['usn']
-                        total_credits = 0.0
-                        active_backlogs = 0
+        # 1. ODD TO EVEN PROMOTION (Unrestricted)
+        with promo_tabs[0]:
+            st.write("Students moving from an Odd semester to an Even semester (e.g., 1st to 2nd) are promoted automatically without credit hurdles.")
+            odd_sems = [1, 3, 5, 7, 9]
+            target_sem = st.selectbox("Select current Odd Semester to promote:", odd_sems)
+            
+            if st.button(f"Promote all Sem {target_sem} students to Sem {target_sem + 1}", type="primary"):
+                with st.spinner("Updating student master records..."):
+                    students = fetch_all_records("master_students", filters={"current_semester": target_sem})
+                    if not students:
+                        st.warning(f"No active students found in Semester {target_sem}.")
+                    else:
+                        update_payload = [{"usn": s['usn'], "current_semester": target_sem + 1} for s in students]
+                        for i in range(0, len(update_payload), 1000):
+                            supabase.table("master_students").upsert(update_payload[i:i+1000]).execute()
+                        st.success(f"✅ {len(students)} students successfully promoted to Semester {target_sem + 1}!")
+
+        # 2. EVEN TO ODD PROMOTION (Vertical Progression)
+        with promo_tabs[1]:
+            st.write("Vertical progression from Even to Odd (e.g., 2nd to 3rd) requires students to meet VTU progression criteria.")
+            even_sems = [2, 4, 6, 8]
+            c_col1, c_col2 = st.columns(2)
+            current_even_sem = c_col1.selectbox("Select current Even Semester:", even_sems)
+            
+            progression_rule = c_col2.selectbox("VTU Progression Criteria:", [
+                "Max 4 Active Backlogs (Old Scheme)",
+                "Minimum Credits Earned (NEP Scheme)",
+                "No Active Backlogs from Previous Year"
+            ])
+            
+            threshold = st.number_input("Set Threshold (e.g., Max Backlogs or Min Credits):", value=4)
+
+            if st.button("🔍 Analyze Eligibility & Promote", type="primary"):
+                with st.spinner("Analyzing complete academic histories..."):
+                    students = fetch_all_records("master_students", filters={"current_semester": current_even_sem})
+                    all_results = fetch_all_records("student_results", "usn, is_pass, credits_earned, grade")
+                    
+                    history_map = {}
+                    for r in all_results:
+                        usn = r['usn']
+                        if usn not in history_map: history_map[usn] = {"backlogs": 0, "credits": 0.0}
+                        if r['is_pass']: history_map[usn]["credits"] += float(r['credits_earned'] or 0)
+                        elif r['grade'] not in ['PND', 'PENDING', None]: history_map[usn]["backlogs"] += 1
+
+                    eligible_students = []
+                    detained_students = []
+
+                    for s in students:
+                        usn = s['usn']
+                        hist = history_map.get(usn, {"backlogs": 0, "credits": 0.0})
+                        
+                        is_eligible = False
+                        if "Backlogs" in progression_rule:
+                            is_eligible = hist["backlogs"] <= threshold
+                        elif "Credits" in progression_rule:
+                            is_eligible = hist["credits"] >= threshold
+                            
+                        if is_eligible:
+                            eligible_students.append({"usn": usn, "current_semester": current_even_sem + 1})
+                        else:
+                            detained_students.append({"USN": usn, "Active Backlogs": hist["backlogs"], "Credits Earned": hist["credits"]})
+
+                    if eligible_students:
+                        for i in range(0, len(eligible_students), 1000):
+                            supabase.table("master_students").upsert(eligible_students[i:i+1000]).execute()
+                        st.success(f"✅ {len(eligible_students)} students met the criteria and were promoted to Semester {current_even_sem + 1}!")
+                    else:
+                        st.warning("No students met the progression criteria.")
+                        
+                    if detained_students:
+                        st.error(f"🚫 {len(detained_students)} students failed to meet the vertical progression criteria and have been detained in Semester {current_even_sem} (Not Eligible for Promotion).")
+                        
+                        df_detained = pd.DataFrame(detained_students)
+                        st.dataframe(df_detained, use_container_width=True)
+                        
+                        # Added instant download feature for sharing with HoDs
+                        st.download_button(
+                            label="📥 Download Detained Students CSV",
+                            data=df_detained.to_csv(index=False).encode('utf-8'),
+                            file_name=f"Detained_Students_Sem_{current_even_sem}.csv",
+                            mime="text/csv"
+                        ) 
                         
-                        student_courses = latest_results.get(usn, {})
-                        for course_code, data in student_courses.items():
-                            if data['is_pass']:
-                                total_credits += data['credits']
-                            else:
-                                active_backlogs += 1
-                                
-                        # 5. Apply the Rule
-                        is_eligible = False
-                        if "Backlogs" in progression_rule:
-                            is_eligible = active_backlogs <= threshold
-                        elif "Credits" in progression_rule:
-                            is_eligible = total_credits >= threshold
-                            
-                        if is_eligible:
-                            eligible_students.append({"usn": usn, "current_semester": current_even_sem + 1})
-                        else:
-                            detained_students.append({"USN": usn, "Active Backlogs": active_backlogs, "Credits Earned": total_credits})
-
-                    # 6. Execute Promotions
-                    if eligible_students:
-                        for i in range(0, len(eligible_students), 1000):
-                            supabase.table("master_students").upsert(eligible_students[i:i+1000]).execute()
-                        st.success(f"✅ {len(eligible_students)} students met the criteria and were promoted to Semester {current_even_sem + 1}!")
-                    else:
-                        st.warning("No students met the progression criteria.")
-                        
-                    if detained_students:
-                        st.error(f"🚫 {len(detained_students)} students failed to meet the vertical progression criteria and have been detained.")
-                        
-                        df_detained = pd.DataFrame(detained_students)
-                        st.dataframe(df_detained, use_container_width=True)
-                        
-                        st.download_button(
-                            label="📥 Download Detained Students CSV",
-                            data=df_detained.to_csv(index=False).encode('utf-8'),
-                            file_name=f"Detained_Students_Sem_{current_even_sem}.csv",
-                            mime="text/csv"
-                        )
-
 # ----------------------------------------------------
 # TAB BLOCK: MAKE-UP SYNC (Only for Make-up)
 # ----------------------------------------------------
