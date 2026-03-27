@@ -258,19 +258,21 @@ with tabs[3]:
         threshold = st.number_input("Set Threshold (e.g., Max Backlogs or Min Credits):", value=4)
 
         if st.button("🔍 Analyze Eligibility & Promote", type="primary"):
-            with st.spinner("Analyzing complete academic histories (Regular, Make-up, Reval)..."):
+            with st.spinner("Analyzing complete academic histories..."):
                 students = fetch_all_records("master_students", filters={"current_semester": current_even_sem})
                 if not students:
                     st.warning(f"No active students found in Semester {current_even_sem}.")
                 else:
-                    # 1. Fetch EVERY result ever recorded
-                    all_results = fetch_all_records("student_results", "usn, course_code, is_pass, credits_earned, created_at")
+                    # 1. Fetch EVERY result ever recorded (Now pulling cycle_id instead of created_at)
+                    all_results = fetch_all_records("student_results", "usn, course_code, is_pass, credits_earned, cycle_id")
                     
-                    # 2. Sort by date so the newest record is processed last
-                    all_results.sort(key=lambda x: x.get('created_at', ''))
+                    # 🟢 THE REAL-WORLD TIMELINE FIX 🟢
+                    # Sort strictly by cycle_id. 
+                    # Cycle 1 (Regular) will ALWAYS process before Cycle 4 (Arrears), 
+                    # even if Cycle 1 was manually edited by a clerk today.
+                    all_results.sort(key=lambda x: int(x.get('cycle_id', 0)))
                     
                     # 3. LATEST ATTEMPT RESOLVER
-                    # This dictionary will naturally overwrite old Fails with new Passes
                     latest_results = {}
                     for r in all_results:
                         u, c = r['usn'], r['course_code']
