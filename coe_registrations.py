@@ -112,14 +112,16 @@ with reg_tabs[3]:
             import io
             import zipfile
             
-            # 🟢 THE FIX: Extract the URL and Key directly from the already-connected 'supabase' object
             supabase_url = supabase.supabase_url
             supabase_key = supabase.supabase_key
             
             if not supabase_url or not supabase_key:
                 raise Exception("Could not extract Supabase credentials from the active connection.")
                 
-            api_url = f"{supabase_url.rstrip('/')}/storage/v1/object/list/{BUCKET_NAME}"
+            # 🟢 THE FIX: Convert the URL object to a standard string before manipulating it
+            base_url_string = str(supabase_url).rstrip('/')
+            api_url = f"{base_url_string}/storage/v1/object/list/{BUCKET_NAME}"
+            
             headers = {
                 "Authorization": f"Bearer {supabase_key}",
                 "apikey": supabase_key,
@@ -128,7 +130,7 @@ with reg_tabs[3]:
             
             all_files = []
             current_offset = 0
-            batch_limit = 1000  # Safely request up to 1000 files in a single network call
+            batch_limit = 1000  
             
             while True:
                 payload = {"prefix": "", "limit": batch_limit, "offset": current_offset}
@@ -147,7 +149,6 @@ with reg_tabs[3]:
             if not all_files:
                 status_text.warning("⚠️ No files found in the bucket.")
             else:
-                # Filter out hidden folders/files
                 valid_files = [f for f in all_files if f.get('name') and not f.get('name').startswith('.')]
                 total_files = len(valid_files)
                 
@@ -157,24 +158,20 @@ with reg_tabs[3]:
                 success_count = 0
                 error_count = 0
                 
-                # Zip the actual files
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                     for index, file_info in enumerate(valid_files, start=1):
                         file_name = file_info.get('name')
                         
                         try:
-                            # We still use the SDK to download the actual image bytes
                             file_bytes = supabase.storage.from_(BUCKET_NAME).download(file_name)
                             zf.writestr(file_name, file_bytes)
                             success_count += 1
                         except Exception as e:
                             error_count += 1
                             
-                        # Update progress bar
                         progress_bar.progress(index / total_files)
                         status_text.markdown(f"**Progress:** Zipping photo {index} of {total_files}...")
                 
-                # Present the Download Button
                 status_text.success("🎉 ZIP file created successfully! Click below to save to your local Downloads folder.")
                 
                 col1, col2 = st.columns(2)
