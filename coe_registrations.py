@@ -144,48 +144,43 @@ with reg_tabs[2]:
 # ==========================================
 with reg_tabs[3]:
     st.header("📄 Generate Print-Ready PG Registration Forms")
-    st.info("This utility auto-fetches PG students and their photos from the database. Just upload the Course List to generate the PDFs/HTML.")
+    st.info("This utility uses your uploaded Student List and downloads their official photos directly from Supabase Storage.")
     
     c_col1, c_col2 = st.columns(2)
     target_sem = c_col1.number_input("Target Semester", min_value=1, max_value=8, value=2)
-    academic_year = c_col2.text_input("Academic Year (for header)", value="2024-2025")
+    academic_year = c_col2.text_input("Academic Year (for header)", value="2025-2026")
     
-    f_courses = st.file_uploader("Upload Courses CSV (e.g., 'sem 2 registrations.csv')", type=['csv'])
-    with st.expander("Required Courses CSV Format"):
-        st.code("Course_code,Course_title,Credits,Branch\n25MBA201,Human Resource Management,4,MBA")
+    col_s, col_c = st.columns(2)
+    with col_s:
+        f_students = st.file_uploader("1. Upload Students CSV", type=['csv'])
+        with st.expander("Required Format"):
+            st.code("usn,name,branch\n1AM25MBA01,John Doe,MBA")
+    with col_c:
+        f_courses = st.file_uploader("2. Upload Courses CSV", type=['csv'])
+        with st.expander("Required Format"):
+            st.code("Course_code,Course_title,Credits,Branch\n25MBA201,HR Management,4,MBA")
 
-    if f_courses and st.button("⚙️ Fetch Data & Generate Forms", type="primary"):
-        with st.spinner("Fetching PG students, downloading photos from Supabase, and building layout..."):
+    if f_students and f_courses and st.button("⚙️ Fetch Photos & Generate Forms", type="primary"):
+        with st.spinner("Building layout and downloading photos from Supabase..."):
             try:
-                # 1. Fetch all PG Branches
-                branches = fetch_all_records("master_branches", "branch_code, program_type, branch_name")
-                pg_branches = {b['branch_code']: b['branch_name'] for b in branches if str(b.get('program_type')).upper() == 'PG'}
-                
-                if not pg_branches:
-                    st.error("No PG branches found in the master_branches table.")
-                    st.stop()
-
-                # 2. Fetch all PG Students for the selected semester
-                all_students = fetch_all_records("master_students", "usn, full_name, branch_code", {"current_semester": str(target_sem)})
-                pg_students = [s for s in all_students if s['branch_code'] in pg_branches]
-                
-                if not pg_students:
-                    st.warning(f"No PG students found in the database currently registered for Semester {target_sem}.")
-                    st.stop()
-
-                # 3. Process Courses CSV
+                df_s = pd.read_csv(f_students)
                 df_c = pd.read_csv(f_courses)
+                
+                df_s.columns = [str(c).strip().lower() for c in df_s.columns]
                 df_c.columns = [str(c).strip().lower() for c in df_c.columns]
                 
+                if not all(k in df_s.columns for k in ['usn', 'name', 'branch']):
+                    st.error("Student CSV is missing required columns ('usn', 'name', 'branch').")
+                    st.stop()
                 if not all(k in df_c.columns for k in ['course_code', 'course_title', 'credits', 'branch']):
-                    st.error("Courses CSV is missing required columns. Ensure it has 'course_code', 'course_title', 'credits', and 'branch'.")
+                    st.error("Courses CSV is missing required columns ('course_code', 'course_title', 'credits', 'branch').")
                     st.stop()
 
                 branch_courses = {}
                 for branch, group in df_c.groupby('branch'):
                     branch_courses[str(branch).strip().upper()] = group.to_dict('records')
 
-                # 4. Generate HTML Boilerplate
+                # Generate HTML Boilerplate
                 html_content = """
                 <html>
                 <head>
@@ -226,11 +221,10 @@ with reg_tabs[3]:
                 """
                 
                 generated_count = 0
-                for student in pg_students:
-                    branch = str(student.get('branch_code', '')).strip().upper()
+                for _, student in df_s.iterrows():
+                    branch = str(student.get('branch', '')).strip().upper()
                     usn = str(student.get('usn', '')).strip().upper()
-                    name = str(student.get('full_name', '')).strip().title()
-                    prog_name = pg_branches.get(branch, branch)
+                    name = str(student.get('name', '')).strip().title()
                     
                     courses = branch_courses.get(branch, [])
                     
@@ -259,7 +253,7 @@ with reg_tabs[3]:
                                 <tr><td class="info-label">USN:</td><td>{usn}</td></tr>
                                 <tr><td class="info-label">Name:</td><td>{name}</td></tr>
                                 <tr><td class="info-label">Programme:</td><td>PG</td></tr>
-                                <tr><td class="info-label">Branch:</td><td>{prog_name}</td></tr>
+                                <tr><td class="info-label">Branch:</td><td>{branch}</td></tr>
                             </table>
                             <div class="photo-container">
                                 <div class="photo-box">
