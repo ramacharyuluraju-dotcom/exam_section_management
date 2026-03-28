@@ -108,18 +108,16 @@ with reg_tabs[3]:
         status_text.info(f"📡 Scanning Supabase bucket '{BUCKET_NAME}'...")
         
         try:
-            import os
             import requests
             import io
             import zipfile
             
-            # 🟢 THE FIX: Bypass the broken Python SDK and talk directly to the Supabase REST API
-            # Safely fetch your credentials whether they are in environment variables or Streamlit secrets
-            supabase_url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
-            supabase_key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
+            # 🟢 THE FIX: Extract the URL and Key directly from the already-connected 'supabase' object
+            supabase_url = supabase.supabase_url
+            supabase_key = supabase.supabase_key
             
             if not supabase_url or not supabase_key:
-                raise Exception("Could not locate Supabase credentials to perform raw API request.")
+                raise Exception("Could not extract Supabase credentials from the active connection.")
                 
             api_url = f"{supabase_url.rstrip('/')}/storage/v1/object/list/{BUCKET_NAME}"
             headers = {
@@ -130,7 +128,7 @@ with reg_tabs[3]:
             
             all_files = []
             current_offset = 0
-            batch_limit = 1000  # We can now safely request up to 1000 files in a single network call!
+            batch_limit = 1000  # Safely request up to 1000 files in a single network call
             
             while True:
                 payload = {"prefix": "", "limit": batch_limit, "offset": current_offset}
