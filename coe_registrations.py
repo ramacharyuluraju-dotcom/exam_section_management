@@ -108,8 +108,11 @@ with reg_tabs[3]:
         status_text.info(f"📡 Scanning Supabase bucket '{BUCKET_NAME}'...")
         
         try:
-            # 1. Get list of files
-            files = supabase.storage.from_(BUCKET_NAME).list()
+            # 🟢 FIX: Explicitly bypass the default 100-file limit
+            files = supabase.storage.from_(BUCKET_NAME).list(
+                path="", 
+                search_options={"limit": 1000, "offset": 0}
+            )
             
             if not files:
                 status_text.warning("⚠️ No files found in the bucket.")
