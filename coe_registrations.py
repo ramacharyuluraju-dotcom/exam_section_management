@@ -108,25 +108,44 @@ with reg_tabs[3]:
         status_text.info(f"📡 Scanning Supabase bucket '{BUCKET_NAME}'...")
         
         try:
-            # 🟢 FIX: Pagination Loop to bypass the 100-file limit natively in Python
+            import os
+            import requests
+            import io
+            import zipfile
+            
+            # 🟢 THE FIX: Bypass the broken Python SDK and talk directly to the Supabase REST API
+            # Safely fetch your credentials whether they are in environment variables or Streamlit secrets
+            supabase_url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
+            supabase_key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
+            
+            if not supabase_url or not supabase_key:
+                raise Exception("Could not locate Supabase credentials to perform raw API request.")
+                
+            api_url = f"{supabase_url.rstrip('/')}/storage/v1/object/list/{BUCKET_NAME}"
+            headers = {
+                "Authorization": f"Bearer {supabase_key}",
+                "apikey": supabase_key,
+                "Content-Type": "application/json"
+            }
+            
             all_files = []
             current_offset = 0
-            batch_limit = 100
+            batch_limit = 1000  # We can now safely request up to 1000 files in a single network call!
             
             while True:
-                # Fetch a batch of 100 files
-                batch = supabase.storage.from_(BUCKET_NAME).list(path="", limit=batch_limit, offset=current_offset)
+                payload = {"prefix": "", "limit": batch_limit, "offset": current_offset}
+                response = requests.post(api_url, headers=headers, json=payload)
                 
-                if not batch:
-                    break  # Exit loop if no more files are returned
+                if response.status_code != 200:
+                    raise Exception(f"API Error: {response.text}")
                     
+                batch = response.json()
+                if not batch: break
+                
                 all_files.extend(batch)
+                if len(batch) < batch_limit: break
+                current_offset += batch_limit
                 
-                if len(batch) < batch_limit:
-                    break  # Exit loop if we received less than 100 (meaning it's the last page)
-                    
-                current_offset += batch_limit # Move to the next page
-            
             if not all_files:
                 status_text.warning("⚠️ No files found in the bucket.")
             else:
@@ -136,22 +155,18 @@ with reg_tabs[3]:
                 
                 status_text.info(f"✅ Found {total_files} photos. Zipping them up now (this may take a minute)...")
                 
-                # Create an in-memory ZIP file
-                import io
-                import zipfile
                 zip_buffer = io.BytesIO()
-                
                 success_count = 0
                 error_count = 0
                 
+                # Zip the actual files
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                     for index, file_info in enumerate(valid_files, start=1):
                         file_name = file_info.get('name')
                         
                         try:
-                            # Download bytes from Supabase
+                            # We still use the SDK to download the actual image bytes
                             file_bytes = supabase.storage.from_(BUCKET_NAME).download(file_name)
-                            # Write bytes directly into the ZIP file
                             zf.writestr(file_name, file_bytes)
                             success_count += 1
                         except Exception as e:
@@ -177,4 +192,4 @@ with reg_tabs[3]:
                 )
                 
         except Exception as e:
-            status_text.error(f"🚨 Critical Error accessing the storage bucket: {e}")
+            status_text.error(f"🚨 Critical Error: {e}")
