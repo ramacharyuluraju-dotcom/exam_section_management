@@ -3,6 +3,7 @@ import pandas as pd
 import io
 import math
 import zipfile
+import xlsxwriter
 from utils import init_db
 
 # --- REPORTLAB IMPORTS FOR PDF GENERATION ---
@@ -137,7 +138,6 @@ def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=5
 
 # 🟢 MULTI-VALUATION ALGORITHMS 🟢
 def calculate_nearest_two_max(v1, v2, v3):
-    """Calculates final score based on max of nearest two valuations."""
     vals = [v for v in [v1, v2, v3] if v is not None and pd.notna(v) and str(v).strip() != '']
     vals = [float(v) for v in vals]
     
@@ -155,7 +155,6 @@ def calculate_nearest_two_max(v1, v2, v3):
         else: return max(val1, val3)
 
 def vtu_third_val_logic(m1, m2, m3):
-    """Calculates final score based on VTU 'Max of Nearest Two' rule for Third Valuation."""
     m1, m2, m3 = safe_float(m1, 0), safe_float(m2, 0), safe_float(m3, 0)
     diff_12 = abs(m1 - m2)
     diff_23 = abs(m2 - m3)
@@ -171,7 +170,7 @@ def vtu_third_val_logic(m1, m2, m3):
     return max(candidates) 
 
 # ==========================================
-# 3. PDF MARKS CARD GENERATOR
+# 3. PDF MARKS CARD & A3 LEDGER GENERATORS
 # ==========================================
 def generate_marks_card_pdf(buffer, usn, name, results_list, sgpa, has_pending=False):
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
@@ -232,6 +231,103 @@ def generate_marks_card_pdf(buffer, usn, name, results_list, sgpa, has_pending=F
     elements.append(t_sig)
     
     doc.build(elements)
+
+def generate_a3_excel_ledger(b_name, b_df, course_list, branch_name_map, active_cycle_name):
+    """Generates an A3 print-ready Excel Ledger perfectly matching VTU formats."""
+    output = io.BytesIO()
+    workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+    worksheet = workbook.add_worksheet(f"{b_name}_Ledger")
+
+    # A3 Landscape Print Setup
+    worksheet.set_paper(8) # 8 = A3
+    worksheet.set_landscape()
+    worksheet.set_margins(left=0.2, right=0.2, top=0.4, bottom=0.4)
+    worksheet.fit_to_pages(1, 0) # Fit columns to exactly 1 page wide
+
+    # Formatting Styles
+    title_format = workbook.add_format({'bold': True, 'align': 'left', 'font_size': 14})
+    subtitle_format = workbook.add_format({'bold': True, 'align': 'left', 'font_size': 12})
+    header_merged = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#D9D9D9', 'font_size': 10, 'text_wrap': True})
+    header_normal = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#F2F2F2', 'font_size': 10})
+    cell_center = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1, 'font_size': 10})
+    cell_left = workbook.add_format({'align': 'left', 'valign': 'vcenter', 'border': 1, 'font_size': 10})
+    fail_format = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1, 'font_color': 'red', 'bold': True, 'font_size': 10})
+
+    full_branch_name = branch_name_map.get(b_name, b_name).upper()
+
+    # University Header
+    worksheet.write(0, 0, "AMC ENGINEERING COLLEGE", title_format)
+    worksheet.write(1, 0, "Autonomous Institution affiliated to VTU, Belagavi", subtitle_format)
+    worksheet.write(2, 0, f"DEPARTMENT OF {full_branch_name}", subtitle_format)
+    worksheet.write(3, 0, f"Consolidated Result Sheet - {active_cycle_name}", subtitle_format)
+
+    # Column Widths
+    worksheet.set_column(0, 0, 5)   # Sl No
+    worksheet.set_column(1, 1, 13)  # USN
+    worksheet.set_column(2, 2, 22)  # Name
+
+    # Write Table Headers
+    row_idx = 5
+    worksheet.merge_range(row_idx, 0, row_idx+1, 0, "Sl. No", header_merged)
+    worksheet.merge_range(row_idx, 1, row_idx+1, 1, "USN", header_merged)
+    worksheet.merge_range(row_idx, 2, row_idx+1, 2, "Name of the Student", header_merged)
+    
+    col_idx = 3
+    for cc in course_list:
+        worksheet.merge_range(row_idx, col_idx, row_idx, col_idx+3, cc, header_merged)
+        worksheet.write(row_idx+1, col_idx, "CIE", header_normal)
+        worksheet.write(row_idx+1, col_idx+1, "SEE", header_normal)
+        worksheet.write(row_idx+1, col_idx+2, "TOT", header_normal)
+        worksheet.write(row_idx+1, col_idx+3, "GRD", header_normal)
+        worksheet.set_column(col_idx, col_idx+3, 4.5) # Compact marks columns
+        col_idx += 4
+        
+    end_headers = ["GRAND TOT", "%", "RESULT", "SGPA", "GRADE", "CREDITS"]
+    for eh in end_headers:
+        worksheet.merge_range(row_idx, col_idx, row_idx+1, col_idx, eh, header_merged)
+        worksheet.set_column(col_idx, col_idx, 7)
+        col_idx += 1
+
+    # Write Data
+    row_idx = 7
+    for i, (_, stu) in enumerate(b_df.iterrows()):
+        worksheet.write(row_idx, 0, i+1, cell_center)
+        worksheet.write(row_idx, 1, stu.get('USN', ''), cell_center)
+        worksheet.write(row_idx, 2, stu.get('Name', ''), cell_left)
+        
+        c_col = 3
+        for cc in course_list:
+            cie = stu.get(f"{cc}_CIE", "")
+            see = stu.get(f"{cc}_SEE", "")
+            tot = stu.get(f"{cc}_Tot", "")
+            grd = stu.get(f"{cc}_Grd", "")
+            
+            if pd.isna(cie) or cie == "": cie = "-"
+            if pd.isna(see) or see == "": see = "-"
+            if pd.isna(tot) or tot == "": tot = "-"
+            if pd.isna(grd) or grd == "": grd = "-"
+            
+            fmt = fail_format if str(grd) in ['F', 'AB', 'NP', 'PND', 'PENDING'] else cell_center
+            worksheet.write(row_idx, c_col, cie, cell_center)
+            worksheet.write(row_idx, c_col+1, see, cell_center)
+            worksheet.write(row_idx, c_col+2, tot, cell_center)
+            worksheet.write(row_idx, c_col+3, grd, fmt)
+            c_col += 4
+            
+        res = str(stu.get('Result', ''))
+        res_fmt = fail_format if res != 'PASS' else cell_center
+        worksheet.write(row_idx, c_col, stu.get('Grand_Tot', '-'), cell_center)
+        worksheet.write(row_idx, c_col+1, stu.get('Percentage', '-'), cell_center)
+        worksheet.write(row_idx, c_col+2, res, res_fmt)
+        worksheet.write(row_idx, c_col+3, stu.get('SGPA', '-'), cell_center)
+        worksheet.write(row_idx, c_col+4, stu.get('Overall_Grade', '-'), res_fmt)
+        worksheet.write(row_idx, c_col+5, stu.get('Total_Credits', '-'), cell_center)
+        
+        row_idx += 1
+
+    workbook.close()
+    return output.getvalue()
+
 
 # ==========================================
 # 4. MAIN UI FLOW & CONTEXT AWARENESS
@@ -824,22 +920,33 @@ if show_ledgers:
                     name_map = {clean_str(r['usn']): r.get('full_name', "Unknown") for r in stu_res}
                     branch_map = {clean_str(r['usn']): r.get('branch_code', "UNKNOWN") for r in stu_res}
                     
-                    crs_data = fetch_all_records("master_courses", "course_code, title, credits, max_see")
+                    branch_data = fetch_all_records("master_branches", "branch_code, branch_name")
+                    branch_name_map = {r['branch_code']: r.get('branch_name', r['branch_code']) for r in branch_data}
+
+                    crs_data = fetch_all_records("master_courses", "course_code, title, credits, max_see, total_marks")
                     crs_map = {clean_str(c['course_code']): c for c in crs_data}
                     
                     ledger_rows = []
                     pdf_zip_buffer = io.BytesIO()
+                    branch_courses_map = {}
                     
                     with zipfile.ZipFile(pdf_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                         for usn, courses in stu_courses.items():
                             name, branch = name_map.get(usn, "Unknown"), branch_map.get(usn, "UNKNOWN")
+                            
+                            if branch not in branch_courses_map:
+                                branch_courses_map[branch] = set()
+                            branch_courses_map[branch].update(courses)
+                            
                             total_cr_attempted, total_gp_earned, results_list = 0.0, 0.0, []
                             ledger_dict = {'USN': usn, 'Name': name, 'Branch': branch}
-                            pass_flag, has_pending = True, False
+                            pass_flag, has_pending, has_f = True, False, False
+                            grand_tot, max_tot, total_cred = 0.0, 0.0, 0.0
                             
                             for cc in courses:
                                 mc = crs_map.get(cc, {})
                                 cr = safe_float(mc.get('credits'), 0.0)
+                                c_max = safe_float(mc.get('total_marks'), 100.0)
                                 is_internal_only = (safe_float(mc.get('max_see'), 50.0) == 0.0)
                                 r = res_map.get((usn, cc))
                                 
@@ -864,11 +971,37 @@ if show_ledgers:
                                     
                                     total_cr_attempted += cr
                                     total_gp_earned += (r.get('grade_points', 0) * cr)
-                                    if not r.get('is_pass', False): pass_flag = False
+                                    grand_tot += safe_float(tot_val, 0)
+                                    max_tot += c_max
+                                    
+                                    if r.get('is_pass', False): 
+                                        total_cred += cr
+                                    else: 
+                                        has_f = True
+                                        pass_flag = False
                                 
                             sgpa = (total_gp_earned / total_cr_attempted) if total_cr_attempted > 0 else 0.0
+                            pct = (grand_tot / max_tot * 100) if max_tot > 0 else 0.0
+                            
                             ledger_dict['SGPA'] = round(sgpa, 2) if not has_pending else "---"
                             ledger_dict['Result'] = "PENDING" if has_pending else ("PASS" if pass_flag else "FAIL")
+                            ledger_dict['Grand_Tot'] = grand_tot if not has_pending else "---"
+                            ledger_dict['Percentage'] = round(pct, 2) if not has_pending else "---"
+                            ledger_dict['Total_Credits'] = total_cred if not has_pending else "---"
+                            
+                            if has_pending: ov_grd = "---"
+                            elif pass_flag:
+                                if sgpa >= 9.0: ov_grd = 'O'
+                                elif sgpa >= 8.0: ov_grd = 'A+'
+                                elif sgpa >= 7.0: ov_grd = 'A'
+                                elif sgpa >= 6.0: ov_grd = 'B+'
+                                elif sgpa >= 5.5: ov_grd = 'B'
+                                elif sgpa >= 5.0: ov_grd = 'C'
+                                elif sgpa >= 4.0: ov_grd = 'P'
+                                else: ov_grd = 'F'
+                            else: ov_grd = 'F'
+                            
+                            ledger_dict['Overall_Grade'] = ov_grd
                             
                             ledger_rows.append(ledger_dict)
                             pdf_buf = io.BytesIO()
@@ -876,28 +1009,17 @@ if show_ledgers:
                             zf.writestr(f"Marks_Cards/{usn}.pdf", pdf_buf.getvalue())
                             
                     df_ledger = pd.DataFrame(ledger_rows)
-                    base_cols = ['USN', 'Name', 'Branch']; end_cols = ['SGPA', 'Result']
-                    def sort_key(col_name):
-                        if col_name.endswith('_CIE'): return (col_name[:-4], 1)
-                        if col_name.endswith('_SEE'): return (col_name[:-4], 2)
-                        if col_name.endswith('_Tot'): return (col_name[:-4], 3)
-                        if col_name.endswith('_Grd'): return (col_name[:-4], 4)
-                        return (col_name, 5)
-                    course_cols = [c for c in df_ledger.columns if c not in base_cols + end_cols]
-                    course_cols.sort(key=sort_key)
-                    df_ledger = df_ledger[base_cols + course_cols + end_cols]
                     
                     ledger_zip = io.BytesIO()
                     with zipfile.ZipFile(ledger_zip, "w") as branch_zf:
                         for b_name, b_df in df_ledger.groupby('Branch'):
-                            branch_excel = io.BytesIO()
-                            with pd.ExcelWriter(branch_excel, engine='xlsxwriter') as writer:
-                                b_df.dropna(axis=1, how='all').to_excel(writer, index=False)
-                            branch_zf.writestr(f"Ledger_{str(b_name)}.xlsx", branch_excel.getvalue())
+                            b_course_list = sorted(list(branch_courses_map.get(b_name, [])))
+                            excel_bytes = generate_a3_excel_ledger(b_name, b_df, b_course_list, branch_name_map, active_cycle_name)
+                            branch_zf.writestr(f"Ledger_{str(b_name)}_{active_cycle_name}.xlsx", excel_bytes)
                     
                     st.success(f"✅ Successfully compiled {len(ledger_rows)} records into ZIP!")
                     c1, c2 = st.columns(2)
-                    with c1: st.download_button("📊 Branch Ledgers (ZIP)", ledger_zip.getvalue(), f"Branch_Ledgers_{active_cycle_name}.zip")
+                    with c1: st.download_button("📊 Print-Ready Branch Ledgers (ZIP)", ledger_zip.getvalue(), f"A3_Ledgers_{active_cycle_name}.zip")
                     with c2: st.download_button("📄 Marks Cards (ZIP)", pdf_zip_buffer.getvalue(), f"Marks_Cards_{active_cycle_name}.zip")
                 except Exception as e: st.error(f"Generation Error: {e}")
 
