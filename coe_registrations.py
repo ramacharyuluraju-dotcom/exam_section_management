@@ -93,83 +93,72 @@ with reg_tabs[2]:
             st.write("No registration records found.")
 
 # ==========================================
-# 4. PHOTO BACKUP UTILITY (SERVER LOCAL)
+# 4. PHOTO BACKUP UTILITY (ZIP DOWNLOAD)
 # ==========================================
 with reg_tabs[3]:
     st.header("📸 Student Photo Server Backup")
-    st.info("This utility connects to your Supabase bucket and downloads all student photos to a local folder on your host machine/server.")
+    st.info("This utility grabs all student photos from your Supabase cloud and packages them into a single ZIP file for you to download to your computer.")
     
     BUCKET_NAME = "StakeHolders_Photos"
-    DOWNLOAD_FOLDER = "Downloaded_Student_Photos"
     
-    col_a, col_b = st.columns([3, 1])
-    col_a.text_input("Target Directory", value=DOWNLOAD_FOLDER, disabled=True)
-    
-    if st.button("🚀 Start Bulk Photo Backup", type="primary"):
+    if st.button("🚀 Prepare Photo Backup (ZIP)", type="primary"):
         status_text = st.empty()
         progress_bar = st.progress(0)
-        log_container = st.container()
         
-        # 1. Folder Setup
-        if not os.path.exists(DOWNLOAD_FOLDER):
-            os.makedirs(DOWNLOAD_FOLDER)
-            log_container.write(f"📁 Created local folder: '{DOWNLOAD_FOLDER}'")
-            
-        status_text.info(f"📡 Scanning Supabase bucket '{BUCKET_NAME}' for files...")
+        status_text.info(f"📡 Scanning Supabase bucket '{BUCKET_NAME}'...")
         
         try:
-            # 2. Fetch file list (using options for pagination/limit if needed by your dataset size)
+            # 1. Get list of files
             files = supabase.storage.from_(BUCKET_NAME).list()
             
             if not files:
                 status_text.warning("⚠️ No files found in the bucket.")
             else:
-                total_files = len(files)
-                status_text.info(f"✅ Found {total_files} files. Starting bulk download...")
+                # Filter out hidden folders/files
+                valid_files = [f for f in files if f.get('name') and not f.get('name').startswith('.')]
+                total_files = len(valid_files)
+                
+                status_text.info(f"✅ Found {total_files} photos. Zipping them up now (this may take a minute)...")
+                
+                # 2. Create an in-memory ZIP file
+                import io
+                import zipfile
+                zip_buffer = io.BytesIO()
                 
                 success_count = 0
                 error_count = 0
-                skipped_count = 0
                 
-                # 3. Download Loop
-                for index, file_info in enumerate(files, start=1):
-                    file_name = file_info.get('name')
-                    
-                    # Skip hidden system files or empty folder placeholders
-                    if not file_name or file_name.startswith('.') or file_name == ".emptyFolderPlaceholder":
-                        continue
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for index, file_info in enumerate(valid_files, start=1):
+                        file_name = file_info.get('name')
                         
-                    local_file_path = os.path.join(DOWNLOAD_FOLDER, file_name)
-                    
-                    # Skip if the file already exists locally
-                    if os.path.exists(local_file_path):
-                        skipped_count += 1
-                    else:
                         try:
-                            # Download raw bytes from Supabase
+                            # Download bytes from Supabase
                             file_bytes = supabase.storage.from_(BUCKET_NAME).download(file_name)
-                            
-                            # Write the bytes to the local hard drive
-                            with open(local_file_path, "wb") as f:
-                                f.write(file_bytes)
-                                
+                            # Write bytes directly into the ZIP file
+                            zf.writestr(file_name, file_bytes)
                             success_count += 1
                         except Exception as e:
-                            log_container.error(f"❌ Failed to download '{file_name}': {e}")
                             error_count += 1
                             
-                    # Update visual progress
-                    progress_pct = index / total_files
-                    progress_bar.progress(progress_pct)
-                    status_text.markdown(f"**Progress:** Processing file {index} of {total_files}...")
+                        # Update progress bar
+                        progress_bar.progress(index / total_files)
+                        status_text.markdown(f"**Progress:** Zipping photo {index} of {total_files}...")
                 
-                progress_bar.progress(1.0)
-                st.success("🎉 --- BACKUP COMPLETE --- 🎉")
+                # 3. Present the Download Button
+                status_text.success("🎉 ZIP file created successfully! Click below to save to your local Downloads folder.")
                 
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Newly Downloaded", success_count)
-                col2.metric("Skipped (Already Existed)", skipped_count)
-                col3.metric("Errors", error_count)
+                col1, col2 = st.columns(2)
+                col1.metric("Photos Zipped", success_count)
+                col2.metric("Errors", error_count)
+                
+                st.download_button(
+                    label="📥 Download All Photos (ZIP)",
+                    data=zip_buffer.getvalue(),
+                    file_name="Student_Photos_Backup.zip",
+                    mime="application/zip",
+                    type="primary"
+                )
                 
         except Exception as e:
             status_text.error(f"🚨 Critical Error accessing the storage bucket: {e}")
