@@ -108,22 +108,35 @@ with reg_tabs[3]:
         status_text.info(f"📡 Scanning Supabase bucket '{BUCKET_NAME}'...")
         
         try:
-            # 🟢 FIX: Explicitly bypass the default 100-file limit
-            files = supabase.storage.from_(BUCKET_NAME).list(
-                path="", 
-                search_options={"limit": 1000, "offset": 0}
-            )
+            # 🟢 FIX: Pagination Loop to bypass the 100-file limit natively in Python
+            all_files = []
+            current_offset = 0
+            batch_limit = 100
             
-            if not files:
+            while True:
+                # Fetch a batch of 100 files
+                batch = supabase.storage.from_(BUCKET_NAME).list(path="", limit=batch_limit, offset=current_offset)
+                
+                if not batch:
+                    break  # Exit loop if no more files are returned
+                    
+                all_files.extend(batch)
+                
+                if len(batch) < batch_limit:
+                    break  # Exit loop if we received less than 100 (meaning it's the last page)
+                    
+                current_offset += batch_limit # Move to the next page
+            
+            if not all_files:
                 status_text.warning("⚠️ No files found in the bucket.")
             else:
                 # Filter out hidden folders/files
-                valid_files = [f for f in files if f.get('name') and not f.get('name').startswith('.')]
+                valid_files = [f for f in all_files if f.get('name') and not f.get('name').startswith('.')]
                 total_files = len(valid_files)
                 
                 status_text.info(f"✅ Found {total_files} photos. Zipping them up now (this may take a minute)...")
                 
-                # 2. Create an in-memory ZIP file
+                # Create an in-memory ZIP file
                 import io
                 import zipfile
                 zip_buffer = io.BytesIO()
@@ -148,7 +161,7 @@ with reg_tabs[3]:
                         progress_bar.progress(index / total_files)
                         status_text.markdown(f"**Progress:** Zipping photo {index} of {total_files}...")
                 
-                # 3. Present the Download Button
+                # Present the Download Button
                 status_text.success("🎉 ZIP file created successfully! Click below to save to your local Downloads folder.")
                 
                 col1, col2 = st.columns(2)
