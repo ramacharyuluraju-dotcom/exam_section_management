@@ -1,8 +1,15 @@
 import streamlit as st
 import pandas as pd
-import base64
-import concurrent.futures  # 🟢 NEW: Multi-threading for hyper-fast photo fetching
+import io
+import concurrent.futures
 from utils import init_db, clean_data_for_db
+
+# --- REPORTLAB IMPORTS FOR EXACT PDF GENERATION ---
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch, mm
 
 # --- CONFIGURATION ---
 # Note: st.set_page_config removed because app.py handles it
@@ -12,7 +19,6 @@ st.title("📝 Semester Course Registration")
 st.sidebar.markdown("### Operational Phase")
 
 # --- GLOBAL CONTEXT ---
-# Pulls the active cycle directly from the session state managed by app.py
 selected_cycle_id = st.session_state.get('active_cycle_id')
 
 if not selected_cycle_id:
@@ -23,26 +29,26 @@ st.info(f"🔵 Currently Registering Students for Cycle: **{st.session_state.get
 
 # --- HELPER FUNCTIONS ---
 @st.cache_data(ttl=3600)
-def fetch_student_photo_b64(usn):
-    """Securely fetches photo bytes from Supabase and converts to base64 for HTML embedding."""
+def fetch_student_photo_bytes(usn):
+    """Securely fetches raw photo bytes from Supabase for native PDF embedding."""
     clean_usn = str(usn).strip().upper()
-    # Optimized order: Check most common formats first to break the loop faster
     for ext in ['.jpg', '.jpeg', '.png', '.webp', '.JPG', '.PNG']:
         try:
             res = supabase.storage.from_("StakeHolders_Photos").download(f"{clean_usn}{ext}")
             if res:
-                return base64.b64encode(res).decode('utf-8')
+                return res
         except Exception:
             continue
     return None
 
 # ==========================================
-# 4. GENERATE PG FORMS (DETACHED TOOL)
+# NAVIGATION TABS
 # ==========================================
-reg_tabs = st.tabs(["📤 Bulk Registration", "📝 Manual Mapping", "🔍 View Registrations", "📄 Generate PG Forms"])
+reg_tabs = st.tabs(["📤 Bulk Registration", "📝 Manual Mapping", "🔍 View Registrations", "📄 Generate PG Forms (PDF)"])
 
-# [Tabs 1, 2, and 3 remain exactly identical to your previous version]
-
+# ==========================================
+# 1. BULK REGISTRATION (CSV)
+# ==========================================
 with reg_tabs[0]:
     st.header("Step 2.1: Bulk Course Mapping")
     f_reg = st.file_uploader("Upload Registration CSV", type='csv', key="reg_bulk")
@@ -57,6 +63,9 @@ with reg_tabs[0]:
         except Exception as e:
             st.error(f"Registration failed: {e}")
 
+# ==========================================
+# 2. MANUAL MAPPING
+# ==========================================
 with reg_tabs[1]:
     st.header("Step 2.2: Individual Student Mapping")
     with st.form("manual_reg_form", clear_on_submit=True):
@@ -74,6 +83,9 @@ with reg_tabs[1]:
             try: supabase.table("course_registrations").delete().match({"cycle_id": selected_cycle_id, "usn": r_usn.strip().upper(), "course_code": r_course.strip().upper()}).execute(); st.warning(f"Removed registration.")
             except Exception as e: st.error(f"Error: {e}")
 
+# ==========================================
+# 3. VIEW REGISTRATIONS
+# ==========================================
 with reg_tabs[2]:
     st.header(f"🔍 Current Course Mappings for {st.session_state.get('active_cycle_name')}")
     search_usn = st.text_input("Filter by USN (Optional)")
@@ -84,12 +96,12 @@ with reg_tabs[2]:
         if res.data: st.dataframe(pd.DataFrame(res.data), use_container_width=True); st.write(f"Total Records: {len(res.data)}")
         else: st.write("No registration records found.")
 
-# --------------------------------------------------------------------------------------
-# 🟢 OPTIMIZED: MULTI-THREADED TAB 4 🟢
-# --------------------------------------------------------------------------------------
+# ==========================================
+# 4. GENERATE PG FORMS (EXACT PDF REPLICA)
+# ==========================================
 with reg_tabs[3]:
-    st.header("📄 Generate Print-Ready PG Registration Forms")
-    st.info("This utility uses your uploaded Student List and downloads their official photos concurrently for maximum speed.")
+    st.header("📄 Generate Print-Ready PG Registration Forms (PDF)")
+    st.info("This tool generates an exact PDF replica of the official format. It uses your uploaded Student/Course lists and securely fetches photos from Supabase.")
     
     c_col1, c_col2 = st.columns(2)
     target_sem = c_col1.number_input("Target Semester", min_value=1, max_value=8, value=2)
@@ -105,8 +117,8 @@ with reg_tabs[3]:
         with st.expander("Required Format"):
             st.code("Course_code,Course_title,Credits,Branch\n25MBA201,HR Management,4,MBA")
 
-    if f_students and f_courses and st.button("⚡ Fetch Photos & Generate Forms", type="primary"):
-        with st.spinner("Downloading photos concurrently (up to 15x faster) and building layout..."):
+    if f_students and f_courses and st.button("⚡ Generate PDF Forms", type="primary"):
+        with st.spinner("Downloading photos concurrently and compiling precise PDF layouts..."):
             try:
                 df_s = pd.read_csv(f_students)
                 df_c = pd.read_csv(f_courses)
@@ -125,57 +137,32 @@ with reg_tabs[3]:
                 for branch, group in df_c.groupby('branch'):
                     branch_courses[str(branch).strip().upper()] = group.to_dict('records')
 
-                # 🟢 MULTI-THREADED PHOTO FETCHING 🟢
+                # 🟢 MULTI-THREADED PHOTO FETCHING (Raw Bytes for PDF) 🟢
                 unique_usns = list(set(df_s['usn'].astype(str).str.strip().str.upper()))
                 photo_cache = {}
                 
-                # Spin up 15 background workers to fetch photos simultaneously
                 with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-                    future_to_usn = {executor.submit(fetch_student_photo_b64, usn): usn for usn in unique_usns}
-                    
+                    future_to_usn = {executor.submit(fetch_student_photo_bytes, usn): usn for usn in unique_usns}
                     for future in concurrent.futures.as_completed(future_to_usn):
                         usn = future_to_usn[future]
-                        try:
-                            photo_cache[usn] = future.result()
-                        except Exception:
-                            photo_cache[usn] = None
+                        try: photo_cache[usn] = future.result()
+                        except: photo_cache[usn] = None
 
-                # Generate HTML Boilerplate
-                html_content = """
-                <html>
-                <head>
-                <style>
-                    @page { size: A4; margin: 15mm; }
-                    body { font-family: 'Times New Roman', serif; font-size: 14px; color: #000; }
-                    .page-break { page-break-after: always; }
-                    
-                    .header-container { text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; }
-                    .header-container h2 { margin: 0; font-size: 22px; font-weight: bold; }
-                    .header-container p { margin: 4px 0; font-size: 14px; }
-                    .form-title { font-weight: bold; font-size: 16px; margin-top: 10px; text-decoration: underline; }
-                    
-                    .info-section { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
-                    .info-table { width: 75%; border-collapse: collapse; }
-                    .info-table td { padding: 6px 0; font-size: 14px; border: none; }
-                    .info-label { font-weight: bold; width: 150px; }
-                    
-                    .photo-container { width: 25%; display: flex; justify-content: flex-end; }
-                    .photo-box { width: 110px; height: 140px; border: 1px solid #000; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 12px; color: #666; overflow: hidden; }
-                    .photo-box img { width: 100%; height: 100%; object-fit: cover; }
-                    
-                    .course-table { width: 100%; border-collapse: collapse; margin-bottom: 40px; }
-                    .course-table th, .course-table td { border: 1px solid #000; padding: 8px; text-align: center; font-size: 13px; }
-                    .course-table th { font-weight: bold; background-color: #f9f9f9; }
-                    .course-table td.left-align { text-align: left; }
-                    
-                    .signatures { margin-top: 100px; display: flex; justify-content: space-between; font-weight: bold; font-size: 13px; }
-                    .sig-block { text-align: center; width: 22%; border-top: 1px dashed #000; padding-top: 8px; }
-                </style>
-                </head>
-                <body>
-                """
+                # 🟢 REPORTLAB PDF CONSTRUCTION 🟢
+                pdf_buffer = io.BytesIO()
+                doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
+                elements = []
+                styles = getSampleStyleSheet()
                 
+                # Exact Font Styles
+                style_center = ParagraphStyle('Center', parent=styles['Normal'], alignment=1, fontName='Times-Bold', fontSize=15, spaceAfter=2)
+                style_sub_center = ParagraphStyle('SubCenter', parent=styles['Normal'], alignment=1, fontName='Times-Roman', fontSize=11, spaceAfter=2)
+                style_title = ParagraphStyle('Title', parent=styles['Normal'], alignment=1, fontName='Times-Bold', fontSize=13, spaceAfter=15)
+                style_normal = ParagraphStyle('Normal_Times', parent=styles['Normal'], fontName='Times-Roman', fontSize=11)
+                style_bold = ParagraphStyle('Bold_Times', parent=styles['Normal'], fontName='Times-Bold', fontSize=11)
+
                 generated_count = 0
+
                 for _, student in df_s.iterrows():
                     branch = str(student.get('branch', '')).strip().upper()
                     usn = str(student.get('usn', '')).strip().upper()
@@ -186,100 +173,121 @@ with reg_tabs[3]:
                     if courses:
                         generated_count += 1
                         
-                        # Instantly retrieve from our new concurrent cache
-                        photo_b64 = photo_cache.get(usn)
-                        if photo_b64:
-                            img_html = f'<img src="data:image/jpeg;base64,{photo_b64}" alt="Photo"/>'
+                        # 1. Header block
+                        elements.append(Paragraph("AMC ENGINEERING COLLEGE", style_center))
+                        elements.append(Paragraph("Autonomous Institution affiliated to VTU, Belagavi.", style_sub_center))
+                        elements.append(Paragraph("Bannerghatta Road, Bengaluru - 560083.", style_sub_center))
+                        elements.append(Spacer(1, 10))
+                        elements.append(Paragraph("<u>COURSE REGISTRATION FORM - PG PROGRAM</u>", style_title))
+                        
+                        # 2. Student Info & Photo Layout
+                        info_data = [
+                            [Paragraph("<b>Academic Year:</b>", style_normal), Paragraph(academic_year, style_normal)],
+                            [Paragraph("<b>Semester:</b>", style_normal), Paragraph(str(target_sem), style_normal)],
+                            [Paragraph("<b>USN:</b>", style_normal), Paragraph(usn, style_bold)],
+                            [Paragraph("<b>Name:</b>", style_normal), Paragraph(name, style_bold)],
+                            [Paragraph("<b>Programme:</b>", style_normal), Paragraph("PG", style_normal)],
+                            [Paragraph("<b>Branch:</b>", style_normal), Paragraph(branch, style_normal)]
+                        ]
+                        
+                        info_table = Table(info_data, colWidths=[90, 250])
+                        info_table.setStyle(TableStyle([
+                            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                            ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+                            ('TOPPADDING', (0,0), (-1,-1), 3),
+                        ]))
+                        
+                        photo_bytes = photo_cache.get(usn)
+                        if photo_bytes:
+                            img = Image(io.BytesIO(photo_bytes), width=1.1*inch, height=1.4*inch)
                         else:
-                            img_html = 'Affix<br>Passport<br>Size Photo'
+                            img = Table([["Affix\nPassport\nSize Photo"]], colWidths=[1.1*inch], rowHeights=[1.4*inch])
+                            img.setStyle(TableStyle([
+                                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                                ('GRID', (0,0), (-1,-1), 1, colors.black),
+                                ('FONTNAME', (0,0), (-1,-1), 'Times-Roman'),
+                                ('FONTSIZE', (0,0), (-1,-1), 9)
+                            ]))
+                            
+                        top_layout = Table([[info_table, img]], colWidths=[380, 110])
+                        top_layout.setStyle(TableStyle([
+                            ('ALIGN', (0,0), (0,0), 'LEFT'),
+                            ('ALIGN', (1,0), (1,0), 'RIGHT'),
+                            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                        ]))
                         
-                        html_content += f"""
-                        <div class="header-container">
-                            <h2>AMC ENGINEERING COLLEGE</h2>
-                            <p>Autonomous Institution affiliated to VTU, Belagavi.</p>
-                            <p>Bannerghatta Road, Bengaluru - 560083.</p>
-                            <div class="form-title">COURSE REGISTRATION FORM - PG PROGRAM</div>
-                        </div>
+                        elements.append(top_layout)
+                        elements.append(Spacer(1, 15))
                         
-                        <div class="info-section">
-                            <table class="info-table">
-                                <tr><td class="info-label">Academic Year:</td><td>{academic_year}</td></tr>
-                                <tr><td class="info-label">Semester:</td><td>{target_sem}</td></tr>
-                                <tr><td class="info-label">USN:</td><td>{usn}</td></tr>
-                                <tr><td class="info-label">Name:</td><td>{name}</td></tr>
-                                <tr><td class="info-label">Programme:</td><td>PG</td></tr>
-                                <tr><td class="info-label">Branch:</td><td>{branch}</td></tr>
-                            </table>
-                            <div class="photo-container">
-                                <div class="photo-box">
-                                    {img_html}
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <table class="course-table">
-                            <thead>
-                                <tr>
-                                    <th style="width: 8%;">Sl. No.</th>
-                                    <th style="width: 20%;">Course Code</th>
-                                    <th style="width: 60%;">Course Title</th>
-                                    <th style="width: 12%;">Credit</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                        """
-                        
+                        # 3. Course Table
+                        course_data = [['Sl. No.', 'Course Code', 'Course Title', 'Credit']]
                         total_credits = 0
+                        
                         for idx, crs in enumerate(courses, 1):
                             ccode = str(crs.get('course_code', '')).upper()
                             ctitle = str(crs.get('course_title', '')).title()
-                            
                             try:
                                 cred = float(crs.get('credits', 0))
                                 if cred.is_integer(): cred = int(cred)
                                 total_credits += cred
-                            except:
-                                cred = crs.get('credits', '')
+                            except: cred = crs.get('credits', '')
                             
-                            html_content += f"""
-                                <tr>
-                                    <td>{idx}</td>
-                                    <td>{ccode}</td>
-                                    <td class="left-align">{ctitle}</td>
-                                    <td>{cred}</td>
-                                </tr>
-                            """
+                            course_data.append([str(idx), ccode, ctitle, str(cred)])
+                            
+                        # Add Total Credits Row
+                        course_data.append(['', '', 'Total Credits:', str(total_credits)])
                         
-                        html_content += f"""
-                                <tr>
-                                    <td colspan="3" style="text-align: right; font-weight: bold; padding-right: 15px;">Total Credits:</td>
-                                    <td style="font-weight: bold;">{total_credits}</td>
-                                </tr>
-                            </tbody>
-                        </table>
+                        course_table = Table(course_data, colWidths=[40, 90, 310, 60])
+                        course_table.setStyle(TableStyle([
+                            ('GRID', (0,0), (-1,-2), 0.5, colors.black), # Grid for all but last row
+                            ('GRID', (2,-1), (-1,-1), 0.5, colors.black), # Grid for total credits section
+                            ('ALIGN', (0,0), (-1,0), 'CENTER'), # Header center
+                            ('ALIGN', (0,1), (0,-2), 'CENTER'), # Sl no center
+                            ('ALIGN', (1,1), (1,-2), 'CENTER'), # Code center
+                            ('ALIGN', (2,1), (2,-2), 'LEFT'),   # Title left
+                            ('ALIGN', (3,1), (3,-1), 'CENTER'), # Credit center
+                            ('ALIGN', (2,-1), (2,-1), 'RIGHT'), # Total credits text right
+                            ('FONTNAME', (0,0), (-1,0), 'Times-Bold'),
+                            ('FONTNAME', (0,1), (-1,-2), 'Times-Roman'),
+                            ('FONTNAME', (2,-1), (-1,-1), 'Times-Bold'),
+                            ('FONTSIZE', (0,0), (-1,-1), 10),
+                            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+                            ('TOPPADDING', (0,0), (-1,-1), 6),
+                        ]))
                         
-                        <div class="signatures">
-                            <div class="sig-block">Student Signature</div>
-                            <div class="sig-block">Signature of<br>Faculty Advisor</div>
-                            <div class="sig-block">Signature of<br>HOD</div>
-                            <div class="sig-block">Signature of<br>Principal</div>
-                        </div>
+                        elements.append(course_table)
+                        elements.append(Spacer(1, 80)) # Space for signatures
                         
-                        <div class="page-break"></div>
-                        """
-                
-                html_content += """
-                </body>
-                </html>
-                """
-                
+                        # 4. Signature Blocks
+                        sig_data = [
+                            ["___________________", "___________________", "___________________", "___________________"],
+                            ["Student Signature", "Signature of\nFaculty Advisor", "Signature of\nHOD", "Signature of\nPrincipal"]
+                        ]
+                        sig_table = Table(sig_data, colWidths=[125, 125, 125, 125])
+                        sig_table.setStyle(TableStyle([
+                            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                            ('FONTNAME', (0,0), (-1,-1), 'Times-Bold'),
+                            ('FONTSIZE', (0,0), (-1,-1), 10),
+                            ('BOTTOMPADDING', (0,0), (-1,0), 2),
+                        ]))
+                        
+                        elements.append(sig_table)
+                        elements.append(PageBreak())
+
+                # Build PDF
+                doc.build(elements)
+
                 if generated_count > 0:
-                    st.success(f"🎉 Successfully generated A4 Registration Forms for {generated_count} PG students!")
+                    st.success(f"🎉 Successfully generated A4 PDF Registration Forms for {generated_count} PG students!")
                     st.download_button(
-                        label="📥 Download Printable Forms (HTML)",
-                        data=html_content,
-                        file_name=f"PG_Sem{target_sem}_Registration_Forms.html",
-                        mime="text/html",
+                        label="📥 Download Master PDF",
+                        data=pdf_buffer.getvalue(),
+                        file_name=f"PG_Sem{target_sem}_Registration_Forms.pdf",
+                        mime="application/pdf",
                         type="primary"
                     )
                 else:
