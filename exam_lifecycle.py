@@ -144,27 +144,18 @@ with tabs[1]:
     st.markdown("### 🆕 Initiate New Exam Session")
     st.info("Parallel cycles allowed. Link Make-up/Arrear exams to their original Regular cycle.")
     
-    c_name = st.text_input("Cycle Name", placeholder="e.g., UG Sem-1 Make-up March-2026")
+    c_name = st.text_input("Cycle Name", placeholder="e.g., UG ODD Semesters Jan-2026")
     
-    col1, col2 = st.columns(2)
+    # 🟢 ADDED: A 3-column layout to capture AY, Exam Type, AND Semester Type
+    col1, col2, col3 = st.columns(3)
     c_ay = col1.text_input("Academic Year", value="2025-26")
     c_type = col2.selectbox("Exam Type", ["Regular", "Supplementary", "Summer", "Revaluation", "Make-up"])
+    c_sem_type = col3.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"]) 
     
     parent_cycle_id = None
     if c_type != "Regular":
         st.markdown("🔗 **Link to Parent Exam Cycle**")
-        st.caption("Select the original Regular exam cycle where the students' CIE marks and registrations reside.")
-        
-        try:
-            existing_cycles = supabase.table("exam_cycles").select("cycle_id, cycle_name").execute().data
-            if existing_cycles:
-                cycle_dict = {f"{c['cycle_name']} (ID: {c['cycle_id']})": int(c['cycle_id']) for c in existing_cycles}
-                selected_parent = st.selectbox("Select Parent Cycle", options=["None"] + list(cycle_dict.keys()))
-                
-                if selected_parent != "None":
-                    parent_cycle_id = cycle_dict[selected_parent]
-        except Exception as e:
-            st.error("Could not load existing cycles for linking.")
+        # ... (keep your existing parent cycle logic here) ...
 
     if st.button("🚀 Start Exam Lifecycle", type="primary"):
         if c_name:
@@ -172,6 +163,7 @@ with tabs[1]:
                 "cycle_name": c_name,
                 "academic_year": c_ay,
                 "exam_type": c_type,
+                "semester_type": c_sem_type, # 🟢 ADDED THIS TO YOUR DATABASE PAYLOAD
                 "status_code": 1,
                 "is_active": True,
                 "parent_cycle_id": parent_cycle_id 
@@ -182,9 +174,7 @@ with tabs[1]:
                 st.rerun()
             except Exception as e:
                 st.error(f"Could not create cycle: {e}")
-        else:
-            st.error("Please provide a name for the new cycle.")
-
+                
 # ==========================================
 # 3. CYCLE HISTORY & RESTORE
 # ==========================================
