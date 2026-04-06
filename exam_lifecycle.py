@@ -146,24 +146,52 @@ with tabs[1]:
     
     c_name = st.text_input("Cycle Name", placeholder="e.g., UG ODD Semesters Jan-2026")
     
-    # 🟢 ADDED: A 3-column layout to capture AY, Exam Type, AND Semester Type
     col1, col2, col3 = st.columns(3)
     c_ay = col1.text_input("Academic Year", value="2025-26")
     c_type = col2.selectbox("Exam Type", ["Regular", "Supplementary", "Summer", "Revaluation", "Make-up"])
     c_sem_type = col3.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"]) 
     
+    # 🟢 NEW: Dynamic Semester Selection based on the Semester Type
+    if c_sem_type == "ODD":
+        sem_options = [1, 3, 5, 7, 9]
+    elif c_sem_type == "EVEN":
+        sem_options = [2, 4, 6, 8, 10]
+    else:
+        sem_options = list(range(1, 11))
+        
+    c_target_sems = st.multiselect(
+        "Select Target Semesters for this Cycle", 
+        options=sem_options, 
+        default=sem_options, # Auto-selects all by default to save clicks
+        help="Choose the specific semesters that will have exams in this cycle."
+    )
+    
     parent_cycle_id = None
     if c_type != "Regular":
         st.markdown("🔗 **Link to Parent Exam Cycle**")
-        # ... (keep your existing parent cycle logic here) ...
+        try:
+            existing_cycles = supabase.table("exam_cycles").select("cycle_id, cycle_name").execute().data
+            if existing_cycles:
+                cycle_dict = {f"{c['cycle_name']} (ID: {c['cycle_id']})": int(c['cycle_id']) for c in existing_cycles}
+                selected_parent = st.selectbox("Select Parent Cycle", options=["None"] + list(cycle_dict.keys()))
+                
+                if selected_parent != "None":
+                    parent_cycle_id = cycle_dict[selected_parent]
+        except Exception as e:
+            st.error("Could not load existing cycles for linking.")
 
     if st.button("🚀 Start Exam Lifecycle", type="primary"):
-        if c_name:
+        if not c_name:
+            st.error("Please provide a name for the new cycle.")
+        elif not c_target_sems:
+            st.error("Please select at least one target semester.")
+        else:
             new_cycle = {
                 "cycle_name": c_name,
                 "academic_year": c_ay,
                 "exam_type": c_type,
-                "semester_type": c_sem_type, # 🟢 ADDED THIS TO YOUR DATABASE PAYLOAD
+                "semester_type": c_sem_type,
+                "target_semesters": c_target_sems, # 🟢 ADDED: Passes the list [1, 3, 5] directly to Supabase
                 "status_code": 1,
                 "is_active": True,
                 "parent_cycle_id": parent_cycle_id 
