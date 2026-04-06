@@ -249,7 +249,7 @@ with tabs[3]:
     st.subheader("🎓 Master Semester Promotion")
     st.info("Promote students to their next semester based on VTU progression rules. Ensure you select the correct Program Type, as UG and PG calendars often differ.")
 
-    # 🟢 NEW: Fetch branches to map Program Types (UG/PG) to Branch Codes
+    # 1. Fetch branches to map Program Types (UG/PG) to Branch Codes
     try:
         all_branches = fetch_all_records("master_branches", "branch_code, program_type")
         ug_branches = [b['branch_code'] for b in all_branches if b.get('program_type') == 'UG']
@@ -263,7 +263,6 @@ with tabs[3]:
     with promo_tabs[0]:
         st.write("Students moving from an Odd semester to an Even semester (e.g., 1st to 2nd) are promoted automatically without credit hurdles.")
         
-        # 🟢 NEW: Added UI Filters for Program and Branch
         f_col1, f_col2, f_col3 = st.columns(3)
         odd_sems = [1, 3, 5, 7, 9]
         target_sem = f_col1.selectbox("Select current Odd Semester:", odd_sems)
@@ -283,17 +282,19 @@ with tabs[3]:
                 st.error("Please select at least one branch.")
             else:
                 with st.spinner(f"Updating {target_prog} student records..."):
-                    target_sem_str = str(target_sem)
-                    # Fetch all students in that semester
+                    # We pass string to the filter because query params are stringified
+                    target_sem_str = str(target_sem) 
                     all_sem_students = fetch_all_records("master_students", filters={"current_sem": target_sem_str})
                     
-                    # 🟢 NEW: Filter down to ONLY the selected branches/program
+                    # Filter down to ONLY the selected branches/program
                     students = [s for s in all_sem_students if s.get('branch_code') in target_branches]
                     
                     if not students:
                         st.warning(f"No active {target_prog} students found in Semester {target_sem} for the selected branches.")
                     else:
-                        update_payload = [{"usn": s['usn'], "current_sem": str(target_sem + 1)} for s in students]
+                        # ✅ THE FIX: Pass the whole dictionary **s, but overwrite current_sem as an INTEGER
+                        update_payload = [{**s, "current_sem": target_sem + 1} for s in students]
+                        
                         for i in range(0, len(update_payload), 1000):
                             supabase.table("master_students").upsert(update_payload[i:i+1000]).execute()
                         st.success(f"✅ {len(students)} {target_prog} students successfully promoted to Semester {target_sem + 1}!")
@@ -302,7 +303,6 @@ with tabs[3]:
     with promo_tabs[1]:
         st.write("Vertical progression from Even to Odd requires students to meet VTU progression criteria.")
         
-        # 🟢 NEW: Added UI Filters for Program and Branch
         f2_col1, f2_col2, f2_col3 = st.columns(3)
         even_sems = [2, 4, 6, 8]
         current_even_sem = f2_col1.selectbox("Select current Even Semester:", even_sems)
@@ -333,7 +333,7 @@ with tabs[3]:
                     current_even_sem_str = str(current_even_sem)
                     all_sem_students = fetch_all_records("master_students", filters={"current_sem": current_even_sem_str})
                     
-                    # 🟢 NEW: Filter down to ONLY the selected branches/program
+                    # Filter down to ONLY the selected branches/program
                     students = [s for s in all_sem_students if s.get('branch_code') in target_branches_even]
                     
                     if not students:
@@ -373,7 +373,8 @@ with tabs[3]:
                                 is_eligible = total_credits >= threshold
                                 
                             if is_eligible:
-                                eligible_students.append({"usn": usn, "current_sem": str(current_even_sem + 1)})
+                                # ✅ THE FIX: Pass the whole dictionary **s, but overwrite current_sem as an INTEGER
+                                eligible_students.append({**s, "current_sem": current_even_sem + 1})
                             else:
                                 detained_students.append({"USN": usn, "Active Backlogs": active_backlogs, "Credits Earned": total_credits})
 
