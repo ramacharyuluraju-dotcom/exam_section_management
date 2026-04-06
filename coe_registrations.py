@@ -33,7 +33,10 @@ with reg_tabs[0]:
     
     if f_reg and st.button("Execute Bulk Registration"):
         df = pd.read_csv(f_reg)
-        expected = ['usn', 'course_code', 'academic_year', 'semester_type']
+        
+        # 🟢 UPDATED: Added 'semester' to the expected columns
+        expected = ['usn', 'course_code', 'academic_year', 'semester_type', 'semester']
+        
         data = clean_data_for_db(df, expected)
         
         for row in data: 
@@ -55,11 +58,22 @@ with reg_tabs[1]:
         r_usn = col1.text_input("Student USN")
         r_course = col2.text_input("Course Code")
         r_ay = col1.text_input("Academic Year", value="2025-26")
-        r_sem = col2.selectbox("Semester Type", ["ODD", "EVEN"])
+        r_sem_type = col2.selectbox("Semester Type", ["ODD", "EVEN"])
+        
+        # 🟢 UPDATED: Added a numerical input for the Semester
+        r_semester = col1.number_input("Semester", min_value=1, max_value=8, value=2)
         
         c1, c2 = st.columns(2)
         if c1.form_submit_button("💾 Register Course"):
-            reg_data = {"cycle_id": selected_cycle_id, "usn": r_usn.strip().upper(), "course_code": r_course.strip().upper(), "academic_year": r_ay, "semester_type": r_sem}
+            # 🟢 UPDATED: Added 'semester' to the data dictionary sent to Supabase
+            reg_data = {
+                "cycle_id": selected_cycle_id, 
+                "usn": r_usn.strip().upper(), 
+                "course_code": r_course.strip().upper(), 
+                "academic_year": r_ay, 
+                "semester_type": r_sem_type,
+                "semester": r_semester
+            }
             try: 
                 supabase.table("course_registrations").upsert(reg_data).execute()
                 st.success(f"✅ Registered {r_course} for {r_usn}")
@@ -118,7 +132,6 @@ with reg_tabs[3]:
             if not supabase_url or not supabase_key:
                 raise Exception("Could not extract Supabase credentials from the active connection.")
                 
-            # 🟢 THE FIX: Convert the URL object to a standard string before manipulating it
             base_url_string = str(supabase_url).rstrip('/')
             api_url = f"{base_url_string}/storage/v1/object/list/{BUCKET_NAME}"
             
