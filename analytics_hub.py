@@ -249,9 +249,15 @@ with t3:
                     st.markdown(f"**USN:** `{search_usn}`")
                     st.markdown(f"**Program:** {prog_type.upper()} | **Branch:** {branch_name}")
                     
-                    adm_year = profile.get('admission_year')
-                    curr_sem = profile.get('current_semester')
-                    st.markdown(f"**Admission Year:** {adm_year if pd.notna(adm_year) else 'N/A'} | **Current Sem:** {curr_sem if pd.notna(curr_sem) else 'N/A'}")
+                    # 🟢 THE FIX: Smart USN Parsing & DB Column matching
+                    usn_str = profile.get('usn', search_usn)
+                    if len(usn_str) >= 5 and usn_str[3:5].isdigit():
+                        adm_year = f"20{usn_str[3:5]}" 
+                    else:
+                        adm_year = "N/A"
+                        
+                    curr_sem = profile.get('current_sem', 'N/A')
+                    st.markdown(f"**Admission Year:** {adm_year} | **Current Sem:** {curr_sem}")
                     
                     email = profile.get('email')
                     phone = profile.get('phone')
