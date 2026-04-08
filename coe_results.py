@@ -172,7 +172,7 @@ def vtu_third_val_logic(m1, m2, m3):
 # ==========================================
 # 3. PDF MARKS CARD & A3 LEDGER GENERATORS
 # ==========================================
-def generate_marks_card_pdf(buffer, usn, name, results_list, sgpa, has_pending=False):
+def generate_marks_card_pdf(buffer, usn, name, results_list, sgpa, has_pending=False): 
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
     elements = []
     styles = getSampleStyleSheet()
