@@ -701,13 +701,13 @@ if show_mod:
                                     try: supabase.table("marks_audit_log").insert(audit_list[i:i+500]).execute()
                                     except: pass
 
-                                st.success("✅ Moderation Processed & Audited!")
-                                c1, c2, c3 = st.columns(3)
-                                c1.metric("⬆️ Upgraded (Mod > Orig)", stats["upgraded"])
-                                c2.metric("➖ Ignored (Orig >= Mod)", stats["ignored"])
-                                c3.metric("🚨 3rd Valuations Triggered", stats["third_val"], delta="Diff > 15", delta_color="inverse")
-                            else:
-                                st.warning("No valid matching students/courses found in the database.")
+                            st.success("✅ Moderation Processed & Audited!")
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("⬆️ Upgraded (Mod > Orig)", stats["upgraded"])
+                            c2.metric("➖ Ignored (Orig >= Mod)", stats["ignored"])
+                            c3.metric("🚨 3rd Valuations Triggered", stats["third_val"], delta="Diff > 15", delta_color="inverse")
+                        else:
+                            st.warning("No valid matching students/courses found in the database.")
 
                         except Exception as e:
                             st.error(f"Processing Error: {e}")
@@ -1009,6 +1009,9 @@ if show_ledgers:
                             zf.writestr(f"Marks_Cards/{usn}.pdf", pdf_buf.getvalue())
                             
                     df_ledger = pd.DataFrame(ledger_rows)
+                    
+                    # 🟢 THE FIX: Sort by USN so the ledger appears in strict alphanumeric order
+                    df_ledger = df_ledger.sort_values(by='USN', ascending=True).reset_index(drop=True)
                     
                     ledger_zip = io.BytesIO()
                     with zipfile.ZipFile(ledger_zip, "w") as branch_zf:
