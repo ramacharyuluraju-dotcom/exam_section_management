@@ -19,14 +19,12 @@ def show_home():
         * **Foster a culture of research**, innovation, and entrepreneurship among students and faculty.
         * **Build strong industry-institute interaction** for holistic development and real-world readiness.
         """)
-        
-        st.markdown("*Note: You can easily edit these statements in `home.py` to match the exact official wording of the college.*")
 
     # Right Column: Current Activities & Quick Links
     with col2:
         st.subheader("📌 Current Activities")
         
-        # Fetch the active cycle from the session state you built earlier
+        # Fetch the active cycle from the session state you built in utils.py
         active_cycle = st.session_state.get('active_cycle_name', 'No Active Cycle Selected')
         
         st.metric(label="Currently Managing", value=active_cycle)
