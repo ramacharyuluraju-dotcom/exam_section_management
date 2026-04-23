@@ -31,22 +31,19 @@ st.sidebar.divider()
 # 4. DEFINE PAGES
 home_page = st.Page("home.py", title="Home Dashboard", icon="🏠", default=True)
 setup_page = st.Page("main.py", title="1. Master Setup", icon="⚙️")
-# ... your other pages ...
-utilities_page = st.Page("doc_utilities.py", title="8. Doc Generator", icon="🖨️") # 🟢 ADD THIS LINE
+lifecycle_page = st.Page("exam_lifecycle.py", title="2. Exam Lifecycle", icon="📅")
+registration_page = st.Page("coe_registrations.py", title="3. Registrations", icon="📝")
+pre_exam_page = st.Page("coe_control.py", title="4. Pre-Exam (Docs)", icon="🖨️")
+exam_day_page = st.Page("sandbox_exam_day.py", title="5. Exam Day Logistics", icon="🚀")
+results_page = st.Page("coe_results.py", title="6. Results & Grading", icon="🏆")
+analytics_page = st.Page("analytics_hub.py", title="7. Global Analytics", icon="📊")
+utilities_page = st.Page("doc_utilities.py", title="8. Doc Generator", icon="🖨️") 
 
 # 5. BUILD NAVIGATION MENU
 pages = {
     "🏠 Welcome": [home_page],
     "📅 Exam Management": [lifecycle_page, registration_page],
-    "🚀 Operations": [pre_exam_page, exam_day_page, results_page, utilities_page], # 🟢 ADD IT TO A CATEGORY
-    "📈 Intelligence": [analytics_page]
-}
-
-# 5. BUILD NAVIGATION MENU
-pages = {
-    "🏠 Welcome": [home_page], # 🟢 WELCOME CATEGORY ADDED FIRST
-    "📅 Exam Management": [lifecycle_page, registration_page],
-    "🚀 Operations": [pre_exam_page, exam_day_page, results_page],
+    "🚀 Operations": [pre_exam_page, exam_day_page, results_page, utilities_page], 
     "📈 Intelligence": [analytics_page]
 }
 
