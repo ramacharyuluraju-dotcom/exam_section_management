@@ -32,7 +32,7 @@ st.sidebar.divider()
 home_page = st.Page("home.py", title="Home Dashboard", icon="🏠", default=True)
 setup_page = st.Page("main.py", title="1. Master Setup", icon="⚙️")
 # ... your other pages ...
-utilities_page = st.Page("utilities.py", title="8. Doc Generator", icon="🖨️") # 🟢 ADD THIS LINE
+utilities_page = st.Page("doc_utilities.py", title="8. Doc Generator", icon="🖨️") # 🟢 ADD THIS LINE
 
 # 5. BUILD NAVIGATION MENU
 pages = {
