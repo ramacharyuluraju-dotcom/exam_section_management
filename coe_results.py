@@ -1293,71 +1293,136 @@ if show_dashboard:
 if show_reval:
     with t_rev:
         st.subheader("🔄 Revaluation Entry Engine")
-        st.info("Enter Revaluation marks for specific students here. Saving will overwrite their raw SEE mark and reset their grade so the Grading Engine can recalculate their new result.")
+        st.info("Upload or enter Revaluation marks here. Saving will overwrite their raw SEE mark and reset their grade to PENDING so the Grading Engine can recalculate their new result.")
 
-        try:
-            # Fetch all records from student_results for this cycle
-            rv_res = supabase.table("student_results").select(
-                "usn, course_code, cie_marks, see_raw, grade"
-            ).eq("cycle_id", selected_cycle_id).execute()
+        rev_tabs = st.tabs(["📂 Bulk Revaluation Upload", "📝 Manual Entry"])
 
-            if rv_res.data:
-                # Filter to only show students who already have an actual grade (ignore PND/Pending)
-                rv_flat = [r for r in rv_res.data if pd.notna(r.get('grade')) and r.get('grade') not in ['PND', 'PENDING', 'NE']]
-                
-                df_rv = pd.DataFrame(rv_flat)
+        # --- SUB-TAB 1: BULK REVALUATION UPLOAD ---
+        with rev_tabs[0]:
+            st.markdown("#### Process Bulk Revaluation Marks")
+            
+            with st.expander("View CSV Template Guide"):
+                st.code("usn,course_code,new_rv_mark\n1AM25CS001,1BCEDS103,45\n1AM25CS042,1BCEDS103,38")
 
-                if not df_rv.empty:
-                    # Let COE filter by Course Code to make data entry easy
-                    rv_courses = sorted(df_rv['course_code'].unique())
-                    selected_rv_course = st.selectbox("Select Course for Revaluation Entry", options=rv_courses)
-                    
-                    df_course_rv = df_rv[df_rv['course_code'] == selected_rv_course].copy()
-                    
-                    # Add columns for data entry
-                    df_course_rv["New RV Mark"] = None
-                    df_course_rv["Apply RV?"] = False
+            f_rev = st.file_uploader("Upload Revaluation CSV", type='csv', key="rev_bulk_up")
 
-                    st.markdown(f"#### Students Graded in {selected_rv_course}")
-                    
-                    # Use the interactive data editor
-                    edited_rv_df = st.data_editor(
-                        df_course_rv[["usn", "cie_marks", "see_raw", "grade", "New RV Mark", "Apply RV?"]],
-                        column_config={
-                            "usn": st.column_config.TextColumn("USN", disabled=True),
-                            "cie_marks": st.column_config.NumberColumn("CIE", disabled=True),
-                            "see_raw": st.column_config.NumberColumn("Original SEE", disabled=True),
-                            "grade": st.column_config.TextColumn("Current Grade", disabled=True),
-                            "New RV Mark": st.column_config.NumberColumn("New RV Mark", min_value=0.0, max_value=100.0),
-                            "Apply RV?": st.column_config.CheckboxColumn("Apply RV?", default=False)
-                        },
-                        hide_index=True,
-                        use_container_width=True
-                    )
+            if f_rev and st.button("🚀 Execute Bulk Revaluation", type="primary"):
+                df_rev = pd.read_csv(f_rev)
+                usn_col = find_column(df_rev, ['usn', 'student id'])
+                cc_col = find_column(df_rev, ['course_code', 'course code', 'subject code'])
+                m_col = find_column(df_rev, ['new_rv_mark', 'rv_mark', 'marks', 'reval_mark'])
 
-                    if st.button("💾 Save Revaluation Marks", type="primary"):
-                        # Filter only rows where the user checked the box and entered a mark
-                        rv_updates = edited_rv_df[(edited_rv_df['Apply RV?'] == True) & (pd.notna(edited_rv_df['New RV Mark']))]
-                        
-                        if not rv_updates.empty:
-                            with st.spinner("Applying Revaluation marks..."):
-                                payload = []
-                                for _, row in rv_updates.iterrows():
+                if not (usn_col and cc_col and m_col):
+                    st.error("Missing standard columns. Please ensure USN, Course Code, and New RV Mark are present in the CSV.")
+                else:
+                    with st.spinner("Validating records and applying Revaluation marks..."):
+                        try:
+                            # Fetch existing records to ensure we only update valid students
+                            db_res = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
+                            db_map = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): r for r in db_res}
+
+                            payload = []
+                            ignored = 0
+
+                            for _, r in df_rev.iterrows():
+                                u = clean_str(r[usn_col])
+                                c = clean_str(r[cc_col])
+                                rv_mark = safe_float(r[m_col], None)
+
+                                # Only apply if the student is registered and the mark is valid
+                                if (u, c) in db_map and rv_mark is not None:
                                     payload.append({
                                         "cycle_id": selected_cycle_id,
-                                        "usn": row['usn'],
-                                        "course_code": selected_rv_course,
-                                        "see_raw": float(row['New RV Mark']),
+                                        "usn": u,
+                                        "course_code": c,
+                                        "see_raw": float(rv_mark),
                                         "grade": "PND" # 🟢 Resetting to PND forces the grading engine to catch it next time
                                     })
+                                else:
+                                    ignored += 1
+
+                            if payload:
+                                # Upsert in batches of 500 to respect Supabase limits
+                                for i in range(0, len(payload), 500):
+                                    supabase.table("student_results").upsert(payload[i:i+500]).execute()
                                 
-                                # Upsert the changes back to Supabase
-                                supabase.table("student_results").upsert(payload).execute()
                                 st.success(f"✅ Successfully updated Revaluation marks for {len(payload)} students!")
                                 st.info("💡 Next Step: Run the Grading Engine to recalculate their new grades.")
-                        else:
-                            st.warning("No students selected for Revaluation update.")
-                else:
-                    st.success("No graded subjects available for revaluation yet.")
-        except Exception as e:
-            st.error(f"Error loading Revaluation engine: {e}")
+                                
+                                if ignored > 0:
+                                    st.warning(f"⚠️ {ignored} rows were ignored because the USN/Course combination was not found in this cycle.")
+                            else:
+                                st.warning("No valid matching students/courses found in the database.")
+                                
+                        except Exception as e:
+                            st.error(f"Processing Error: {e}")
+
+        # --- SUB-TAB 2: MANUAL ENTRY ---
+        with rev_tabs[1]:
+            st.markdown("#### Individual Revaluation Entry")
+            try:
+                # Fetch all records from student_results for this cycle
+                rv_res = supabase.table("student_results").select(
+                    "usn, course_code, cie_marks, see_raw, grade"
+                ).eq("cycle_id", selected_cycle_id).execute()
+
+                if rv_res.data:
+                    # Filter to only show students who already have an actual grade (ignore PND/Pending)
+                    rv_flat = [r for r in rv_res.data if pd.notna(r.get('grade')) and r.get('grade') not in ['PND', 'PENDING', 'NE']]
+                    
+                    df_rv = pd.DataFrame(rv_flat)
+
+                    if not df_rv.empty:
+                        # Let COE filter by Course Code to make data entry easy
+                        rv_courses = sorted(df_rv['course_code'].unique())
+                        selected_rv_course = st.selectbox("Select Course for Revaluation Entry", options=rv_courses)
+                        
+                        df_course_rv = df_rv[df_rv['course_code'] == selected_rv_course].copy()
+                        
+                        # Add columns for data entry
+                        df_course_rv["New RV Mark"] = None
+                        df_course_rv["Apply RV?"] = False
+
+                        st.markdown(f"**Students Graded in {selected_rv_course}**")
+                        
+                        # Use the interactive data editor
+                        edited_rv_df = st.data_editor(
+                            df_course_rv[["usn", "cie_marks", "see_raw", "grade", "New RV Mark", "Apply RV?"]],
+                            column_config={
+                                "usn": st.column_config.TextColumn("USN", disabled=True),
+                                "cie_marks": st.column_config.NumberColumn("CIE", disabled=True),
+                                "see_raw": st.column_config.NumberColumn("Original SEE", disabled=True),
+                                "grade": st.column_config.TextColumn("Current Grade", disabled=True),
+                                "New RV Mark": st.column_config.NumberColumn("New RV Mark", min_value=0.0, max_value=100.0),
+                                "Apply RV?": st.column_config.CheckboxColumn("Apply RV?", default=False)
+                            },
+                            hide_index=True,
+                            use_container_width=True
+                        )
+
+                        if st.button("💾 Save Manual Revaluation Marks", type="primary"):
+                            # Filter only rows where the user checked the box and entered a mark
+                            rv_updates = edited_rv_df[(edited_rv_df['Apply RV?'] == True) & (pd.notna(edited_rv_df['New RV Mark']))]
+                            
+                            if not rv_updates.empty:
+                                with st.spinner("Applying Revaluation marks..."):
+                                    payload = []
+                                    for _, row in rv_updates.iterrows():
+                                        payload.append({
+                                            "cycle_id": selected_cycle_id,
+                                            "usn": row['usn'],
+                                            "course_code": selected_rv_course,
+                                            "see_raw": float(row['New RV Mark']),
+                                            "grade": "PND" # 🟢 Resetting to PND forces the grading engine to catch it next time
+                                        })
+                                    
+                                    # Upsert the changes back to Supabase
+                                    supabase.table("student_results").upsert(payload).execute()
+                                    st.success(f"✅ Successfully updated Revaluation marks for {len(payload)} students!")
+                                    st.info("💡 Next Step: Run the Grading Engine to recalculate their new grades.")
+                            else:
+                                st.warning("No students selected for Revaluation update.")
+                    else:
+                        st.success("No graded subjects available for revaluation yet.")
+            except Exception as e:
+                st.error(f"Error loading Revaluation engine: {e}")
