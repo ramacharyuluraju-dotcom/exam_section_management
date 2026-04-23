@@ -1293,9 +1293,34 @@ if show_dashboard:
 if show_reval:
     with t_rev:
         st.subheader("🔄 Revaluation Entry Engine")
-        st.info("Upload or enter Revaluation marks here. Saving will overwrite their raw SEE mark and reset their grade to PENDING so the Grading Engine can recalculate their new result.")
+        st.info("Upload or enter Revaluation marks. If the difference between the Original mark and Revaluation mark is > 15, the grade is frozen and flagged for Third Valuation. Otherwise, the higher mark is kept and the grade is instantly recalculated.")
 
         rev_tabs = st.tabs(["📂 Bulk Revaluation Upload", "📝 Manual Entry"])
+
+        # --- HELPER: Fetch Grading Context ---
+        def fetch_reval_context():
+            db_res = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
+            db_map = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): r for r in db_res}
+
+            # Get True Original Marks from Audit Log
+            audit_res = fetch_all_records("marks_audit_log", "usn, course_code, old_see, created_at", filters={"cycle_id": selected_cycle_id})
+            audit_df = pd.DataFrame(audit_res)
+            true_original_map = {}
+            if not audit_df.empty:
+                audit_df = audit_df.sort_values('created_at') 
+                for _, row in audit_df.iterrows():
+                    key = (str(row['usn']).strip().upper(), str(row['course_code']).strip().upper())
+                    if key not in true_original_map:
+                        true_original_map[key] = safe_float(row['old_see'], 0)
+
+            crs_res = fetch_all_records("master_courses", "course_code, credits, max_see, max_cie, total_marks")
+            crs_map = {r['course_code']: r for r in crs_res}
+            
+            stu_res = fetch_all_records("master_students", "usn, branch_code")
+            branch_map = {str(r['usn']).strip().upper(): r.get('branch_code', '') for r in stu_res}
+            pg_branches = [r['branch_code'] for r in supabase.table("master_branches").select("branch_code, program_type").execute().data if str(r['program_type']).upper() == 'PG']
+            
+            return db_map, true_original_map, crs_map, branch_map, pg_branches
 
         # --- SUB-TAB 1: BULK REVALUATION UPLOAD ---
         with rev_tabs[0]:
@@ -1306,7 +1331,7 @@ if show_reval:
 
             f_rev = st.file_uploader("Upload Revaluation CSV", type='csv', key="rev_bulk_up")
 
-            if f_rev and st.button("🚀 Execute Bulk Revaluation", type="primary"):
+            if f_rev and st.button("🚀 Execute Revaluation Rules", type="primary"):
                 df_rev = pd.read_csv(f_rev)
                 usn_col = find_column(df_rev, ['usn', 'student id'])
                 cc_col = find_column(df_rev, ['course_code', 'course code', 'subject code'])
@@ -1315,52 +1340,105 @@ if show_reval:
                 if not (usn_col and cc_col and m_col):
                     st.error("Missing standard columns. Please ensure USN, Course Code, and New RV Mark are present in the CSV.")
                 else:
-                    with st.spinner("Validating records and applying Revaluation marks..."):
+                    with st.spinner("Analyzing original marks, checking > 15-mark differences, and applying rules..."):
                         try:
-                            # Fetch existing records to ensure we only update valid students
-                            db_res = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
-                            db_map = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): r for r in db_res}
+                            db_map, true_original_map, crs_map, branch_map, pg_branches = fetch_reval_context()
 
-                            payload = []
-                            ignored = 0
+                            updates_list = []
+                            audit_list = []
+                            stats = {"upgraded": 0, "ignored": 0, "third_val": 0, "ignored_unregistered": 0}
 
                             for _, r in df_rev.iterrows():
                                 u = clean_str(r[usn_col])
                                 c = clean_str(r[cc_col])
                                 rv_mark = safe_float(r[m_col], None)
 
-                                # Only apply if the student is registered and the mark is valid
                                 if (u, c) in db_map and rv_mark is not None:
-                                    payload.append({
-                                        "cycle_id": selected_cycle_id,
-                                        "usn": u,
-                                        "course_code": c,
-                                        "see_raw": float(rv_mark),
-                                        "grade": "PND" # 🟢 Resetting to PND forces the grading engine to catch it next time
-                                    })
-                                else:
-                                    ignored += 1
+                                    db_row = db_map[(u, c)]
+                                    current_db_see = safe_float(db_row.get('see_raw'), 0)
+                                    old_grade = db_row.get('grade')
 
-                            if payload:
-                                # Upsert in batches of 500 to respect Supabase limits
-                                for i in range(0, len(payload), 500):
-                                    supabase.table("student_results").upsert(payload[i:i+500]).execute()
-                                
-                                st.success(f"✅ Successfully updated Revaluation marks for {len(payload)} students!")
-                                st.info("💡 Next Step: Run the Grading Engine to recalculate their new grades.")
-                                
-                                if ignored > 0:
-                                    st.warning(f"⚠️ {ignored} rows were ignored because the USN/Course combination was not found in this cycle.")
-                            else:
-                                st.warning("No valid matching students/courses found in the database.")
-                                
+                                    # Compare against the true original evaluator mark (if exists), otherwise current mark
+                                    true_orig_see = true_original_map.get((u, c), current_db_see)
+                                    mark_diff = abs(rv_mark - true_orig_see)
+
+                                    if mark_diff > 15:
+                                        stats["third_val"] += 1
+                                        audit_list.append({
+                                            "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                            "change_type": "THIRD VALUATION PENDING",
+                                            "old_see": true_orig_see, "old_grade": old_grade,
+                                            "new_see": rv_mark, "new_grade": "FROZEN",
+                                            "reason": f"RV Diff is {mark_diff} (Orig:{true_orig_see}, RV:{rv_mark}). Escalate to 3rd Val."
+                                        })
+                                        # Freeze the grade pending 3rd Valuation
+                                        updates_list.append({
+                                            "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                            "see_raw": rv_mark, "grade": "FROZEN"
+                                        })
+                                    else:
+                                        if rv_mark > true_orig_see:
+                                            stats["upgraded"] += 1
+                                            
+                                            mc = crs_map.get(c, {})
+                                            cred, m_cie, m_see, conducted_for = safe_float(mc.get('credits'), 4.0), safe_float(mc.get('max_cie'), 50.0), safe_float(mc.get('max_see'), 50.0), safe_float(mc.get('total_marks'), 100.0)
+                                            is_pg = branch_map.get(u) in pg_branches
+
+                                            scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(
+                                                db_row['cie_marks'], rv_mark, db_row['exam_status'], cred, m_cie, m_see, conducted_for, is_pg
+                                            )
+
+                                            updates_list.append({
+                                                "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                                "see_raw": rv_mark, "see_scaled": scaled_see,
+                                                "total_marks": tot, "grade": grd, "grade_points": gp,
+                                                "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass, "exam_status": healed_status
+                                            })
+
+                                            audit_list.append({
+                                                "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                                "change_type": "REVALUATION - APPLIED",
+                                                "old_see": true_orig_see, "old_grade": old_grade,
+                                                "new_see": rv_mark, "new_grade": grd,
+                                                "reason": f"RV Diff <= 15. Kept Higher RV ({rv_mark})."
+                                            })
+                                        else:
+                                            stats["ignored"] += 1
+                                            audit_list.append({
+                                                "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                                "change_type": "REVALUATION - IGNORED",
+                                                "old_see": true_orig_see, "old_grade": old_grade,
+                                                "new_see": true_orig_see, "new_grade": old_grade,
+                                                "reason": f"RV Diff <= 15. Kept Higher Orig ({true_orig_see})."
+                                            })
+                                else:
+                                    stats["ignored_unregistered"] += 1
+
+                            # Save to Database
+                            if audit_list:
+                                if updates_list:
+                                    for i in range(0, len(updates_list), 500):
+                                        supabase.table("student_results").upsert(updates_list[i:i+500]).execute()
+                                        
+                                for i in range(0, len(audit_list), 500):
+                                    try: supabase.table("marks_audit_log").insert(audit_list[i:i+500]).execute()
+                                    except: pass
+
+                            st.success("✅ Revaluation Processed & Audited!")
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("⬆️ Upgraded (RV > Orig)", stats["upgraded"])
+                            c2.metric("➖ Ignored (Orig >= RV)", stats["ignored"])
+                            c3.metric("🚨 3rd Valuations Triggered", stats["third_val"], delta="Diff > 15", delta_color="inverse")
+                            
+                            if stats["ignored_unregistered"] > 0:
+                                st.warning(f"⚠️ {stats['ignored_unregistered']} rows were ignored because the USN/Course combination was not found.")
                         except Exception as e:
                             st.error(f"Processing Error: {e}")
 
-       # --- SUB-TAB 2: MANUAL ENTRY ---
+        # --- SUB-TAB 2: MANUAL ENTRY ---
         with rev_tabs[1]:
             st.markdown("#### Individual Revaluation Entry")
-            st.write("Manually override a specific student's SEE mark for revaluation.")
+            st.write("Manually override a specific student's SEE mark for revaluation. The >15 rule applies automatically.")
             
             with st.form("manual_rv_form"):
                 col_m1, col_m2, col_m3 = st.columns(3)
@@ -1368,31 +1446,81 @@ if show_reval:
                 rv_cc = col_m2.text_input("Course Code").strip().upper()
                 rv_mark = col_m3.number_input("New RV Mark (SEE)", min_value=0.0, max_value=100.0, step=1.0)
                 
-                submit_rv = st.form_submit_button("💾 Save Revaluation Mark", type="primary", use_container_width=True)
+                submit_rv = st.form_submit_button("💾 Process Revaluation Mark", type="primary", use_container_width=True)
                 
                 if submit_rv:
                     if not rv_usn or not rv_cc:
                         st.error("⚠️ Please enter both a USN and a Course Code.")
                     else:
-                        with st.spinner(f"Updating {rv_usn}..."):
-                            # Verify the student actually has a record for this cycle and course
-                            check_res = supabase.table("student_results").select("grade").eq("cycle_id", selected_cycle_id).eq("usn", rv_usn).eq("course_code", rv_cc).execute()
-                            
-                            if not check_res.data:
-                                st.error(f"❌ Cannot find an existing exam record for {rv_usn} in {rv_cc} for this cycle.")
-                            else:
-                                # Apply the update
-                                payload = {
-                                    "cycle_id": selected_cycle_id,
-                                    "usn": rv_usn,
-                                    "course_code": rv_cc,
-                                    "see_raw": float(rv_mark),
-                                    "grade": "PND" # 🟢 Resetting to PND forces the grading engine to catch it
-                                }
+                        with st.spinner(f"Evaluating RV rules for {rv_usn}..."):
+                            try:
+                                db_map, true_original_map, crs_map, branch_map, pg_branches = fetch_reval_context()
                                 
-                                try:
-                                    supabase.table("student_results").upsert(payload).execute()
-                                    st.success(f"✅ Revaluation mark ({rv_mark}) saved for {rv_usn} in {rv_cc}!")
-                                    st.info("💡 Next Step: Run the Grading Engine (Tab 3) to recalculate their new grade.")
-                                except Exception as e:
-                                    st.error(f"Database Error: {e}")
+                                if (rv_usn, rv_cc) not in db_map:
+                                    st.error(f"❌ Cannot find an existing exam record for {rv_usn} in {rv_cc} for this cycle.")
+                                else:
+                                    db_row = db_map[(rv_usn, rv_cc)]
+                                    current_db_see = safe_float(db_row.get('see_raw'), 0)
+                                    old_grade = db_row.get('grade')
+                                    
+                                    true_orig_see = true_original_map.get((rv_usn, rv_cc), current_db_see)
+                                    mark_diff = abs(rv_mark - true_orig_see)
+                                    
+                                    payload = {}
+                                    audit_payload = {}
+                                    
+                                    if mark_diff > 15:
+                                        payload = {
+                                            "cycle_id": selected_cycle_id, "usn": rv_usn, "course_code": rv_cc,
+                                            "see_raw": rv_mark, "grade": "FROZEN"
+                                        }
+                                        audit_payload = {
+                                            "cycle_id": selected_cycle_id, "usn": rv_usn, "course_code": rv_cc,
+                                            "change_type": "THIRD VALUATION PENDING",
+                                            "old_see": true_orig_see, "old_grade": old_grade,
+                                            "new_see": rv_mark, "new_grade": "FROZEN",
+                                            "reason": f"RV Diff is {mark_diff} (Orig:{true_orig_see}, RV:{rv_mark}). Escalate to 3rd Val."
+                                        }
+                                        st.warning(f"🚨 Difference is {mark_diff}. Grade is FROZEN pending Third Valuation.")
+                                    else:
+                                        if rv_mark > true_orig_see:
+                                            mc = crs_map.get(rv_cc, {})
+                                            cred, m_cie, m_see, conducted_for = safe_float(mc.get('credits'), 4.0), safe_float(mc.get('max_cie'), 50.0), safe_float(mc.get('max_see'), 50.0), safe_float(mc.get('total_marks'), 100.0)
+                                            is_pg = branch_map.get(rv_usn) in pg_branches
+
+                                            scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(
+                                                db_row['cie_marks'], rv_mark, db_row['exam_status'], cred, m_cie, m_see, conducted_for, is_pg
+                                            )
+
+                                            payload = {
+                                                "cycle_id": selected_cycle_id, "usn": rv_usn, "course_code": rv_cc,
+                                                "see_raw": rv_mark, "see_scaled": scaled_see,
+                                                "total_marks": tot, "grade": grd, "grade_points": gp,
+                                                "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass, "exam_status": healed_status
+                                            }
+                                            audit_payload = {
+                                                "cycle_id": selected_cycle_id, "usn": rv_usn, "course_code": rv_cc,
+                                                "change_type": "REVALUATION - APPLIED",
+                                                "old_see": true_orig_see, "old_grade": old_grade,
+                                                "new_see": rv_mark, "new_grade": grd,
+                                                "reason": f"RV Diff <= 15. Kept Higher RV ({rv_mark})."
+                                            }
+                                            st.success(f"✅ Upgraded! New Grade calculated as: **{grd}**")
+                                        else:
+                                            audit_payload = {
+                                                "cycle_id": selected_cycle_id, "usn": rv_usn, "course_code": rv_cc,
+                                                "change_type": "REVALUATION - IGNORED",
+                                                "old_see": true_orig_see, "old_grade": old_grade,
+                                                "new_see": true_orig_see, "new_grade": old_grade,
+                                                "reason": f"RV Diff <= 15. Kept Higher Orig ({true_orig_see})."
+                                            }
+                                            st.info(f"➖ Ignored. The original mark ({true_orig_see}) was higher than or equal to the RV mark ({rv_mark}).")
+                                            
+                                    # Execute DB writes
+                                    if payload: supabase.table("student_results").upsert(payload).execute()
+                                    if audit_payload: 
+                                        try: supabase.table("marks_audit_log").insert(audit_payload).execute()
+                                        except: pass
+
+                            except Exception as e:
+                                st.error(f"Database Error: {e}")
