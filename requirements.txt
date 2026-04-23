@@ -4,3 +4,4 @@ supabase
 reportlab
 XlsxWriter
 openpyxl
+docxtpl
