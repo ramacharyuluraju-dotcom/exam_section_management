@@ -1357,72 +1357,42 @@ if show_reval:
                         except Exception as e:
                             st.error(f"Processing Error: {e}")
 
-        # --- SUB-TAB 2: MANUAL ENTRY ---
+       # --- SUB-TAB 2: MANUAL ENTRY ---
         with rev_tabs[1]:
             st.markdown("#### Individual Revaluation Entry")
-            try:
-                # Fetch all records from student_results for this cycle
-                rv_res = supabase.table("student_results").select(
-                    "usn, course_code, cie_marks, see_raw, grade"
-                ).eq("cycle_id", selected_cycle_id).execute()
-
-                if rv_res.data:
-                    # Filter to only show students who already have an actual grade (ignore PND/Pending)
-                    rv_flat = [r for r in rv_res.data if pd.notna(r.get('grade')) and r.get('grade') not in ['PND', 'PENDING', 'NE']]
-                    
-                    df_rv = pd.DataFrame(rv_flat)
-
-                    if not df_rv.empty:
-                        # Let COE filter by Course Code to make data entry easy
-                        rv_courses = sorted(df_rv['course_code'].unique())
-                        selected_rv_course = st.selectbox("Select Course for Revaluation Entry", options=rv_courses)
-                        
-                        df_course_rv = df_rv[df_rv['course_code'] == selected_rv_course].copy()
-                        
-                        # Add columns for data entry
-                        df_course_rv["New RV Mark"] = None
-                        df_course_rv["Apply RV?"] = False
-
-                        st.markdown(f"**Students Graded in {selected_rv_course}**")
-                        
-                        # Use the interactive data editor
-                        edited_rv_df = st.data_editor(
-                            df_course_rv[["usn", "cie_marks", "see_raw", "grade", "New RV Mark", "Apply RV?"]],
-                            column_config={
-                                "usn": st.column_config.TextColumn("USN", disabled=True),
-                                "cie_marks": st.column_config.NumberColumn("CIE", disabled=True),
-                                "see_raw": st.column_config.NumberColumn("Original SEE", disabled=True),
-                                "grade": st.column_config.TextColumn("Current Grade", disabled=True),
-                                "New RV Mark": st.column_config.NumberColumn("New RV Mark", min_value=0.0, max_value=100.0),
-                                "Apply RV?": st.column_config.CheckboxColumn("Apply RV?", default=False)
-                            },
-                            hide_index=True,
-                            use_container_width=True
-                        )
-
-                        if st.button("💾 Save Manual Revaluation Marks", type="primary"):
-                            # Filter only rows where the user checked the box and entered a mark
-                            rv_updates = edited_rv_df[(edited_rv_df['Apply RV?'] == True) & (pd.notna(edited_rv_df['New RV Mark']))]
-                            
-                            if not rv_updates.empty:
-                                with st.spinner("Applying Revaluation marks..."):
-                                    payload = []
-                                    for _, row in rv_updates.iterrows():
-                                        payload.append({
-                                            "cycle_id": selected_cycle_id,
-                                            "usn": row['usn'],
-                                            "course_code": selected_rv_course,
-                                            "see_raw": float(row['New RV Mark']),
-                                            "grade": "PND" # 🟢 Resetting to PND forces the grading engine to catch it next time
-                                        })
-                                    
-                                    # Upsert the changes back to Supabase
-                                    supabase.table("student_results").upsert(payload).execute()
-                                    st.success(f"✅ Successfully updated Revaluation marks for {len(payload)} students!")
-                                    st.info("💡 Next Step: Run the Grading Engine to recalculate their new grades.")
-                            else:
-                                st.warning("No students selected for Revaluation update.")
+            st.write("Manually override a specific student's SEE mark for revaluation.")
+            
+            with st.form("manual_rv_form"):
+                col_m1, col_m2, col_m3 = st.columns(3)
+                rv_usn = col_m1.text_input("USN").strip().upper()
+                rv_cc = col_m2.text_input("Course Code").strip().upper()
+                rv_mark = col_m3.number_input("New RV Mark (SEE)", min_value=0.0, max_value=100.0, step=1.0)
+                
+                submit_rv = st.form_submit_button("💾 Save Revaluation Mark", type="primary", use_container_width=True)
+                
+                if submit_rv:
+                    if not rv_usn or not rv_cc:
+                        st.error("⚠️ Please enter both a USN and a Course Code.")
                     else:
-                        st.success("No graded subjects available for revaluation yet.")
-            except Exception as e:
-                st.error(f"Error loading Revaluation engine: {e}")
+                        with st.spinner(f"Updating {rv_usn}..."):
+                            # Verify the student actually has a record for this cycle and course
+                            check_res = supabase.table("student_results").select("grade").eq("cycle_id", selected_cycle_id).eq("usn", rv_usn).eq("course_code", rv_cc).execute()
+                            
+                            if not check_res.data:
+                                st.error(f"❌ Cannot find an existing exam record for {rv_usn} in {rv_cc} for this cycle.")
+                            else:
+                                # Apply the update
+                                payload = {
+                                    "cycle_id": selected_cycle_id,
+                                    "usn": rv_usn,
+                                    "course_code": rv_cc,
+                                    "see_raw": float(rv_mark),
+                                    "grade": "PND" # 🟢 Resetting to PND forces the grading engine to catch it
+                                }
+                                
+                                try:
+                                    supabase.table("student_results").upsert(payload).execute()
+                                    st.success(f"✅ Revaluation mark ({rv_mark}) saved for {rv_usn} in {rv_cc}!")
+                                    st.info("💡 Next Step: Run the Grading Engine (Tab 3) to recalculate their new grade.")
+                                except Exception as e:
+                                    st.error(f"Database Error: {e}")
