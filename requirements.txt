@@ -5,3 +5,5 @@ reportlab
 XlsxWriter
 openpyxl
 docxtpl
+opencv-python-headless
+PyMuPDF
