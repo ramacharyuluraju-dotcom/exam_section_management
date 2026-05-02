@@ -71,7 +71,10 @@ def draw_omr_watermark(c, watermark_stream):
 def draw_omr_titles_and_serial(c, y_start, exam_type):
     c.setFillColor(colors.black)
     c.setFont("Helvetica-Bold", 11)
+    
+    # Dynamic Exam Type
     c.drawCentredString(OMR_PAGE_W / 2, y_start - 5*mm, exam_type.upper())
+    
     c.setFont("Helvetica-Bold", 14)
     omr_title_y = y_start - 11*mm
     c.drawCentredString(OMR_PAGE_W / 2, omr_title_y, "OMR ANSWER SHEET")
@@ -87,6 +90,8 @@ def draw_omr_titles_and_serial(c, y_start, exam_type):
 def draw_omr_details_with_qr(c, y_start, student_name, usn, course_code):
     total_h = 30 * mm
     y_bottom = y_start - total_h
+    
+    # Outer Border and Divider
     c.saveState()
     c.setStrokeColor(colors.red)
     c.setLineWidth(1)
@@ -95,6 +100,7 @@ def draw_omr_details_with_qr(c, y_start, student_name, usn, course_code):
     c.line(mid_x, y_bottom, mid_x, y_start)
     c.restoreState() 
     
+    # Left Side: Printed Details
     c.setFillColor(colors.black)
     c.setFont("Helvetica-Bold", 11)
     text_x = OMR_MARGIN + 5*mm
@@ -102,18 +108,21 @@ def draw_omr_details_with_qr(c, y_start, student_name, usn, course_code):
     c.drawString(text_x, y_start - 16*mm, f"USN:           {usn}")
     c.drawString(text_x, y_start - 24*mm, f"Course Code:   {course_code}")
     
+    # Right Side: QR Code Generation
     qr_data = f"{usn}|{course_code}"
     qr_code = qr.QrCodeWidget(qr_data)
     bounds = qr_code.getBounds()
     width = bounds[2] - bounds[0]
     height = bounds[3] - bounds[1]
     
-    qr_size = 26 * mm
+    # --- TONER SAVER UPDATE: Shrank QR to 17mm (from 26mm) ---
+    qr_size = 17 * mm
     d = Drawing(qr_size, qr_size, transform=[qr_size/width, 0, 0, qr_size/height, 0, 0])
     d.add(qr_code)
     
-    qr_x_pos = mid_x + 9*mm
-    qr_y_pos = y_bottom + 2*mm
+    # Adjusted X/Y positioning to perfectly center the smaller 17mm QR code in the 45mm x 30mm box
+    qr_x_pos = mid_x + 14 * mm
+    qr_y_pos = y_bottom + 6.5 * mm
     renderPDF.draw(d, c, qr_x_pos, qr_y_pos)
     
     return y_bottom - 4*mm 
@@ -166,8 +175,11 @@ def draw_omr_signatures_and_version(c, y_start):
     total_bubble_w = 3 * spacing 
     start_x = (OMR_PAGE_W - total_bubble_w) / 2
     
+    # --- TONER SAVER UPDATE: Shrank Version Anchor to 3.5mm ---
     c.setFillColor(colors.black)
-    c.rect(start_x - 12*mm, bubble_y - 2*mm, 4*mm, 4*mm, fill=1, stroke=0)
+    c.rect(start_x - 12*mm, bubble_y - 1.75*mm, 3.5*mm, 3.5*mm, fill=1, stroke=0)
+    
+    # Draw Bubbles
     c.setStrokeColor(colors.red)
     for i, opt in enumerate(['A', 'B', 'C', 'D']):
         bx = start_x + (i*spacing)
@@ -196,15 +208,19 @@ def draw_omr_answer_box(c, y_start):
         else: x_base = col3_x; row = q - 35
         
         y_pos = start_y - (row * row_h)
+        
+        # --- TONER SAVER UPDATE: Shrank Question Anchors to 3.5mm ---
         c.saveState()
         c.setFillColor(colors.black)
-        c.rect(x_base - 6*mm, y_pos - 1*mm, 4*mm, 4*mm, fill=1, stroke=0)
+        c.rect(x_base - 6*mm, y_pos - 0.75*mm, 3.5*mm, 3.5*mm, fill=1, stroke=0)
         c.restoreState()
         
+        # Question Number
         c.setFillColor(colors.black)
         c.setFont("Helvetica-Bold", 9)
         c.drawRightString(x_base + 4*mm, y_pos, f"{q}.")
         
+        # The Bubbles
         spacing = 8.5*mm; b_start = x_base + 8*mm
         for i, opt in enumerate(['A', 'B', 'C', 'D']):
             bx = b_start + (i*spacing); by = y_pos + 1.5*mm
@@ -212,6 +228,7 @@ def draw_omr_answer_box(c, y_start):
             c.setStrokeColor(colors.red)
             c.circle(bx, by, 3.2*mm)
             c.restoreState()
+            
             c.setFillColor(colors.black)
             c.setFont("Helvetica", 6.5)
             c.drawCentredString(bx, by - 1*mm, opt)
@@ -242,6 +259,9 @@ def generate_batch_omr_pdf(college, left_logo, right_logo, watermark, students_d
     buffer.seek(0)
     return buffer
 
+# ==========================================
+#        LOGIC FOR CAED & DIARY 
+# ==========================================
 def generate_caed_pdf(college, left_logo, right_logo):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=landscape(A4))
@@ -303,7 +323,7 @@ def generate_diary_pdf(college, left_logo, right_logo):
 #              STREAMLIT UI
 # ==========================================
 st.title("📄 AMC Exam Sheet Generator")
-st.markdown("Generates: **OMR**, **CAED**, and **Relieving Diary**.")
+st.markdown("Generates: **OMR (Toner Saver Mode)**, **CAED**, and **Relieving Diary**.")
 
 with st.sidebar:
     st.header("Select Format")
