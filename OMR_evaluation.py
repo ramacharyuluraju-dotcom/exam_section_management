@@ -196,19 +196,29 @@ def evaluate_image(image, multi_master_key, fill_percentage):
             ans = "Blank"
             if (fill_percentage - max_fill) < 0.08: is_confident = False
                 
-        # DATA HARVESTING LOGIC
-        if not is_confident or ans in ["Multiple", "Blank"]:
-            y1 = max(0, int(ay - radius_px * 2.5))
-            y2 = min(gray.shape[0], int(ay + radius_px * 2.5))
-            x1 = max(0, int(ax - radius_px * 2))
-            x2 = min(gray.shape[1], int(b_start_x + (len(options_list) * spacing_px) + radius_px))
-            
-            crop_img = image[y1:y2, x1:x2] 
-            if crop_img.size > 0:
-                filename = os.path.join(DATASET_DIR, f"{usn}_{q_id}_guess_{ans}.jpg")
-                cv2.imwrite(filename, crop_img)
-
-        return ans, is_confident
+        # ==========================================
+            # ML HARVESTING DOWNLOADER (CLOUD FIX)
+            # ==========================================
+            if os.path.exists(DATASET_DIR) and len(os.listdir(DATASET_DIR)) > 0:
+                st.divider()
+                st.markdown("### 📦 Harvested ML Training Data")
+                file_count = len(os.listdir(DATASET_DIR))
+                st.info(f"The system has collected **{file_count}** image crops from this batch for ML training.")
+                
+                # Zip the files in memory
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for fname in os.listdir(DATASET_DIR):
+                        fpath = os.path.join(DATASET_DIR, fname)
+                        zf.write(fpath, arcname=fname)
+                        
+                st.download_button(
+                    label="📥 Download Harvested Images (ZIP)",
+                    data=zip_buffer.getvalue(),
+                    file_name="harvested_omr_data.zip",
+                    mime="application/zip",
+                    type="primary"
+                )
 
     # ================== EVALUATE VERSION ==================
     detected_version = "N/A"
