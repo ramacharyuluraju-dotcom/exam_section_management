@@ -4,15 +4,21 @@ import numpy as np
 import pandas as pd
 import fitz  # PyMuPDF
 import io
+import os
+
+# Automatically create the dataset folder if it doesn't exist for ML Harvesting
+DATASET_DIR = "omr_training_data/needs_review"
+os.makedirs(DATASET_DIR, exist_ok=True)
 
 st.title("🎯 AMC OMR Sheet Evaluator")
-st.markdown("Powered by **Strict ROI Isolation & Automated Confidence Scoring**.")
+st.markdown("Powered by **Strict ROI Isolation & Automated Data Harvesting**.")
 
 # ==========================================
 #        COMPUTER VISION LOGIC
 # ==========================================
 
 def find_and_map_anchors(image):
+    """Finds the ROI and anchors"""
     img_h, img_w = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -116,17 +122,19 @@ def find_and_map_anchors(image):
     return question_map, roi_rect, thresh, gray, avg_w, version_anchor
 
 def evaluate_image(image, multi_master_key, fill_percentage):
+    """Evaluates the sheet and harvests data for Machine Learning."""
     res = find_and_map_anchors(image)
     if res[0] is None:
         roi_rect = res[1] if res is not None else None
         debug_img = image.copy()
         if roi_rect is not None:
             rx, ry, rw, rh = roi_rect
-            cv2.rectangle(debug_img, (rx, ry), (rx+rw, ry+rh), (255, 0, 0), 4) 
+            cv2.rectangle(debug_img, (rx, ry), (rx+rw, ry+rh), (0, 255, 255), 4) # Yellow Box for ROI
         return {"USN": "Error", "Course": "Error", "Version": "N/A", "Score": 0, "Confidence": "0%", "Needs Moderation": "YES", "Status": "Failed to find 50 anchors."}, debug_img
 
     question_map, roi_rect, thresh, gray, anchor_width_px, version_anchor = res
 
+    # ================== QR CODE DECODE ==================
     qr_detector = cv2.QRCodeDetector()
     qr_data, bbox, _ = qr_detector.detectAndDecode(gray)
     if not qr_data:
@@ -140,13 +148,15 @@ def evaluate_image(image, multi_master_key, fill_percentage):
     debug_img = image.copy()
     if roi_rect:
         rx, ry, rw, rh = roi_rect
-        cv2.rectangle(debug_img, (rx, ry), (rx+rw, ry+rh), (255, 0, 0), 4)
+        cv2.rectangle(debug_img, (rx, ry), (rx+rw, ry+rh), (0, 255, 255), 4) # Yellow Box for ROI
     
-    def grade_row(ax, ay, offset_mm, spacing_mm, radius_mm, options_list, is_version=False, local_ruler=1.0):
+    # ================== HARVESTING GRADING FUNCTION ==================
+    def grade_row(ax, ay, offset_mm, spacing_mm, radius_mm, options_list, is_version=False, local_ruler=1.0, q_id="Unknown"):
         offset_px = offset_mm * local_ruler
         spacing_px = spacing_mm * local_ruler
         radius_px = int(radius_mm * local_ruler)
         
+        # Color coding: Purple (255,0,255) for Version Anchor, Green (0,255,0) for Question Anchors (BGR format)
         box_color = (255, 0, 255) if is_version else (0, 255, 0)
         cv2.rectangle(debug_img, (int(ax)-15, int(ay)-15), (int(ax)+15, int(ay)+15), box_color, 2)
         
@@ -157,7 +167,9 @@ def evaluate_image(image, multi_master_key, fill_percentage):
         for i in range(len(options_list)):
             cx = int(b_start_x + (i * spacing_px))
             cy = int(ay)
-            cv2.circle(debug_img, (cx, cy), radius_px, (0, 0, 255), 2)
+            
+            # Draw tracking rings in Blue (255,0,0) in BGR format
+            cv2.circle(debug_img, (cx, cy), radius_px, (255, 0, 0), 2)
             
             mask = np.zeros(thresh.shape, dtype="uint8")
             cv2.circle(mask, (cx, cy), radius_px, 255, -1)
@@ -178,28 +190,40 @@ def evaluate_image(image, multi_master_key, fill_percentage):
                 is_confident = False 
             else:
                 ans = options_list[max_idx]
-                if (max_fill - sec_fill) < 0.12:
-                    is_confident = False
-                if (max_fill - fill_percentage) < 0.08:
-                    is_confident = False
+                if (max_fill - sec_fill) < 0.12: is_confident = False
+                if (max_fill - fill_percentage) < 0.08: is_confident = False
         else:
             ans = "Blank"
-            if (fill_percentage - max_fill) < 0.08:
-                is_confident = False
+            if (fill_percentage - max_fill) < 0.08: is_confident = False
                 
+        # DATA HARVESTING LOGIC
+        if not is_confident or ans in ["Multiple", "Blank"]:
+            y1 = max(0, int(ay - radius_px * 2.5))
+            y2 = min(gray.shape[0], int(ay + radius_px * 2.5))
+            x1 = max(0, int(ax - radius_px * 2))
+            x2 = min(gray.shape[1], int(b_start_x + (len(options_list) * spacing_px) + radius_px))
+            
+            crop_img = image[y1:y2, x1:x2] 
+            if crop_img.size > 0:
+                filename = os.path.join(DATASET_DIR, f"{usn}_{q_id}_guess_{ans}.jpg")
+                cv2.imwrite(filename, crop_img)
+
         return ans, is_confident
 
+    # ================== EVALUATE VERSION ==================
     detected_version = "N/A"
     flags_count = 0
     needs_moderation = "NO"
     
     if version_anchor is not None:
-        version_ruler = version_anchor[2] / 4.0
-        detected_version, v_conf = grade_row(version_anchor[0], version_anchor[1], 10.0, 15.0, 3.5, ['A', 'B', 'C', 'D'], is_version=True, local_ruler=version_ruler)
+        # Scale mapped for 3.5mm anchor and shifted 10.25 offset
+        version_ruler = version_anchor[2] / 3.5
+        detected_version, v_conf = grade_row(version_anchor[0], version_anchor[1], 10.25, 15.0, 3.5, ['A', 'B', 'C', 'D'], is_version=True, local_ruler=version_ruler, q_id="Version")
         if not v_conf or detected_version in ["Multiple", "Blank"]:
             flags_count += 1
             needs_moderation = "YES"
 
+    # ================== MULTI-VERSION ROUTING ==================
     actual_score = 0
     final_status = "Evaluated Successfully"
     
@@ -209,9 +233,11 @@ def evaluate_image(image, multi_master_key, fill_percentage):
         active_key = multi_master_key.get('A', {})
         final_status = "Warning: Version Code Invalid."
 
+    # ================== EVALUATE QUESTIONS ==================
     for q_num, (ax, ay, aw) in question_map.items():
-        row_ruler = aw / 4.0
-        ans, q_conf = grade_row(ax, ay, 12.0, 8.5, 3.2, ['A', 'B', 'C', 'D'], local_ruler=row_ruler)
+        # Scale mapped for 3.5mm anchor and shifted 12.25 offset
+        row_ruler = aw / 3.5
+        ans, q_conf = grade_row(ax, ay, 12.25, 8.5, 3.2, ['A', 'B', 'C', 'D'], local_ruler=row_ruler, q_id=f"Q{q_num}")
         
         if not q_conf or ans in ["Multiple", "Blank"]:
             flags_count += 1
@@ -322,12 +348,14 @@ with tab1:
 
                 st.markdown("---")
                 st.markdown("### How to read the map:")
-                st.markdown("🟦 **Blue Box:** The strictly isolated ROI for answers.")
+                st.markdown("🟨 **Yellow Box:** The strictly isolated ROI for answers.")
                 st.markdown("🟪 **Purple Box:** The decoupled Version Code anchor.")
-                st.markdown("🟩 **Green Boxes:** The 50 main questions.")
+                st.markdown("🟩 **Green Boxes:** The 50 main question anchors.")
+                st.markdown("🟦 **Blue Rings:** The evaluator's eyes tracking the bubbles.")
             with col2:
                 st.image(cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB), caption="Anchor Targeting Map", use_container_width=True)
                 
+            # Restored Download Button
             is_success, buffer = cv2.imencode(".png", debug_img)
             if is_success:
                 st.download_button("📥 Download High-Res Map", buffer.tobytes(), "Anchor_Map_Debug.png", "image/png")
@@ -376,7 +404,7 @@ with tab2:
                     my_bar.progress(processed / total_pages, text=f"Processed {file.name}")
                 
             my_bar.empty() 
-            st.success(f"Successfully processed {processed} total sheets!")
+            st.success(f"Successfully processed {processed} total sheets! Look in the 'omr_training_data/needs_review' folder on your PC to see harvested crops.")
             
             results_df = pd.DataFrame(results_list)[["USN", "Course", "Version", "Score", "Confidence", "Needs Moderation", "Status", "File Name"]]
             
