@@ -5,6 +5,7 @@ import pandas as pd
 import fitz  # PyMuPDF
 import io
 import os
+import zipfile
 
 # Automatically create the dataset folder if it doesn't exist for ML Harvesting
 DATASET_DIR = "omr_training_data/needs_review"
@@ -196,29 +197,19 @@ def evaluate_image(image, multi_master_key, fill_percentage):
             ans = "Blank"
             if (fill_percentage - max_fill) < 0.08: is_confident = False
                 
-        # ==========================================
-            # ML HARVESTING DOWNLOADER (CLOUD FIX)
-            # ==========================================
-            if os.path.exists(DATASET_DIR) and len(os.listdir(DATASET_DIR)) > 0:
-                st.divider()
-                st.markdown("### 📦 Harvested ML Training Data")
-                file_count = len(os.listdir(DATASET_DIR))
-                st.info(f"The system has collected **{file_count}** image crops from this batch for ML training.")
-                
-                # Zip the files in memory
-                zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for fname in os.listdir(DATASET_DIR):
-                        fpath = os.path.join(DATASET_DIR, fname)
-                        zf.write(fpath, arcname=fname)
-                        
-                st.download_button(
-                    label="📥 Download Harvested Images (ZIP)",
-                    data=zip_buffer.getvalue(),
-                    file_name="harvested_omr_data.zip",
-                    mime="application/zip",
-                    type="primary"
-                )
+        # DATA HARVESTING LOGIC
+        if not is_confident or ans in ["Multiple", "Blank"]:
+            y1 = max(0, int(ay - radius_px * 2.5))
+            y2 = min(gray.shape[0], int(ay + radius_px * 2.5))
+            x1 = max(0, int(ax - radius_px * 2))
+            x2 = min(gray.shape[1], int(b_start_x + (len(options_list) * spacing_px) + radius_px))
+            
+            crop_img = image[y1:y2, x1:x2] 
+            if crop_img.size > 0:
+                filename = os.path.join(DATASET_DIR, f"{usn}_{q_id}_guess_{ans}.jpg")
+                cv2.imwrite(filename, crop_img)
+
+        return ans, is_confident
 
     # ================== EVALUATE VERSION ==================
     detected_version = "N/A"
@@ -227,7 +218,7 @@ def evaluate_image(image, multi_master_key, fill_percentage):
     
     if version_anchor is not None:
         # Scale mapped for 3.5mm anchor and shifted 10.25 offset
-        version_ruler = version_anchor[2] / 3.5
+        version_ruler = float(version_anchor[2] / 3.5)
         detected_version, v_conf = grade_row(version_anchor[0], version_anchor[1], 10.25, 15.0, 3.5, ['A', 'B', 'C', 'D'], is_version=True, local_ruler=version_ruler, q_id="Version")
         if not v_conf or detected_version in ["Multiple", "Blank"]:
             flags_count += 1
@@ -246,7 +237,7 @@ def evaluate_image(image, multi_master_key, fill_percentage):
     # ================== EVALUATE QUESTIONS ==================
     for q_num, (ax, ay, aw) in question_map.items():
         # Scale mapped for 3.5mm anchor and shifted 12.25 offset
-        row_ruler = aw / 3.5
+        row_ruler = float(aw / 3.5)
         ans, q_conf = grade_row(ax, ay, 12.25, 8.5, 3.2, ['A', 'B', 'C', 'D'], local_ruler=row_ruler, q_id=f"Q{q_num}")
         
         if not q_conf or ans in ["Multiple", "Blank"]:
@@ -365,7 +356,6 @@ with tab1:
             with col2:
                 st.image(cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB), caption="Anchor Targeting Map", use_container_width=True)
                 
-            # Restored Download Button
             is_success, buffer = cv2.imencode(".png", debug_img)
             if is_success:
                 st.download_button("📥 Download High-Res Map", buffer.tobytes(), "Anchor_Map_Debug.png", "image/png")
@@ -426,3 +416,27 @@ with tab2:
             
             csv = results_df.to_csv(index=False).encode('utf-8')
             st.download_button("Download Final Report (CSV)", csv, "AMC_Evaluation_Report.csv", "text/csv")
+            
+            # ==========================================
+            # ML HARVESTING DOWNLOADER (CLOUD FIX)
+            # ==========================================
+            if os.path.exists(DATASET_DIR) and len(os.listdir(DATASET_DIR)) > 0:
+                st.divider()
+                st.markdown("### 📦 Harvested ML Training Data")
+                file_count = len(os.listdir(DATASET_DIR))
+                st.info(f"The system has collected **{file_count}** image crops from this batch for ML training.")
+                
+                # Zip the files in memory
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for fname in os.listdir(DATASET_DIR):
+                        fpath = os.path.join(DATASET_DIR, fname)
+                        zf.write(fpath, arcname=fname)
+                        
+                st.download_button(
+                    label="📥 Download Harvested Images (ZIP)",
+                    data=zip_buffer.getvalue(),
+                    file_name="harvested_omr_data.zip",
+                    mime="application/zip",
+                    type="primary"
+                )
