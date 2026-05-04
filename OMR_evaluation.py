@@ -6,14 +6,17 @@ import fitz  # PyMuPDF
 import io
 
 st.title("🎯 AMC OMR Sheet Evaluator")
-st.markdown("Powered by **Strict ROI Isolation & Confidence Scoring**.")
+st.markdown("Powered by **Global Anchor Hunting & Dropout Grey Optimization**.")
 
 # ==========================================
 #        COMPUTER VISION LOGIC
 # ==========================================
 
 def find_and_map_anchors(image):
-    """Finds the ROI and anchors"""
+    """
+    Since the borders are grey, we just scan the whole page 
+    for exactly 51 solid black squares. The highest one is the version code.
+    """
     img_h, img_w = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -21,54 +24,51 @@ def find_and_map_anchors(image):
     thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
     cnts, _ = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     
-    roi_rect = None
-    max_area = 0
-    
-    for c in cnts:
-        x, y, w, h = cv2.boundingRect(c)
-        area = w * h
-        if w > (img_w * 0.5) and h > (img_h * 0.3):
-            if y > (img_h * 0.15):
-                if area > max_area:
-                    max_area = area
-                    roi_rect = (x, y, w, h)
-                    
-    if roi_rect is None:
-        roi_rect = (int(img_w*0.05), int(img_h*0.35), int(img_w*0.9), int(img_h*0.6))
-        
-    rx, ry, rw, rh = roi_rect
-    
     candidates = []
+    
+    # 1. Find all square-ish, solid things on the page
     for c in cnts:
         x, y, w, h = cv2.boundingRect(c)
         area = cv2.contourArea(c)
-        cx, cy = x + w//2, y + h//2
+        if w == 0 or h == 0: continue
+            
+        aspect_ratio = w / float(h)
+        extent = area / (w * h)
         
-        if rx < cx < (rx + rw) and ry < cy < (ry + rh):
-            if w > 0 and h > 0:
-                aspect_ratio = w / float(h)
-                extent = area / (w * h)
-                if 30 < area < 8000 and 0.6 <= aspect_ratio <= 1.4 and extent > 0.82:
-                    candidates.append({"pt": (cx, cy, np.sqrt(area)), "area": area})
-                    
-    if len(candidates) < 50:
-        return None, roi_rect, thresh, gray, 0, None
+        # Look for solid black blocks. Wide area range to account for different scanner distances.
+        if 150 < area < 4000 and 0.7 <= aspect_ratio <= 1.3 and extent > 0.75:
+            cx, cy = x + w//2, y + h//2
+            candidates.append({"pt": (cx, cy, np.sqrt(area)), "area": area, "x": cx, "y": cy})
+            
+    if len(candidates) < 51:
+        return None, None, thresh, gray, 0, None
         
+    # 2. Filter out noise (like QR code modules) by finding the median size of our squares
     median_area = np.median([c["area"] for c in candidates])
     valid_candidates = [c for c in candidates if 0.5 * median_area < c["area"] < 1.5 * median_area]
+    
+    # Sort by how perfectly they match the median size, and grab the best 51
     valid_candidates.sort(key=lambda c: abs(c["area"] - median_area))
-    valid_candidates = valid_candidates[:50]
     
-    fiducials = [c["pt"] for c in valid_candidates]
-    
-    if len(fiducials) != 50:
-         return None, roi_rect, thresh, gray, 0, None
+    if len(valid_candidates) < 51:
+         return None, None, thresh, gray, 0, None
          
-    fiducials.sort(key=lambda p: p[0]) 
+    top_51 = valid_candidates[:51]
+    
+    # 3. ISOLATE THE VERSION ANCHOR (It is always the highest one on the page / lowest Y coordinate)
+    top_51.sort(key=lambda c: c["y"])
+    version_anchor_data = top_51.pop(0)
+    version_anchor = version_anchor_data["pt"]
+    
+    # 4. PROCESS THE 50 QUESTION ANCHORS
+    fiducials = [c["pt"] for c in top_51]
+    fiducials.sort(key=lambda p: p[0]) # Sort horizontally to build columns
+    
     columns = []
     current_col = [fiducials[0]]
     
     for f in fiducials[1:]:
+        # If the next square is within 4 widths horizontally, it belongs to the same column
         if abs(f[0] - current_col[-1][0]) < (f[2] * 4):
             current_col.append(f)
         else:
@@ -77,14 +77,14 @@ def find_and_map_anchors(image):
     columns.append(current_col)
     
     if len(columns) != 3:
-        return None, roi_rect, thresh, gray, 0, None
+        return None, None, thresh, gray, 0, None
         
     question_map = {}
     q_num = 1
     avg_w_list = []
     
     for col in columns:
-        col.sort(key=lambda p: p[1]) 
+        col.sort(key=lambda p: p[1]) # Sort vertically within the column
         for f in col:
             avg_w_list.append(f[2])
             if q_num <= 50:
@@ -93,26 +93,13 @@ def find_and_map_anchors(image):
                 
     avg_w = np.mean(avg_w_list)
 
-    version_anchor = None
-    version_candidates = []
-    
-    for c in cnts:
-        x, y, w, h = cv2.boundingRect(c)
-        area = cv2.contourArea(c)
-        cx, cy = x + w//2, y + h//2
-        
-        if cy < ry:
-            if w > 0 and h > 0:
-                aspect_ratio = w / float(h)
-                extent = area / (w * h)
-                
-                if 0.5 * median_area < area < 1.5 * median_area:
-                    if 0.6 <= aspect_ratio <= 1.4 and extent > 0.82:
-                        version_candidates.append({"pt": (cx, cy, np.sqrt(area)), "dist_from_center": abs(cx - img_w/2)})
-                        
-    if version_candidates:
-        version_candidates.sort(key=lambda c: c["dist_from_center"])
-        version_anchor = version_candidates[0]["pt"]
+    # 5. Build a "Fake" Yellow ROI Box just so the debug image looks pretty
+    min_x = min([f[0] for f in fiducials])
+    max_x = max([f[0] for f in fiducials])
+    min_y = min([f[1] for f in fiducials])
+    max_y = max([f[1] for f in fiducials])
+    # Give it a nice 30px padding
+    roi_rect = (int(min_x - 30), int(min_y - 30), int(max_x - min_x + int(avg_w * 35)), int(max_y - min_y + 60))
 
     return question_map, roi_rect, thresh, gray, avg_w, version_anchor
 
@@ -124,8 +111,8 @@ def evaluate_image(image, multi_master_key, fill_percentage):
         debug_img = image.copy()
         if roi_rect is not None:
             rx, ry, rw, rh = roi_rect
-            cv2.rectangle(debug_img, (rx, ry), (rx+rw, ry+rh), (0, 255, 255), 4) # Yellow Box for ROI
-        return {"USN": "Error", "Course": "Error", "Version": "N/A", "Score": 0, "Confidence": "0%", "Needs Moderation": "YES", "Status": "Failed to find 50 anchors."}, debug_img
+            cv2.rectangle(debug_img, (rx, ry), (rx+rw, ry+rh), (0, 255, 255), 4) 
+        return {"USN": "Error", "Course": "Error", "Version": "N/A", "Score": 0, "Confidence": "0%", "Needs Moderation": "YES", "Status": "Failed to find 51 anchors."}, debug_img
 
     question_map, roi_rect, thresh, gray, anchor_width_px, version_anchor = res
 
@@ -146,12 +133,11 @@ def evaluate_image(image, multi_master_key, fill_percentage):
         cv2.rectangle(debug_img, (rx, ry), (rx+rw, ry+rh), (0, 255, 255), 4) # Yellow Box for ROI
     
     # ================== GRADING FUNCTION ==================
-    def grade_row(ax, ay, offset_mm, spacing_mm, radius_mm, options_list, is_version=False, local_ruler=1.0):
+    def grade_row(ax, ay, offset_mm, spacing_mm, radius_mm, options_list, is_version=False, local_ruler=1.0, q_id="Unknown"):
         offset_px = offset_mm * local_ruler
         spacing_px = spacing_mm * local_ruler
         radius_px = int(radius_mm * local_ruler)
         
-        # Color coding: Purple (255,0,255) for Version Anchor, Green (0,255,0) for Question Anchors (BGR format)
         box_color = (255, 0, 255) if is_version else (0, 255, 0)
         cv2.rectangle(debug_img, (int(ax)-15, int(ay)-15), (int(ax)+15, int(ay)+15), box_color, 2)
         
@@ -163,7 +149,6 @@ def evaluate_image(image, multi_master_key, fill_percentage):
             cx = int(b_start_x + (i * spacing_px))
             cy = int(ay)
             
-            # Draw tracking rings in Blue (255,0,0) in BGR format
             cv2.circle(debug_img, (cx, cy), radius_px, (255, 0, 0), 2)
             
             mask = np.zeros(thresh.shape, dtype="uint8")
@@ -199,9 +184,8 @@ def evaluate_image(image, multi_master_key, fill_percentage):
     needs_moderation = "NO"
     
     if version_anchor is not None:
-        # Scale mapped for 3.5mm anchor and shifted 10.25 offset
         version_ruler = float(version_anchor[2] / 3.5)
-        detected_version, v_conf = grade_row(version_anchor[0], version_anchor[1], 10.25, 15.0, 3.5, ['A', 'B', 'C', 'D'], is_version=True, local_ruler=version_ruler)
+        detected_version, v_conf = grade_row(version_anchor[0], version_anchor[1], 10.25, 15.0, 3.5, ['A', 'B', 'C', 'D'], is_version=True, local_ruler=version_ruler, q_id="Version")
         if not v_conf or detected_version in ["Multiple", "Blank"]:
             flags_count += 1
             needs_moderation = "YES"
@@ -218,9 +202,8 @@ def evaluate_image(image, multi_master_key, fill_percentage):
 
     # ================== EVALUATE QUESTIONS ==================
     for q_num, (ax, ay, aw) in question_map.items():
-        # Scale mapped for 3.5mm anchor and shifted 12.25 offset
         row_ruler = float(aw / 3.5)
-        ans, q_conf = grade_row(ax, ay, 12.25, 8.5, 3.2, ['A', 'B', 'C', 'D'], local_ruler=row_ruler)
+        ans, q_conf = grade_row(ax, ay, 12.25, 8.5, 3.2, ['A', 'B', 'C', 'D'], local_ruler=row_ruler, q_id=f"Q{q_num}")
         
         if not q_conf or ans in ["Multiple", "Blank"]:
             flags_count += 1
@@ -331,8 +314,8 @@ with tab1:
 
                 st.markdown("---")
                 st.markdown("### How to read the map:")
-                st.markdown("🟨 **Yellow Box:** The strictly isolated ROI for answers.")
-                st.markdown("🟪 **Purple Box:** The decoupled Version Code anchor.")
+                st.markdown("🟨 **Yellow Box:** The dynamically built ROI.")
+                st.markdown("🟪 **Purple Box:** The highest anchor (Version Code).")
                 st.markdown("🟩 **Green Boxes:** The 50 main question anchors.")
                 st.markdown("🟦 **Blue Rings:** The evaluator's eyes tracking the bubbles.")
             with col2:
