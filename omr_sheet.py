@@ -10,16 +10,11 @@ from reportlab.graphics.shapes import Drawing
 from reportlab.graphics import renderPDF
 import io
 
-# ==========================================
-#        TONER SAVER & CV OPTIMIZATIONS
-# ==========================================
-# This specific grey will be printed cheaply but will be 
-# completely erased ("dropped out") by the OpenCV scanner.
 DROPOUT_GREY = colors.Color(0.6, 0.6, 0.6)
 
-# ==========================================
-#        SHARED HEADER FUNCTIONS
-# ==========================================
+OMR_PAGE_W, OMR_PAGE_H = A4
+OMR_MARGIN = 10 * mm
+OMR_CONTENT_W = OMR_PAGE_W - (2 * OMR_MARGIN)
 
 def draw_official_header(c, width, y_top, left_logo, right_logo, college_name, is_caed=False, compact=False):
     c.saveState()
@@ -53,15 +48,7 @@ def draw_official_header(c, width, y_top, left_logo, right_logo, college_name, i
     c.setFont("Helvetica-Bold", font_sub)
     c.drawCentredString(center_x, y_top - (3*spacing), "Approved by AICTE, New Delhi | NAAC A+ Accredited")
     c.restoreState()
-    return y_top - (3*spacing) - 5*mm
-
-# ==========================================
-#        LOGIC FOR BATCH OMR SHEET
-# ==========================================
-
-OMR_PAGE_W, OMR_PAGE_H = A4
-OMR_MARGIN = 10 * mm
-OMR_CONTENT_W = OMR_PAGE_W - (2 * OMR_MARGIN)
+    return y_top - (3*spacing) - 2*mm
 
 def draw_omr_watermark(c, watermark_stream):
     if watermark_stream:
@@ -78,181 +65,189 @@ def draw_omr_watermark(c, watermark_stream):
 def draw_omr_titles_and_serial(c, y_start, exam_type):
     c.setFillColor(colors.black)
     c.setFont("Helvetica-Bold", 11)
-    
-    c.drawCentredString(OMR_PAGE_W / 2, y_start - 5*mm, exam_type.upper())
+    c.drawCentredString(OMR_PAGE_W / 2, y_start - 3*mm, exam_type.upper())
     
     c.setFont("Helvetica-Bold", 14)
-    omr_title_y = y_start - 11*mm
+    omr_title_y = y_start - 9*mm
     c.drawCentredString(OMR_PAGE_W / 2, omr_title_y, "OMR ANSWER SHEET")
     
-    # Border converted to Dropout Grey
     c.saveState(); c.setStrokeColor(DROPOUT_GREY)
-    box_w = 35 * mm; box_h = 7 * mm
-    box_x = OMR_PAGE_W - OMR_MARGIN - box_w; box_y = omr_title_y - 2*mm 
+    box_w = 35 * mm; box_h = 6 * mm
+    box_x = OMR_PAGE_W - OMR_MARGIN - box_w; box_y = omr_title_y - 1.5*mm 
     c.rect(box_x, box_y, box_w, box_h)
     
-    # Text stays black for human readability
     c.setFillColor(colors.black); c.setFont("Helvetica-Bold", 9)
-    c.drawString(box_x - 16*mm, box_y + 2*mm, "Serial No:"); c.restoreState()
-    return y_start - 16*mm
+    c.drawString(box_x - 16*mm, box_y + 1.5*mm, "Serial No:"); c.restoreState()
+    return y_start - 11*mm
 
 def draw_omr_details_with_qr(c, y_start, student_name, usn, course_code):
-    total_h = 30 * mm
+    total_h = 22 * mm
     y_bottom = y_start - total_h
     
-    # Outer Border and Divider converted to Dropout Grey
-    c.saveState()
-    c.setStrokeColor(DROPOUT_GREY)
-    c.setLineWidth(1)
+    c.saveState(); c.setStrokeColor(DROPOUT_GREY); c.setLineWidth(1)
     c.rect(OMR_MARGIN, y_bottom, OMR_CONTENT_W, total_h)
     mid_x = OMR_PAGE_W - OMR_MARGIN - 45*mm 
     c.line(mid_x, y_bottom, mid_x, y_start)
     c.restoreState() 
     
-    # Printed Details stay black for human readability
-    c.setFillColor(colors.black)
-    c.setFont("Helvetica-Bold", 11)
+    c.setFillColor(colors.black); c.setFont("Helvetica-Bold", 11)
     text_x = OMR_MARGIN + 5*mm
-    c.drawString(text_x, y_start - 8*mm, f"Student Name:  {student_name}")
-    c.drawString(text_x, y_start - 16*mm, f"USN:           {usn}")
-    c.drawString(text_x, y_start - 24*mm, f"Course Code:   {course_code}")
+    c.drawString(text_x, y_start - 7*mm, f"Student Name:  {student_name}")
+    c.drawString(text_x, y_start - 13.5*mm, f"USN:           {usn}")
+    c.drawString(text_x, y_start - 20*mm, f"Course Code:   {course_code}")
     
-    # QR Code MUST stay Black
     qr_data = f"{usn}|{course_code}"
     qr_code = qr.QrCodeWidget(qr_data)
     bounds = qr_code.getBounds()
     width = bounds[2] - bounds[0]
     height = bounds[3] - bounds[1]
     
-    # Toner Saver QR (17mm)
-    qr_size = 17 * mm
+    qr_size = 16 * mm
     d = Drawing(qr_size, qr_size, transform=[qr_size/width, 0, 0, qr_size/height, 0, 0])
     d.add(qr_code)
-    
-    qr_x_pos = mid_x + 14 * mm
-    qr_y_pos = y_bottom + 6.5 * mm
-    renderPDF.draw(d, c, qr_x_pos, qr_y_pos)
-    
-    return y_bottom - 4*mm 
+    renderPDF.draw(d, c, mid_x + 14.5*mm, y_bottom + 3*mm)
+    return y_bottom - 2*mm 
 
 def draw_omr_instructions_compact(c, y_start):
-    box_h = 28 * mm 
+    box_h = 12 * mm 
     y_bottom = y_start - box_h
     
-    # Box converted to Dropout Grey
     c.saveState(); c.setStrokeColor(DROPOUT_GREY); c.rect(OMR_MARGIN, y_bottom, OMR_CONTENT_W, box_h); c.restoreState()
     
-    # Text stays black for human readability
     c.setFillColor(colors.black); c.setFont("Helvetica-Bold", 9)
-    c.drawString(OMR_MARGIN + 3*mm, y_start - 5*mm, "INSTRUCTIONS TO STUDENTS")
-    c.setFont("Helvetica", 8)
-    lines = ["1. No extra marking on OMR sheet.", "2. Use Black Ball Point Pen ONLY.", 
-             "3. Darken the circle completely.", "4. Do not make stray marks.", "5. Multiple markings are invalid."]
-    curr_y = y_start - 9*mm
-    for line in lines: c.drawString(OMR_MARGIN + 3*mm, curr_y, line); curr_y -= 3.5*mm
+    c.drawString(OMR_MARGIN + 3*mm, y_start - 4*mm, "INSTRUCTIONS TO STUDENTS")
+    c.setFont("Helvetica", 7.5)
     
-    # Instruction diagrams converted to Dropout Grey
-    mid_right_x = OMR_PAGE_W/2 + 5*mm; labels_y = y_start - 5*mm
-    c.setFont("Helvetica-Bold", 7); c.drawString(mid_right_x, labels_y, "CORRECT METHOD:")
-    c.saveState(); c.setFillColor(DROPOUT_GREY); c.circle(mid_right_x + 35*mm, labels_y + 1.5*mm, 3*mm, fill=1, stroke=0); c.restoreState()
-    c.drawString(mid_right_x, labels_y - 8*mm, "WRONG METHODS:")
-    gap = 10*mm; start_ex = mid_right_x + 30*mm; ex_y = labels_y - 8*mm + 1.5*mm 
+    c.drawString(OMR_MARGIN + 3*mm, y_start - 7.5*mm, "1. No extra marking on OMR sheet.")
+    c.drawString(OMR_MARGIN + 55*mm, y_start - 7.5*mm, "3. Darken the circle completely.")
+    c.drawString(OMR_MARGIN + 3*mm, y_start - 10.5*mm, "2. Use Black Ball Point Pen ONLY.")
+    c.drawString(OMR_MARGIN + 55*mm, y_start - 10.5*mm, "4. Multiple markings are invalid.")
+    
+    mid_right_x = OMR_PAGE_W - OMR_MARGIN - 65*mm
+    labels_y = y_start - 4.5*mm
+    c.setFont("Helvetica-Bold", 7); c.drawString(mid_right_x, labels_y, "CORRECT:")
+    c.saveState(); c.setFillColor(DROPOUT_GREY); c.circle(mid_right_x + 25*mm, labels_y + 1.5*mm, 3*mm, fill=1, stroke=0); c.restoreState()
+    c.drawString(mid_right_x, labels_y - 6*mm, "WRONG:")
+    gap = 10*mm; start_ex = mid_right_x + 20*mm; ex_y = labels_y - 6*mm + 1.5*mm 
     
     c.saveState(); c.setStrokeColor(DROPOUT_GREY)
     c.circle(start_ex, ex_y, 3*mm); c.line(start_ex-2*mm, ex_y-2*mm, start_ex+2*mm, ex_y+2*mm); c.line(start_ex-2*mm, ex_y+2*mm, start_ex+2*mm, ex_y-2*mm)
     c.circle(start_ex+gap, ex_y, 3*mm); c.line(start_ex+gap-2*mm, ex_y, start_ex+gap-0.5*mm, ex_y-2*mm); c.line(start_ex+gap-0.5*mm, ex_y-2*mm, start_ex+gap+2*mm, ex_y+2*mm)
     c.circle(start_ex+2*gap, ex_y, 3*mm); p = c.beginPath(); p.moveTo(start_ex+2*gap, ex_y); p.arc(start_ex+2*gap-3*mm, ex_y-3*mm, start_ex+2*gap+3*mm, ex_y+3*mm, 90, 180); p.close(); c.setFillColor(DROPOUT_GREY); c.drawPath(p, fill=1, stroke=0)
     c.restoreState()
-    return y_bottom - 4*mm
+    return y_bottom - 2*mm
 
-def draw_omr_signatures_and_version(c, y_start):
-    sig_h = 15 * mm; sig_bottom = y_start - sig_h; col_w = OMR_CONTENT_W / 3
-    
-    # Signature box borders converted to Dropout Grey
+def draw_signatures_block(c, y_start):
+    sig_h = 10 * mm; sig_bottom = y_start - sig_h; col_w = OMR_CONTENT_W / 3
     c.saveState(); c.setStrokeColor(DROPOUT_GREY); c.rect(OMR_MARGIN, sig_bottom, OMR_CONTENT_W, sig_h)
     c.line(OMR_MARGIN + col_w, sig_bottom, OMR_MARGIN + col_w, y_start); c.line(OMR_MARGIN + 2*col_w, sig_bottom, OMR_MARGIN + 2*col_w, y_start); c.restoreState()
-    
     c.setFillColor(colors.black); c.setFont("Helvetica-Bold", 8)
-    c.drawCentredString(OMR_MARGIN + col_w/2, y_start - 3*mm, "Student's Signature")
-    c.drawCentredString(OMR_MARGIN + 1.5*col_w, y_start - 3*mm, "Date")
-    c.drawCentredString(OMR_MARGIN + 2.5*col_w, y_start - 3*mm, "Invigilator's Signature")
+    c.drawCentredString(OMR_MARGIN + col_w/2, y_start - 3.5*mm, "Student's Signature")
+    c.drawCentredString(OMR_MARGIN + 1.5*col_w, y_start - 3.5*mm, "Date")
+    c.drawCentredString(OMR_MARGIN + 2.5*col_w, y_start - 3.5*mm, "Invigilator's Signature")
+    return sig_bottom - 2*mm
+
+def draw_isolated_version_block(c, y_start):
+    box_h = 8 * mm
+    y_bottom = y_start - box_h
     
-    c.saveState(); c.setFillColor(colors.black, alpha=0.3); c.setFont("Helvetica", 10)
-    c.drawCentredString(OMR_MARGIN + 1.5*col_w, sig_bottom + 4*mm, "DD / MM / YYYY")
+    c.saveState(); c.setStrokeColor(DROPOUT_GREY)
+    c.rect(OMR_MARGIN, y_bottom, OMR_CONTENT_W, box_h)
     c.restoreState()
     
-    version_y_start = sig_bottom - 3*mm; version_h = 10 * mm
-    c.setFont("Helvetica-Bold", 10)
-    c.drawCentredString(OMR_PAGE_W/2, version_y_start - 2*mm, "Question Paper Version Code")
-    
-    c.saveState()
-    bubble_y = version_y_start - 7*mm 
-    spacing = 15 * mm 
-    total_bubble_w = 3 * spacing 
-    start_x = (OMR_PAGE_W - total_bubble_w) / 2
-    
-    # MUST BE BLACK: Version Anchor (Shrunk to 3.5mm)
     c.setFillColor(colors.black)
-    c.rect(start_x - 12*mm, bubble_y - 1.75*mm, 3.5*mm, 3.5*mm, fill=1, stroke=0)
+    c.rect(OMR_MARGIN + 5*mm, y_bottom + 2*mm, 4*mm, 4*mm, fill=1, stroke=0)
     
-    # DROPOUT GREY: Version Bubbles and inner text
+    c.setFillColor(colors.black); c.setFont("Helvetica-Bold", 10)
+    c.drawString(OMR_MARGIN + 15*mm, y_bottom + 2.8*mm, "Question Paper Version Code:")
+    
+    bubble_y = y_bottom + 4*mm 
+    start_x = OMR_MARGIN + 75*mm 
+    spacing = 11 * mm 
+    
     c.setStrokeColor(DROPOUT_GREY)
     for i, opt in enumerate(['A', 'B', 'C', 'D']):
         bx = start_x + (i*spacing)
-        c.circle(bx, bubble_y, 3.5*mm)
+        c.circle(bx, bubble_y, 3.2*mm)
         c.setFillColor(DROPOUT_GREY); c.setFont("Helvetica-Bold", 8)
         c.drawCentredString(bx, bubble_y - 1*mm, opt)
         
+    return y_bottom - 4*mm
+
+def draw_4_corner_question_block(c, x_start, y_start, block_w, num_qs):
+    if num_qs <= 50:
+        cols = 3
+        rows = 17 
+        row_h = 7.5 * mm
+        b_spacing = 7.5 * mm 
+        b_rad = 3.0 * mm
+    else:
+        cols = 4
+        rows = 25 
+        row_h = 6.2 * mm        
+        b_spacing = 6.8 * mm    
+        b_rad = 2.9 * mm
+        
+    group_gap = 2.5 * mm 
+    num_gaps = (rows - 1) // 5
+    
+    block_h = (rows * row_h) + (num_gaps * group_gap) + 8*mm
+    y_bottom = y_start - block_h
+    
+    # THE 4 CORNER ANCHORS
+    anchor_s = 5 * mm
+    c.setFillColor(colors.black)
+    c.rect(x_start, y_start - anchor_s, anchor_s, anchor_s, fill=1, stroke=0) 
+    c.rect(x_start + block_w - anchor_s, y_start - anchor_s, anchor_s, anchor_s, fill=1, stroke=0) 
+    c.rect(x_start, y_bottom, anchor_s, anchor_s, fill=1, stroke=0) 
+    c.rect(x_start + block_w - anchor_s, y_bottom, anchor_s, anchor_s, fill=1, stroke=0) 
+    
+    col_w = block_w / cols
+    q_start_x = x_start + anchor_s + 2*mm
+    q_start_y = y_start - anchor_s - 2*mm
+    
+    # DIVIDERS
+    c.saveState()
+    c.setStrokeColor(DROPOUT_GREY)
+    c.setDash(2, 2)
+    for col in range(1, cols):
+        div_x = q_start_x + (col * col_w) - 5*mm
+        c.line(div_x, y_start - anchor_s, div_x, y_bottom + anchor_s)
     c.restoreState()
-    return version_y_start - version_h - 4*mm
 
-def draw_omr_answer_box(c, y_start):
-    c.setFillColor(colors.black); c.setFont("Helvetica-Bold", 10); c.drawCentredString(OMR_PAGE_W / 2, y_start, "ANSWERS")
-    y_box_top = y_start - 4*mm; row_h = 7.0 * mm; total_grid_h = 17 * row_h + 5*mm; y_box_bottom = y_box_top - total_grid_h
-    
-    # Answer box border converted to Dropout Grey
-    c.saveState(); c.setStrokeColor(DROPOUT_GREY); c.rect(OMR_MARGIN, y_box_bottom, OMR_CONTENT_W, total_grid_h); c.restoreState()
-    
-    col_w = OMR_CONTENT_W / 3
-    col1_x = OMR_MARGIN + 8*mm
-    col2_x = OMR_MARGIN + col_w + 8*mm
-    col3_x = OMR_MARGIN + 2*col_w + 8*mm
-    start_y = y_box_top - 6*mm 
-    
-    for q in range(1, 51):
-        if q <= 17: x_base = col1_x; row = q - 1
-        elif q <= 34: x_base = col2_x; row = q - 18
-        else: x_base = col3_x; row = q - 35
-        
-        y_pos = start_y - (row * row_h)
-        
-        # MUST BE BLACK: Question Anchors (Shrunk to 3.5mm)
-        c.saveState()
-        c.setFillColor(colors.black)
-        c.rect(x_base - 6*mm, y_pos - 0.75*mm, 3.5*mm, 3.5*mm, fill=1, stroke=0)
-        c.restoreState()
-        
-        # Stays Black: Question Numbers (for human readability)
-        c.setFillColor(colors.black)
-        c.setFont("Helvetica-Bold", 9)
-        c.drawRightString(x_base + 4*mm, y_pos, f"{q}.")
-        
-        # DROPOUT GREY: The Bubbles and the Letters inside them
-        spacing = 8.5*mm; b_start = x_base + 8*mm
-        for i, opt in enumerate(['A', 'B', 'C', 'D']):
-            bx = b_start + (i*spacing); by = y_pos + 1.5*mm
-            c.saveState()
+    # QUESTIONS
+    q_current = 1
+    for col in range(cols):
+        curr_y = q_start_y
+        for row in range(rows):
+            if q_current > num_qs:
+                break
+                
+            if row > 0 and row % 5 == 0:
+                curr_y -= group_gap
+                
+            cx = q_start_x + (col * col_w)
+            
+            c.setFillColor(colors.black)
+            c.setFont("Helvetica-Bold", 9)
+            c.drawRightString(cx + 4.5*mm, curr_y, f"{q_current}.")
+            
+            bubble_start = cx + 9.5*mm
             c.setStrokeColor(DROPOUT_GREY)
-            c.circle(bx, by, 3.2*mm)
-            c.restoreState()
+            for i, opt in enumerate(['A', 'B', 'C', 'D']):
+                bx = bubble_start + (i*b_spacing)
+                by = curr_y + 1.2*mm
+                c.circle(bx, by, b_rad) 
+                c.setFillColor(DROPOUT_GREY)
+                c.setFont("Helvetica", 6.5)
+                c.drawCentredString(bx, by - 1*mm, opt)
             
-            c.setFillColor(DROPOUT_GREY)
-            c.setFont("Helvetica", 6.5)
-            c.drawCentredString(bx, by - 1*mm, opt)
+            curr_y -= row_h
+            q_current += 1
             
-    return y_box_bottom
+    return y_bottom
 
-def generate_batch_omr_pdf(college, left_logo, right_logo, watermark, students_data, course_code, exam_type):
+def generate_batch_omr_pdf(college, left_logo, right_logo, watermark, students_data, course_code, exam_type, num_qs):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     
@@ -263,12 +258,21 @@ def generate_batch_omr_pdf(college, left_logo, right_logo, watermark, students_d
         draw_omr_watermark(c, watermark)
         y_start = OMR_PAGE_H - 12*mm 
         
-        header_end = draw_official_header(c, OMR_PAGE_W, y_start, left_logo, right_logo, college)
-        curr_y = draw_omr_titles_and_serial(c, header_end, exam_type) 
+        curr_y = draw_official_header(c, OMR_PAGE_W, y_start, left_logo, right_logo, college)
+        curr_y = draw_omr_titles_and_serial(c, curr_y, exam_type) 
         curr_y = draw_omr_details_with_qr(c, curr_y, name, usn, course_code) 
         curr_y = draw_omr_instructions_compact(c, curr_y)
-        curr_y = draw_omr_signatures_and_version(c, curr_y) 
-        draw_omr_answer_box(c, curr_y)
+        curr_y = draw_signatures_block(c, curr_y)
+        curr_y = draw_isolated_version_block(c, curr_y)
+        
+        if num_qs <= 50:
+            block_w = 150 * mm 
+            x_start = (OMR_PAGE_W - block_w) / 2
+            draw_4_corner_question_block(c, x_start, curr_y, block_w, 50)
+        else:
+            block_w = 190 * mm 
+            x_start = (OMR_PAGE_W - block_w) / 2
+            draw_4_corner_question_block(c, x_start, curr_y, block_w, 100)
         
         c.showPage()
         
@@ -276,9 +280,6 @@ def generate_batch_omr_pdf(college, left_logo, right_logo, watermark, students_d
     buffer.seek(0)
     return buffer
 
-# ==========================================
-#        LOGIC FOR CAED & DIARY (Untouched)
-# ==========================================
 def generate_caed_pdf(college, left_logo, right_logo):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=landscape(A4))
@@ -336,15 +337,12 @@ def generate_diary_pdf(college, left_logo, right_logo):
     c.showPage(); c.save(); buffer.seek(0)
     return buffer
 
-# ==========================================
-#              STREAMLIT UI
-# ==========================================
 st.title("📄 AMC Exam Sheet Generator")
-st.markdown("Generates: **OMR (Dropout Grey Optimized)**, **CAED**, and **Relieving Diary**.")
+st.markdown("Generates: **OMR (4-Corner Mapping, No Collisions)**, **CAED**, and **Relieving Diary**.")
 
 with st.sidebar:
     st.header("Select Format")
-    sheet_type = st.radio("Format:", ["OMR Answer Sheet (Batch)", "CAED Printout Sheet", "Relieving Superintendent Diary"])
+    sheet_type = st.radio("Format:", ["OMR Answer Sheet", "CAED Printout Sheet", "Relieving Superintendent Diary"])
     st.divider()
     college_name = st.text_input("College", "AMC ENGINEERING COLLEGE")
     left_logo = st.file_uploader("Left Logo", type=["png", "jpg"])
@@ -357,6 +355,10 @@ if "OMR" in sheet_type:
     exam_type = st.text_input("Exam Type", "SEMESTER END EXAMINATION")
     course_code = st.text_input("Course Code (e.g., 1BENG206)", "1BENG206")
     
+    st.markdown("### Grid Setup")
+    num_qs = st.selectbox("Number of Questions", [50, 100])
+    
+    st.markdown("### Target Audience")
     st.markdown("Upload a CSV containing the student list. Ensure it has columns named **USN** and **Name**.")
     uploaded_file = st.file_uploader("Upload Student List (CSV)", type=["csv"])
     
@@ -367,8 +369,8 @@ if "OMR" in sheet_type:
             st.dataframe(df.head())
             
             if st.button("Generate Batch OMR PDFs", type="primary"):
-                pdf_out = generate_batch_omr_pdf(college_name, left_logo, right_logo, watermark, df, course_code, exam_type)
-                fname = f"AMC_OMR_{course_code}_Batch_Anchored.pdf"
+                pdf_out = generate_batch_omr_pdf(college_name, left_logo, right_logo, watermark, df, course_code, exam_type, num_qs)
+                fname = f"AMC_OMR_{course_code}_{num_qs}Q_Batch.pdf"
                 st.download_button("Download Exam Batch", pdf_out, fname, "application/pdf")
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
