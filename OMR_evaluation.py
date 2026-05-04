@@ -4,189 +4,209 @@ import numpy as np
 import pandas as pd
 import fitz  # PyMuPDF
 import io
+import itertools
 
 st.title("🎯 AMC OMR Sheet Evaluator")
-st.markdown("Powered by **Global Anchor Hunting & Dropout Grey Optimization**.")
+st.markdown("Powered by **Perfect-Rectangle Homography, PyZbar & Global Scaling**.")
+
+# ==========================================
+#   DYNAMIC GRID CONFIGURATIONS (10px = 1mm)
+# ==========================================
+CONFIG_50Q = {
+    'warped_w': 1450,       
+    'warped_h': 1380,       
+    'cols': 3,
+    'rows': 17,
+    'col_w': 1500 / 3.0,    
+    'start_x': 140,         
+    'start_y': 33,          
+    'b_spacing': 75,        
+    'row_h': 75,            
+    'group_gap': 25,        
+    'b_radius': 30,         
+    'total_q': 50
+}
+
+CONFIG_100Q = {
+    'warped_w': 1850,       
+    'warped_h': 1680,       
+    'cols': 4,
+    'rows': 25,
+    'col_w': 1900 / 4.0,    
+    'start_x': 140,         
+    'start_y': 33,          
+    'b_spacing': 68,        
+    'row_h': 62,            
+    'group_gap': 25,        
+    'b_radius': 29,         
+    'total_q': 100
+}
 
 # ==========================================
 #        COMPUTER VISION LOGIC
 # ==========================================
 
-def find_and_map_anchors(image):
-    """
-    Since the borders are grey, we just scan the whole page 
-    for exactly 51 solid black squares. The highest one is the version code.
-    """
+def find_anchors_and_warp(image, config):
     img_h, img_w = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    
     thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
     cnts, _ = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     
     candidates = []
-    
-    # 1. Find all square-ish, solid things on the page
     for c in cnts:
         x, y, w, h = cv2.boundingRect(c)
-        area = cv2.contourArea(c)
+        area = w * h
         if w == 0 or h == 0: continue
-            
         aspect_ratio = w / float(h)
-        extent = area / (w * h)
+        extent = cv2.contourArea(c) / area if area > 0 else 0
         
-        # Look for solid black blocks. Wide area range to account for different scanner distances.
-        if 150 < area < 4000 and 0.7 <= aspect_ratio <= 1.3 and extent > 0.75:
-            cx, cy = x + w//2, y + h//2
-            candidates.append({"pt": (cx, cy, np.sqrt(area)), "area": area, "x": cx, "y": cy})
+        if 50 < area < 5000 and 0.60 <= aspect_ratio <= 1.45 and extent > 0.85:
+            candidates.append({"pt": (x + w//2, y + h//2), "area": area, "x": x + w//2, "y": y + h//2, "w": w})
             
-    if len(candidates) < 51:
-        return None, None, thresh, gray, 0, None
+    if len(candidates) < 5:
+        return None, thresh, gray, None, None, None
         
-    # 2. Filter out noise (like QR code modules) by finding the median size of our squares
-    median_area = np.median([c["area"] for c in candidates])
-    valid_candidates = [c for c in candidates if 0.5 * median_area < c["area"] < 1.5 * median_area]
+    candidates.sort(key=lambda c: c["area"], reverse=True)
+    top_candidates = candidates[:20] 
     
-    # Sort by how perfectly they match the median size, and grab the best 51
-    valid_candidates.sort(key=lambda c: abs(c["area"] - median_area))
+    min_error = float('inf')
+    best_corners = None
     
-    if len(valid_candidates) < 51:
-         return None, None, thresh, gray, 0, None
-         
-    top_51 = valid_candidates[:51]
-    
-    # 3. ISOLATE THE VERSION ANCHOR (It is always the highest one on the page / lowest Y coordinate)
-    top_51.sort(key=lambda c: c["y"])
-    version_anchor_data = top_51.pop(0)
-    version_anchor = version_anchor_data["pt"]
-    
-    # 4. PROCESS THE 50 QUESTION ANCHORS
-    fiducials = [c["pt"] for c in top_51]
-    fiducials.sort(key=lambda p: p[0]) # Sort horizontally to build columns
-    
-    columns = []
-    current_col = [fiducials[0]]
-    
-    for f in fiducials[1:]:
-        # If the next square is within 4 widths horizontally, it belongs to the same column
-        if abs(f[0] - current_col[-1][0]) < (f[2] * 4):
-            current_col.append(f)
-        else:
-            columns.append(current_col)
-            current_col = [f]
-    columns.append(current_col)
-    
-    if len(columns) != 3:
-        return None, None, thresh, gray, 0, None
+    for combo in itertools.combinations(top_candidates, 4):
+        cx = np.mean([c['x'] for c in combo])
+        cy = np.mean([c['y'] for c in combo])
         
-    question_map = {}
-    q_num = 1
-    avg_w_list = []
+        try:
+            tl = [c for c in combo if c['x'] < cx and c['y'] < cy][0]
+            tr = [c for c in combo if c['x'] > cx and c['y'] < cy][0]
+            bl = [c for c in combo if c['x'] < cx and c['y'] > cy][0]
+            br = [c for c in combo if c['x'] > cx and c['y'] > cy][0]
+        except IndexError:
+            continue
+            
+        w = (tr['x'] - tl['x'] + br['x'] - bl['x']) / 2.0
+        h = (bl['y'] - tl['y'] + br['y'] - tr['y']) / 2.0
+        
+        if w < 100 or h < 100:
+            continue
+            
+        dx_left = abs(tl['x'] - bl['x'])
+        dx_right = abs(tr['x'] - br['x'])
+        dy_top = abs(tl['y'] - tr['y'])
+        dy_bottom = abs(bl['y'] - br['y'])
+        
+        error = (dx_left + dx_right) / w + (dy_top + dy_bottom) / h
+        
+        if error < min_error:
+            min_error = error
+            best_corners = [tl, tr, br, bl] 
+            
+    if not best_corners:
+        return None, thresh, gray, None, None, None
+        
+    grid_top_y = min(best_corners[0]['y'], best_corners[1]['y'])
+    grid_center_x = (best_corners[0]['x'] + best_corners[1]['x']) / 2.0
     
-    for col in columns:
-        col.sort(key=lambda p: p[1]) # Sort vertically within the column
-        for f in col:
-            avg_w_list.append(f[2])
-            if q_num <= 50:
-                question_map[q_num] = f
-                q_num += 1
-                
-    avg_w = np.mean(avg_w_list)
+    valid_versions = [c for c in top_candidates if c not in best_corners and c['y'] < grid_top_y and c['x'] < grid_center_x]
+    version_anchor = max(valid_versions, key=lambda c: c['area']) if valid_versions else None
 
-    # 5. Build a "Fake" Yellow ROI Box just so the debug image looks pretty
-    min_x = min([f[0] for f in fiducials])
-    max_x = max([f[0] for f in fiducials])
-    min_y = min([f[1] for f in fiducials])
-    max_y = max([f[1] for f in fiducials])
-    # Give it a nice 30px padding
-    roi_rect = (int(min_x - 30), int(min_y - 30), int(max_x - min_x + int(avg_w * 35)), int(max_y - min_y + 60))
+    src_pts = np.array([c['pt'] for c in best_corners], dtype="float32")
+    dst_pts = np.array([
+        [0, 0],
+        [config['warped_w'], 0],
+        [config['warped_w'], config['warped_h']],
+        [0, config['warped_h']]
+    ], dtype="float32")
+    
+    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    warped_thresh = cv2.warpPerspective(thresh, M, (config['warped_w'], config['warped_h']))
+    warped_color = cv2.warpPerspective(image, M, (config['warped_w'], config['warped_h']))
+    
+    return best_corners, thresh, gray, version_anchor, warped_thresh, warped_color
 
-    return question_map, roi_rect, thresh, gray, avg_w, version_anchor
-
-def evaluate_image(image, multi_master_key, fill_percentage):
-    """Evaluates the sheet purely for grading."""
-    res = find_and_map_anchors(image)
+def evaluate_image(image, multi_master_key, fill_percentage, config):
+    res = find_anchors_and_warp(image, config)
     if res[0] is None:
-        roi_rect = res[1] if res is not None else None
-        debug_img = image.copy()
-        if roi_rect is not None:
-            rx, ry, rw, rh = roi_rect
-            cv2.rectangle(debug_img, (rx, ry), (rx+rw, ry+rh), (0, 255, 255), 4) 
-        return {"USN": "Error", "Course": "Error", "Version": "N/A", "Score": 0, "Confidence": "0%", "Needs Moderation": "YES", "Status": "Failed to find 51 anchors."}, debug_img
+        return {"USN": "Error", "Course": "Error", "Version": "N/A", "Score": 0, "Confidence": "0%", "Needs Moderation": "YES", "Status": "Failed to map 4 perfect corners."}, image.copy(), None
 
-    question_map, roi_rect, thresh, gray, anchor_width_px, version_anchor = res
+    corners, thresh, gray, version_anchor, warped_thresh, warped_color = res
 
     # ================== QR CODE DECODE ==================
-    qr_detector = cv2.QRCodeDetector()
-    qr_data, bbox, _ = qr_detector.detectAndDecode(gray)
-    if not qr_data:
-        h, w = gray.shape
-        qr_data, bbox, _ = qr_detector.detectAndDecode(gray[:int(h*0.4), :])
+    qr_data = None
+    h, w = gray.shape
+    
+    top_right_gray = gray[0:int(h*0.35), int(w*0.5):w]
+    tr_large = cv2.resize(top_right_gray, (0,0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+    tr_thresh = cv2.threshold(tr_large, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+
+    # --- PYZBAR ENGINE ---
+    try:
+        from pyzbar.pyzbar import decode
+        decoded = decode(tr_large)
+        if decoded: 
+            qr_data = decoded[0].data.decode('utf-8')
         
+        if not qr_data:
+            decoded = decode(tr_thresh)
+            if decoded: 
+                qr_data = decoded[0].data.decode('utf-8')
+    except ImportError:
+        pass 
+
+    # --- OPENCV FALLBACK ENGINE ---
+    if not qr_data:
+        qr_detector = cv2.QRCodeDetector()
+        qr_data, _, _ = qr_detector.detectAndDecode(tr_large)
+        if not qr_data:
+            qr_data, _, _ = qr_detector.detectAndDecode(tr_thresh)
+        if not qr_data:
+            qr_data, _, _ = qr_detector.detectAndDecode(gray) 
+
     usn, course_code = "Unknown", "Unknown"
     if qr_data and '|' in qr_data:
         usn, course_code = qr_data.split('|')
 
-    debug_img = image.copy()
-    if roi_rect:
-        rx, ry, rw, rh = roi_rect
-        cv2.rectangle(debug_img, (rx, ry), (rx+rw, ry+rh), (0, 255, 255), 4) # Yellow Box for ROI
-    
-    # ================== GRADING FUNCTION ==================
-    def grade_row(ax, ay, offset_mm, spacing_mm, radius_mm, options_list, is_version=False, local_ruler=1.0, q_id="Unknown"):
-        offset_px = offset_mm * local_ruler
-        spacing_px = spacing_mm * local_ruler
-        radius_px = int(radius_mm * local_ruler)
-        
-        box_color = (255, 0, 255) if is_version else (0, 255, 0)
-        cv2.rectangle(debug_img, (int(ax)-15, int(ay)-15), (int(ax)+15, int(ay)+15), box_color, 2)
-        
-        b_start_x = ax + offset_px
-        bubble_area = 3.1415 * (radius_px ** 2)
-        
-        fills = []
-        for i in range(len(options_list)):
-            cx = int(b_start_x + (i * spacing_px))
-            cy = int(ay)
-            
-            cv2.circle(debug_img, (cx, cy), radius_px, (255, 0, 0), 2)
-            
-            mask = np.zeros(thresh.shape, dtype="uint8")
-            cv2.circle(mask, (cx, cy), radius_px, 255, -1)
-            pixel_count = cv2.countNonZero(cv2.bitwise_and(thresh, thresh, mask=mask))
-            fill_ratio = pixel_count / bubble_area
-            fills.append((fill_ratio, i))
-            
-        fills.sort(key=lambda x: x[0], reverse=True)
-        max_fill, max_idx = fills[0]
-        sec_fill, sec_idx = fills[1]
-        
-        is_confident = True
-        ans = "Blank"
-        
-        if max_fill > fill_percentage:
-            if sec_fill > fill_percentage:
-                ans = "Multiple"
-                is_confident = False 
-            else:
-                ans = options_list[max_idx]
-                if (max_fill - sec_fill) < 0.12: is_confident = False
-                if (max_fill - fill_percentage) < 0.08: is_confident = False
-        else:
-            ans = "Blank"
-            if (fill_percentage - max_fill) < 0.08: is_confident = False
-                
-        return ans, is_confident
+    debug_original = image.copy()
+    for c in corners:
+        cv2.circle(debug_original, (int(c['x']), int(c['y'])), 20, (0, 255, 255), 4)
+    if version_anchor:
+        cv2.rectangle(debug_original, (int(version_anchor['x'])-15, int(version_anchor['y'])-15), 
+                      (int(version_anchor['x'])+15, int(version_anchor['y'])+15), (255, 0, 255), 4)
 
-    # ================== EVALUATE VERSION ==================
+    # ================== EVALUATE VERSION CODE ==================
     detected_version = "N/A"
     flags_count = 0
     needs_moderation = "NO"
     
     if version_anchor is not None:
-        version_ruler = float(version_anchor[2] / 3.5)
-        detected_version, v_conf = grade_row(version_anchor[0], version_anchor[1], 10.25, 15.0, 3.5, ['A', 'B', 'C', 'D'], is_version=True, local_ruler=version_ruler, q_id="Version")
-        if not v_conf or detected_version in ["Multiple", "Blank"]:
+        tl, tr = corners[0], corners[1]
+        dist_px = np.sqrt((tr['x'] - tl['x'])**2 + (tr['y'] - tl['y'])**2)
+        global_scale = dist_px / (config['warped_w'] / 10.0) 
+        
+        vx, vy = version_anchor['x'], version_anchor['y']
+        
+        b_start_x = vx + (68 * global_scale) 
+        b_spacing = 11 * global_scale
+        b_rad = int(3.2 * global_scale)      
+        b_area = 3.1415 * (b_rad ** 2)
+        
+        v_fills = []
+        for i, opt in enumerate(['A', 'B', 'C', 'D']):
+            cx = int(b_start_x + (i * b_spacing))
+            cy = int(vy) 
+            cv2.circle(debug_original, (cx, cy), b_rad, (255, 0, 0), 2)
+            
+            mask = np.zeros(thresh.shape, dtype="uint8")
+            cv2.circle(mask, (cx, cy), b_rad, 255, -1)
+            px_count = cv2.countNonZero(cv2.bitwise_and(thresh, thresh, mask=mask))
+            v_fills.append((px_count / b_area, i))
+            
+        v_fills.sort(key=lambda x: x[0], reverse=True)
+        if v_fills[0][0] > fill_percentage:
+            detected_version = ['A', 'B', 'C', 'D'][v_fills[0][1]]
+        else:
+            detected_version = "Blank"
             flags_count += 1
             needs_moderation = "YES"
 
@@ -200,17 +220,61 @@ def evaluate_image(image, multi_master_key, fill_percentage):
         active_key = multi_master_key.get('A', {})
         final_status = "Warning: Version Code Invalid."
 
-    # ================== EVALUATE QUESTIONS ==================
-    for q_num, (ax, ay, aw) in question_map.items():
-        row_ruler = float(aw / 3.5)
-        ans, q_conf = grade_row(ax, ay, 12.25, 8.5, 3.2, ['A', 'B', 'C', 'D'], local_ruler=row_ruler, q_id=f"Q{q_num}")
-        
-        if not q_conf or ans in ["Multiple", "Blank"]:
-            flags_count += 1
-            needs_moderation = "YES"
+    # ================== EVALUATE QUESTIONS (IN WARPED SPACE) ==================
+    q_current = 1
+    bubble_area = 3.1415 * (config['b_radius'] ** 2)
+    
+    for col in range(config['cols']):
+        curr_y = config['start_y']
+        for row in range(config['rows']):
+            if q_current > config['total_q']:
+                break
+                
+            if row > 0 and row % 5 == 0:
+                curr_y += config['group_gap']
+                
+            b_start_x = config['start_x'] + (col * config['col_w'])
             
-        if active_key and ans == active_key.get(q_num):
-            actual_score += 1
+            fills = []
+            for i in range(4):
+                bx = int(b_start_x + (i * config['b_spacing']))
+                by = int(curr_y)
+                
+                cv2.circle(warped_color, (bx, by), config['b_radius'], (255, 0, 0), 2)
+                
+                mask = np.zeros(warped_thresh.shape, dtype="uint8")
+                cv2.circle(mask, (bx, by), config['b_radius'], 255, -1)
+                pixel_count = cv2.countNonZero(cv2.bitwise_and(warped_thresh, warped_thresh, mask=mask))
+                fill_ratio = pixel_count / bubble_area
+                fills.append((fill_ratio, i))
+                
+            fills.sort(key=lambda x: x[0], reverse=True)
+            max_fill = fills[0][0]
+            sec_fill = fills[1][0]
+            
+            ans = "Blank"
+            is_confident = True
+            
+            if max_fill > fill_percentage:
+                if sec_fill > fill_percentage:
+                    ans = "Multiple"
+                    is_confident = False 
+                else:
+                    ans = ['A', 'B', 'C', 'D'][fills[0][1]]
+            else:
+                ans = "Blank"
+                is_confident = False
+                
+            # Moderation Flagging (Removed ML Harvesting Disk I/O for Cloud Safe Execution)
+            if not is_confident or ans in ["Multiple", "Blank"]:
+                flags_count += 1
+                needs_moderation = "YES"
+
+            if active_key and ans == active_key.get(q_current):
+                actual_score += 1
+                
+            curr_y += config['row_h']
+            q_current += 1
 
     confidence_score = max(0, 100 - (flags_count * 2))
 
@@ -223,33 +287,36 @@ def evaluate_image(image, multi_master_key, fill_percentage):
         "Needs Moderation": needs_moderation,
         "Status": final_status
     }
-    return result_dict, debug_img
+    return result_dict, debug_original, warped_color
 
 # ==========================================
 #              STREAMLIT UI
 # ==========================================
 
 with st.sidebar:
-    st.header("1. Master Key Upload")
+    st.header("1. Sheet Configuration")
+    sheet_format = st.selectbox("Exam Format:", ["50 Questions", "100 Questions"])
+    active_config = CONFIG_50Q if sheet_format == "50 Questions" else CONFIG_100Q
+    
+    st.divider()
+    st.header("2. Master Key Upload")
     
     template_df = pd.DataFrame({
-        "Question": range(1, 51),
-        "Version_A": ["A"] * 50,
-        "Version_B": ["B"] * 50,
-        "Version_C": ["C"] * 50,
-        "Version_D": ["D"] * 50
+        "Question": range(1, active_config['total_q'] + 1),
+        "Version_A": ["A"] * active_config['total_q'],
+        "Version_B": ["B"] * active_config['total_q'],
+        "Version_C": ["C"] * active_config['total_q'],
+        "Version_D": ["D"] * active_config['total_q']
     })
     csv_template = template_df.to_csv(index=False).encode('utf-8')
     st.download_button(
         label="📥 Download Multi-Version CSV Template",
         data=csv_template,
-        file_name="AMC_Master_Key_Template.csv",
+        file_name=f"AMC_Master_Key_{active_config['total_q']}Q.csv",
         mime="text/csv"
     )
     
-    st.markdown("Upload your completed `.csv` key below.")
     uploaded_key = st.file_uploader("Upload Master Key", type=["csv"])
-    
     multi_master_key_dict = {'A': {}, 'B': {}, 'C': {}, 'D': {}}
     
     if uploaded_key is not None:
@@ -267,20 +334,17 @@ with st.sidebar:
     else:
         st.info("ℹ️ Using default test pattern for all versions until uploaded.")
         for v in ['A', 'B', 'C', 'D']:
-            multi_master_key_dict[v] = {i: ['A', 'B', 'C', 'D'][(i-1) % 4] for i in range(1, 51)}
-
-    with st.expander("👀 View Active Keys"):
-        st.json(multi_master_key_dict)
+            multi_master_key_dict[v] = {i: ['A', 'B', 'C', 'D'][(i-1) % 4] for i in range(1, active_config['total_q'] + 1)}
 
     st.divider()
-    st.header("2. Ink Threshold")
+    st.header("3. Ink Threshold")
     fill_percent = st.slider("Required Ink Fill (%)", min_value=10, max_value=80, value=30, step=5) / 100.0
 
 # --- TAB LAYOUT ---
-tab1, tab2 = st.tabs(["📐 Step 1: Verify Targeting Rings", "🚀 Step 2: Batch Process Scans"])
+tab1, tab2 = st.tabs(["📐 Step 1: Verify Homography Grid", "🚀 Step 2: Batch Process Scans"])
 
 with tab1:
-    st.subheader("Upload any scanned page to verify the anchor targeting.")
+    st.subheader(f"Upload any {sheet_format} scan to verify perspective transformation.")
     calib_file = st.file_uploader("Upload Scan for Debugging", type=["jpg", "jpeg", "png", "pdf"], key="calib")
     
     if calib_file:
@@ -295,35 +359,43 @@ with tab1:
         else:
             img_array = cv2.imdecode(np.frombuffer(calib_file.read(), np.uint8), cv2.IMREAD_COLOR)
 
-        result, debug_img = evaluate_image(img_array, multi_master_key_dict, fill_percent)
+        result, debug_original, warped_color = evaluate_image(img_array, multi_master_key_dict, fill_percent, active_config)
         
-        if debug_img is not None:
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                st.success(f"Status: {result['Status']}")
-                st.write(f"**Detected USN:** {result.get('USN', 'N/A')}")
-                st.write(f"**Detected Version:** {result.get('Version', 'N/A')}")
-                st.write(f"**Detected Score:** {result.get('Score', 0)}/50")
+        if debug_original is not None:
+            st.success(f"Status: {result['Status']}")
+            col_res, col_orig, col_warp = st.columns([1, 1.5, 1.5])
+            
+            with col_res:
+                st.write(f"**USN:** {result.get('USN', 'N/A')}")
+                st.write(f"**Version:** {result.get('Version', 'N/A')}")
+                st.write(f"**Score:** {result.get('Score', 0)}/{active_config['total_q']}")
                 
                 conf_val = int(result['Confidence'].strip('%'))
                 color = "green" if conf_val > 90 else "orange" if conf_val > 70 else "red"
-                st.markdown(f"**Confidence Score:** <span style='color:{color}; font-weight:bold;'>{result['Confidence']}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Confidence:** <span style='color:{color}; font-weight:bold;'>{result['Confidence']}</span>", unsafe_allow_html=True)
                 
                 mod_color = "red" if result['Needs Moderation'] == "YES" else "green"
                 st.markdown(f"**Needs Moderation:** <span style='color:{mod_color}; font-weight:bold;'>{result['Needs Moderation']}</span>", unsafe_allow_html=True)
-
-                st.markdown("---")
-                st.markdown("### How to read the map:")
-                st.markdown("🟨 **Yellow Box:** The dynamically built ROI.")
-                st.markdown("🟪 **Purple Box:** The highest anchor (Version Code).")
-                st.markdown("🟩 **Green Boxes:** The 50 main question anchors.")
-                st.markdown("🟦 **Blue Rings:** The evaluator's eyes tracking the bubbles.")
-            with col2:
-                st.image(cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB), caption="Anchor Targeting Map", use_container_width=True)
                 
-            is_success, buffer = cv2.imencode(".png", debug_img)
-            if is_success:
-                st.download_button("📥 Download High-Res Map", buffer.tobytes(), "Anchor_Map_Debug.png", "image/png")
+                st.divider()
+                st.markdown("### Debug Exports")
+                is_success, orig_buffer = cv2.imencode(".png", debug_original)
+                if is_success:
+                    st.download_button("📥 Original Corners Map", orig_buffer.tobytes(), "Anchor_Map_Original.png", "image/png")
+                    
+                if warped_color is not None:
+                    is_success_w, warp_buffer = cv2.imencode(".png", warped_color)
+                    if is_success_w:
+                        st.download_button("📥 Flattened Math Grid", warp_buffer.tobytes(), "Anchor_Map_Flattened.png", "image/png")
+
+            with col_orig:
+                st.markdown("**1. Original Scan (Corner Lock)**")
+                st.image(cv2.cvtColor(debug_original, cv2.COLOR_BGR2RGB), use_container_width=True)
+                
+            with col_warp:
+                if warped_color is not None:
+                    st.markdown("**2. Warped Image (Virtual Grid)**")
+                    st.image(cv2.cvtColor(warped_color, cv2.COLOR_BGR2RGB), use_container_width=True)
 
 with tab2:
     st.subheader("Upload filled OMR scans.")
@@ -352,7 +424,7 @@ with tab2:
                         if pix.n == 4: scan_img = cv2.cvtColor(scan_img, cv2.COLOR_RGBA2BGR)
                         elif pix.n == 3: scan_img = cv2.cvtColor(scan_img, cv2.COLOR_RGB2BGR)
                             
-                        result, _ = evaluate_image(scan_img, multi_master_key_dict, fill_percent)
+                        result, _, _ = evaluate_image(scan_img, multi_master_key_dict, fill_percent, active_config)
                         result["File Name"] = f"{file.name} (Page {page_num + 1})"
                         results_list.append(result)
                         
@@ -361,7 +433,7 @@ with tab2:
                     pdf_document.close()
                 else:
                     scan_img = cv2.imdecode(np.frombuffer(file.read(), np.uint8), cv2.IMREAD_COLOR)
-                    result, _ = evaluate_image(scan_img, multi_master_key_dict, fill_percent)
+                    result, _, _ = evaluate_image(scan_img, multi_master_key_dict, fill_percent, active_config)
                     result["File Name"] = file.name
                     results_list.append(result)
                     
@@ -369,7 +441,7 @@ with tab2:
                     my_bar.progress(processed / total_pages, text=f"Processed {file.name}")
                 
             my_bar.empty() 
-            st.success(f"Successfully processed {processed} total sheets!")
+            st.success(f"Successfully processed {processed} sheets!")
             
             results_df = pd.DataFrame(results_list)[["USN", "Course", "Version", "Score", "Confidence", "Needs Moderation", "Status", "File Name"]]
             
