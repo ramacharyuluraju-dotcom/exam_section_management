@@ -34,7 +34,7 @@ def safe_float(val, default=0.0):
     try: return float(val) if val and pd.notna(val) else default
     except: return default
 
-# --- STATUS DEFINITIONS ---
+# --- STATUS DEFINITIONS (UPDATED TO 12 PHASES) ---
 PHASES = {
     1: {"name": "Initiation", "desc": "Setup cycle and prepare for timetable."},
     2: {"name": "Timetable Ready", "desc": "Schedule is locked. Student registrations required."},
@@ -45,7 +45,9 @@ PHASES = {
     7: {"name": "Seating Allocation", "desc": "Mapping students to rooms (Ensuring no clash for concurrent students)."},
     8: {"name": "Logistics Ready", "desc": "Answer booklet allocation and QPDS indents."},
     9: {"name": "Live Examination", "desc": "Exam is currently in progress."},
-    10: {"name": "Results Processing", "desc": "SEE marks entry, valuation, and grading."}
+    10: {"name": "Results Processing", "desc": "SEE marks entry, valuation, and grading."},
+    11: {"name": "Revaluation Window", "desc": "Accepting reval applications and entering 2nd/3rd valuation marks."},
+    12: {"name": "Final Ledger Locked", "desc": "All revaluations complete. Ready for archiving."}
 }
 
 tabs = st.tabs(["🚀 Active Lifecycle", "🆕 Create New Cycle", "📊 Cycle History", "🎓 Semester Promotion"])
@@ -69,11 +71,12 @@ with tabs[0]:
             if current_cycle.get('exam_type') == "Regular + Arrear (Concurrent)":
                 st.info("💡 **Concurrent Cycle Active:** This cycle is managing both regular semester students and their previous semester backlogs. Ensure timetables and hall tickets account for both.")
 
-            progress_val = current_status / 10
+            # Calculate progress based on 12 steps now
+            progress_val = current_status / 12
             st.progress(progress_val, text=f"Overall Progress: {int(progress_val*100)}%")
             
             m1, m2, m3 = st.columns(3)
-            m1.metric("Current Step", f"{current_status} / 10")
+            m1.metric("Current Step", f"{current_status} / 12")
             m2.metric("Phase", phase_info['name'])
             m3.write(f"**Action Required:** {phase_info['desc']}")
 
@@ -108,19 +111,21 @@ with tabs[0]:
                         except Exception as e:
                             st.error(f"Upload failed: {e}")
 
-            elif current_status < 10:
+            # 🟢 THE FIX IS HERE: Changed from < 10 to < 12
+            elif current_status < 12:
                 st.markdown(f"### ✅ Current Phase: {phase_info['name']}")
                 st.info(f"Context: {phase_info['desc']}")
                 
                 col_act, col_reset = st.columns([2, 1])
                 
                 with col_act:
-                    st.write("Complete the required tasks in other modules (Registration, Hall Tickets, etc.)")
+                    st.write("Complete the required tasks in other modules (Registration, Hall Tickets, Results, etc.)")
                     if st.button(f"➡️ Advance to Step {current_status + 1}: {PHASES[current_status+1]['name']}", type="primary"):
                         supabase.table("exam_cycles").update({"status_code": current_status + 1}).eq("cycle_id", active_cycle_id).execute()
                         st.rerun()
                 
                 with col_reset:
+                    # 🟢 Undo Button is back and fully functional
                     if st.button("⏪ Undo (Back to Previous Step)"):
                         if current_status > 1:
                             supabase.table("exam_cycles").update({"status_code": current_status - 1}).eq("cycle_id", active_cycle_id).execute()
@@ -129,8 +134,14 @@ with tabs[0]:
             else:
                 st.balloons()
                 st.markdown("### 🏁 Lifecycle Completed")
-                st.success("All examinations and result processing for this cycle are concluded.")
-                if st.button("📁 Close & Archive This Cycle"):
+                st.success("All examinations, result processing, and revaluations for this cycle are concluded.")
+                
+                # Allow Undo even from the final completed state just in case
+                if st.button("⏪ Undo (Re-open Phase 11 Revaluation)"):
+                    supabase.table("exam_cycles").update({"status_code": 11}).eq("cycle_id", active_cycle_id).execute()
+                    st.rerun()
+                    
+                if st.button("📁 Close & Archive This Cycle", type="primary"):
                     supabase.table("exam_cycles").update({"is_active": False}).eq("cycle_id", active_cycle_id).execute()
                     st.rerun()
         except Exception as e:
@@ -147,7 +158,6 @@ with tabs[1]:
     col1, col2, col3 = st.columns(3)
     c_ay = col1.text_input("Academic Year", value="2025-26")
     
-    # 🟢 NEW: Added "Regular + Arrear (Concurrent)" to handle the 1st/2nd sem overlap perfectly.
     c_type = col2.selectbox("Exam Type", [
         "Regular", 
         "Regular + Arrear (Concurrent)", 
@@ -156,14 +166,12 @@ with tabs[1]:
         "Summer"
     ])
     
-    # Auto-suggest BOTH if Concurrent is selected
     default_sem_type = "BOTH" if c_type == "Regular + Arrear (Concurrent)" else "EVEN"
     c_sem_type = col3.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"], index=["ODD", "EVEN", "BOTH"].index(default_sem_type)) 
     
     if c_type == "Regular + Arrear (Concurrent)":
         st.success("💡 **Concurrent Mode:** This cycle will process both current semester subjects and backlog subjects at the same time. Please ensure you select **BOTH** as the Semester Type, and select the specific target semesters below (e.g., Semester 1 and 2).")
 
-    # Dynamic Semester Selection based on the Semester Type
     if c_sem_type == "ODD":
         sem_options = [1, 3, 5, 7, 9]
     elif c_sem_type == "EVEN":
@@ -346,8 +354,6 @@ with tabs[3]:
                     if not students:
                         st.warning(f"No active {target_prog_even} students found in Semester {current_even_sem} for the selected branches.")
                     else:
-                        # 🟢 This queries the historical 'student_results' table. Because it grabs ALL cycles, 
-                        # if a student clears a Sem 1 backlog during the Sem 2 Concurrent cycle, the engine will see the latest passing grade!
                         all_results = fetch_all_records("student_results", "usn, course_code, is_pass, credits_earned, cycle_id")
                         all_results.sort(key=lambda x: int(x.get('cycle_id', 0)))
                         
