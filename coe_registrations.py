@@ -235,11 +235,9 @@ with reg_tabs[4]:
     if st.button("🔍 Generate Arrear CSV", type="primary"):
         with st.spinner("Analyzing historical exam data to find active backlogs..."):
             try:
-                # 1. Fetch required master data
+                # 1. Fetch required master data (Using exact schema: 'title' and 'semester_id')
                 branches_res = fetch_all_records("master_branches", "branch_code, program_type")
                 students_res = fetch_all_records("master_students", "usn, branch_code")
-                
-                # 🟢 FIXED: Using exactly 'title' and 'semester_id' from your database schema
                 courses_res = fetch_all_records("master_courses", "course_code, title, semester_id")
                 
                 # Map branch to program (UG/PG)
@@ -249,8 +247,8 @@ with reg_tabs[4]:
                 # Map Course Code to details
                 course_map = {c['course_code']: {"title": c.get('title', 'Unknown'), "sem": int(c.get('semester_id', 0))} for c in courses_res}
 
-                # 2. Fetch ALL historical results and sort by cycle_id to ensure chronological order
-                results_res = fetch_all_records("student_results", "usn, course_code, is_pass, cycle_id")
+                # 2. Fetch ALL historical results including the 'grade' column to catch NE/AB/F
+                results_res = fetch_all_records("student_results", "usn, course_code, is_pass, cycle_id, grade")
                 results_res.sort(key=lambda x: int(x.get('cycle_id', 0)))
 
                 # 3. Find the LATEST result for every USN + Course combination
@@ -261,7 +259,10 @@ with reg_tabs[4]:
                     if usn not in latest_results:
                         latest_results[usn] = {}
                     # Because it's sorted by cycle_id, the last seen record overwrites older ones
-                    latest_results[usn][cc] = r.get('is_pass', False)
+                    latest_results[usn][cc] = {
+                        "is_pass": r.get('is_pass', False),
+                        "grade": r.get('grade', 'F') # Capture the exact grade/status
+                    }
 
                 # 4. Filter down to active backlogs matching our criteria
                 arrear_list = []
@@ -269,8 +270,8 @@ with reg_tabs[4]:
                 for usn, courses in latest_results.items():
                     # Check if student matches UG/PG
                     if usn_to_prog.get(usn) == target_prog:
-                        for cc, is_pass in courses.items():
-                            if not is_pass: # It is an active backlog
+                        for cc, data in courses.items():
+                            if not data['is_pass']: # It is an active backlog
                                 c_info = course_map.get(cc, {})
                                 c_sem = c_info.get("sem", 0)
                                 
@@ -280,7 +281,8 @@ with reg_tabs[4]:
                                         "usn": usn,
                                         "semester": c_sem,
                                         "course_code": cc,
-                                        "course_title": c_info.get("title", "Unknown"), # Restored for human readability!
+                                        "course_title": c_info.get("title", "Unknown"),
+                                        "grade": data['grade'], # Added so COE can filter 'NE' in Excel
                                         "academic_year": st.session_state.get('active_academic_year', '2025-26'), 
                                         "semester_type": "BOTH"
                                     })
@@ -291,13 +293,13 @@ with reg_tabs[4]:
                 else:
                     df_arrears = pd.DataFrame(arrear_list)
                     # Organize columns for a clean Excel experience
-                    df_arrears = df_arrears[['usn', 'semester', 'course_code', 'course_title', 'academic_year', 'semester_type']]
+                    df_arrears = df_arrears[['usn', 'semester', 'course_code', 'course_title', 'grade', 'academic_year', 'semester_type']]
                     df_arrears = df_arrears.sort_values(by=['semester', 'course_code', 'usn'])
                     
                     st.success(f"✅ Found {len(df_arrears)} active backlog registrations.")
                     st.dataframe(df_arrears, use_container_width=True)
                     
-                    # Ready to be uploaded immediately in Tab 1 (clean_data_for_db will safely ignore course_title during upload)
+                    # The Bulk Registration logic will safely ignore the 'course_title' and 'grade' columns during upload
                     csv = df_arrears.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label=f"📥 Download {target_prog}_Arrear_Courses.csv",
