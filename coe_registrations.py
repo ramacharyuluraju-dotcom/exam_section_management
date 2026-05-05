@@ -257,28 +257,28 @@ with reg_tabs[4]:
 # ==========================================
 with reg_tabs[5]:
     st.header("🚑 Extract Eligible Make-up Candidates")
-    st.info("Finds students who were Absent (AB) in their latest attempt BUT have >= 90% Continuous Internal Evaluation (CIE) marks.")
+    st.info("Hunts for two scenarios: 1. Absent students with valid internals (Medical). 2. Failed students with >= 90% internals (X-Grade).")
+
+    col1, col2 = st.columns(2)
+    x_grade_thresh = col1.slider("🌟 X-Grade CIE Threshold (%)", min_value=70, max_value=100, value=90, step=5, help="Failed students with CIE above this get an automatic X-Grade (Make-up).")
+    med_thresh = col2.slider("🏥 Medical Absentee CIE Threshold (%)", min_value=30, max_value=60, value=40, step=5, help="Absent students with CIE above this qualify for Make-up (pending proof).")
 
     if st.button("🔍 Find Make-up Candidates", type="primary"):
         with st.spinner("Scanning internal marks and attendance records..."):
             try:
-                # 1. Fetch data
                 courses_res = fetch_all_records("master_courses", "course_code, title, semester_id, max_cie")
                 results_res = fetch_all_records("student_results", "usn, course_code, grade, cie_marks, cycle_id")
                 
-                # Create a lookup for max CIE and titles
                 course_map = {
                     c['course_code']: {
-                        "max_cie": safe_float(c.get('max_cie'), 50.0), # Defaults to 50 if empty
+                        "max_cie": safe_float(c.get('max_cie'), 50.0), 
                         "title": c.get('title', 'Unknown'),
                         "sem": c.get('semester_id', 0)
                     } for c in courses_res
                 }
                 
-                # Sort by cycle_id to ensure we are looking at their LATEST attempt
                 results_res.sort(key=lambda x: int(x.get('cycle_id', 0)))
                 
-                # Keep only the latest result for each USN + Course
                 latest_results = {}
                 for r in results_res:
                     usn = r['usn']
@@ -292,42 +292,59 @@ with reg_tabs[5]:
 
                 makeup_candidates = []
                 
-                # 2. Apply the strict Make-up Filters
                 for usn, courses in latest_results.items():
                     for cc, data in courses.items():
-                        # Condition 1: Must be Absent
-                        if data['grade'] == 'AB':
+                        grade = data['grade']
+                        
+                        # We only care about Absent or Failed students
+                        if grade in ['AB', 'F']:
                             c_info = course_map.get(cc, {"max_cie": 50.0, "title": "Unknown", "sem": 0})
                             max_cie = c_info['max_cie']
                             cie_obtained = data['cie_marks']
                             
-                            # Condition 2: Internals must be >= 90%
-                            threshold = max_cie * 0.90
+                            cie_percentage = (cie_obtained / max_cie) * 100 if max_cie > 0 else 0
                             
-                            if cie_obtained >= threshold:
+                            eligibility_category = None
+                            
+                            # SCENARIO 1: The Academic Safety Net (Failed but brilliant internals)
+                            if grade == 'F' and cie_percentage >= x_grade_thresh:
+                                eligibility_category = "⭐ X-Grade: Failed but High CIE"
+                                
+                            # SCENARIO 2: The Medical Case (Absent with valid passing internals)
+                            elif grade == 'AB' and cie_percentage >= med_thresh:
+                                eligibility_category = "🏥 I-Grade: Absent (Pending Medical)"
+                            
+                            if eligibility_category:
                                 makeup_candidates.append({
                                     "usn": usn,
                                     "semester": c_info['sem'],
                                     "course_code": cc,
                                     "course_title": c_info['title'],
+                                    "previous_grade": grade,
                                     "cie_marks_obtained": cie_obtained,
                                     "max_cie": max_cie,
+                                    "cie_percentage": f"{cie_percentage:.1f}%",
+                                    "eligibility_category": eligibility_category,
                                     "academic_year": st.session_state.get('active_academic_year', '2025-26'),
                                     "semester_type": "BOTH"
                                 })
                 
-                # 3. Output
                 if not makeup_candidates:
-                    st.warning("No students met the strict Make-up criteria (Absent + >= 90% CIE).")
+                    st.warning("No students met the criteria for Make-up exams.")
                 else:
                     df_makeup = pd.DataFrame(makeup_candidates)
-                    df_makeup = df_makeup[['usn', 'semester', 'course_code', 'course_title', 'cie_marks_obtained', 'max_cie', 'academic_year', 'semester_type']]
-                    df_makeup = df_makeup.sort_values(by=['semester', 'course_code', 'usn'])
+                    df_makeup = df_makeup[['usn', 'semester', 'course_code', 'course_title', 'previous_grade', 'cie_marks_obtained', 'cie_percentage', 'eligibility_category', 'academic_year', 'semester_type']]
+                    df_makeup = df_makeup.sort_values(by=['eligibility_category', 'semester', 'course_code', 'usn'])
                     
-                    st.success(f"✅ Found {len(df_makeup)} highly eligible candidates for Make-up exams.")
-                    st.dataframe(df_makeup, use_container_width=True)
+                    st.success(f"✅ Found {len(df_makeup)} eligible candidates for Make-up exams.")
                     
-                    # Exact format needed to upload instantly to Tab 1!
+                    def highlight_categories(val):
+                        if 'X-Grade' in str(val): return 'color: #4CAF50; font-weight: bold' # Green for auto-approve
+                        elif 'I-Grade' in str(val): return 'color: #FF9800; font-weight: bold' # Orange for pending review
+                        return ''
+                        
+                    st.dataframe(df_makeup.style.map(highlight_categories, subset=['eligibility_category']), use_container_width=True)
+                    
                     csv = df_makeup.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="📥 Download Make-up Registrations (CSV)", 
