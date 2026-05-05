@@ -148,10 +148,14 @@ with tabs[1]:
     
     col1, col2, col3 = st.columns(3)
     c_ay = col1.text_input("Academic Year", value="2025-26")
-    c_type = col2.selectbox("Exam Type", ["Regular", "Supplementary", "Summer", "Revaluation", "Make-up"])
+    
+    # 🟢 FIX: Removed "Revaluation". Added explicit "Arrear" labeling. 
+    # Revaluation is handled entirely inside the Results Module, not as a new physical exam!
+    c_type = col2.selectbox("Exam Type", ["Regular", "Supplementary (Arrear)", "Summer", "Make-up"])
+    
     c_sem_type = col3.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"]) 
     
-    # 🟢 NEW: Dynamic Semester Selection based on the Semester Type
+    # Dynamic Semester Selection based on the Semester Type
     if c_sem_type == "ODD":
         sem_options = [1, 3, 5, 7, 9]
     elif c_sem_type == "EVEN":
@@ -191,7 +195,7 @@ with tabs[1]:
                 "academic_year": c_ay,
                 "exam_type": c_type,
                 "semester_type": c_sem_type,
-                "target_semesters": c_target_sems, # 🟢 ADDED: Passes the list [1, 3, 5] directly to Supabase
+                "target_semesters": c_target_sems,
                 "status_code": 1,
                 "is_active": True,
                 "parent_cycle_id": parent_cycle_id 
