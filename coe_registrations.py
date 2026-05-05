@@ -238,14 +238,16 @@ with reg_tabs[4]:
                 # 1. Fetch required master data
                 branches_res = fetch_all_records("master_branches", "branch_code, program_type")
                 students_res = fetch_all_records("master_students", "usn, branch_code")
-                courses_res = fetch_all_records("master_courses", "course_code, course_title, semester")
+                
+                # 🟢 FIXED: Using exactly 'title' and 'semester_id' from your database schema
+                courses_res = fetch_all_records("master_courses", "course_code, title, semester_id")
                 
                 # Map branch to program (UG/PG)
                 prog_map = {b['branch_code']: b['program_type'] for b in branches_res}
                 # Map USN to Program
                 usn_to_prog = {s['usn']: prog_map.get(s['branch_code'], 'Unknown') for s in students_res}
                 # Map Course Code to details
-                course_map = {c['course_code']: {"title": c['course_title'], "sem": int(c['semester'])} for c in courses_res}
+                course_map = {c['course_code']: {"title": c.get('title', 'Unknown'), "sem": int(c.get('semester_id', 0))} for c in courses_res}
 
                 # 2. Fetch ALL historical results and sort by cycle_id to ensure chronological order
                 results_res = fetch_all_records("student_results", "usn, course_code, is_pass, cycle_id")
@@ -276,10 +278,11 @@ with reg_tabs[4]:
                                 if c_sem in target_sems:
                                     arrear_list.append({
                                         "usn": usn,
+                                        "semester": c_sem,
                                         "course_code": cc,
-                                        "academic_year": st.session_state.get('active_academic_year', '2025-26'), # Auto-fill
-                                        "semester_type": "BOTH", # Assuming arrears can be taken in concurrent cycles
-                                        "semester": c_sem
+                                        "course_title": c_info.get("title", "Unknown"), # Restored for human readability!
+                                        "academic_year": st.session_state.get('active_academic_year', '2025-26'), 
+                                        "semester_type": "BOTH"
                                     })
 
                 # 5. Generate Output
@@ -287,13 +290,14 @@ with reg_tabs[4]:
                     st.success(f"No active {target_prog} backlogs found for semesters {target_sems}.")
                 else:
                     df_arrears = pd.DataFrame(arrear_list)
-                    # Sort for clean output
+                    # Organize columns for a clean Excel experience
+                    df_arrears = df_arrears[['usn', 'semester', 'course_code', 'course_title', 'academic_year', 'semester_type']]
                     df_arrears = df_arrears.sort_values(by=['semester', 'course_code', 'usn'])
                     
                     st.success(f"✅ Found {len(df_arrears)} active backlog registrations.")
                     st.dataframe(df_arrears, use_container_width=True)
                     
-                    # Ready to be uploaded immediately in Tab 1
+                    # Ready to be uploaded immediately in Tab 1 (clean_data_for_db will safely ignore course_title during upload)
                     csv = df_arrears.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label=f"📥 Download {target_prog}_Arrear_Courses.csv",
