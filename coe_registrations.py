@@ -10,6 +10,27 @@ supabase = init_db()
 st.title("📝 Semester Course Registration")
 st.sidebar.markdown("### Operational Phase")
 
+# --- HELPER FUNCTION ---
+def fetch_all_records(table_name, select_query="*", filters=None):
+    """Fetches all records from Supabase bypassing the 1000 row limit."""
+    all_data = []
+    step = 1000
+    current_start = 0
+    while True:
+        query = supabase.table(table_name).select(select_query)
+        if filters:
+            for col, val in filters.items(): 
+                query = query.eq(col, val)
+                
+        query = query.range(current_start, current_start + step - 1)
+        res = query.execute()
+        
+        if not res.data: break
+        all_data.extend(res.data)
+        if len(res.data) < step: break
+        current_start += step
+    return all_data
+
 # --- GLOBAL CONTEXT ---
 selected_cycle_id = st.session_state.get('active_cycle_id')
 
@@ -22,7 +43,8 @@ st.info(f"🔵 Currently Registering Students for Cycle: **{st.session_state.get
 # ==========================================
 # NAVIGATION TABS
 # ==========================================
-reg_tabs = st.tabs(["📤 Bulk Registration", "📝 Manual Mapping", "🔍 View Registrations", "📸 Photo Backup Utility"])
+# 🟢 UPDATED: Added the new Arrear Extractor Tab
+reg_tabs = st.tabs(["📤 Bulk Registration", "📝 Manual Mapping", "🔍 View Registrations", "📸 Photo Backup Utility", "📥 Arrear Extractor"])
 
 # ==========================================
 # 1. BULK REGISTRATION (CSV)
@@ -34,7 +56,6 @@ with reg_tabs[0]:
     if f_reg and st.button("Execute Bulk Registration"):
         df = pd.read_csv(f_reg)
         
-        # 🟢 UPDATED: Added 'semester' to the expected columns
         expected = ['usn', 'course_code', 'academic_year', 'semester_type', 'semester']
         
         data = clean_data_for_db(df, expected)
@@ -60,12 +81,10 @@ with reg_tabs[1]:
         r_ay = col1.text_input("Academic Year", value="2025-26")
         r_sem_type = col2.selectbox("Semester Type", ["ODD", "EVEN"])
         
-        # 🟢 UPDATED: Added a numerical input for the Semester
-        r_semester = col1.number_input("Semester", min_value=1, max_value=8, value=2)
+        r_semester = col1.number_input("Semester", min_value=1, max_value=10, value=2)
         
         c1, c2 = st.columns(2)
         if c1.form_submit_button("💾 Register Course"):
-            # 🟢 UPDATED: Added 'semester' to the data dictionary sent to Supabase
             reg_data = {
                 "cycle_id": selected_cycle_id, 
                 "usn": r_usn.strip().upper(), 
@@ -201,3 +220,87 @@ with reg_tabs[3]:
                 
         except Exception as e:
             status_text.error(f"🚨 Critical Error: {e}")
+
+# ==========================================
+# 5. ARREAR EXTRACTOR
+# ==========================================
+with reg_tabs[4]:
+    st.header("📥 Extract Active Arrear Courses")
+    st.info("Generates a CSV of pending subjects for students based on their latest exam results. Only active backlogs are included.")
+
+    col1, col2 = st.columns(2)
+    target_prog = col1.selectbox("Target Program", ["UG", "PG"], key="arrear_prog")
+    target_sems = col2.multiselect("Target Semesters for Arrears", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], default=[1, 2], key="arrear_sems")
+
+    if st.button("🔍 Generate Arrear CSV", type="primary"):
+        with st.spinner("Analyzing historical exam data to find active backlogs..."):
+            try:
+                # 1. Fetch required master data
+                branches_res = fetch_all_records("master_branches", "branch_code, program_type")
+                students_res = fetch_all_records("master_students", "usn, branch_code")
+                courses_res = fetch_all_records("master_courses", "course_code, course_title, semester")
+                
+                # Map branch to program (UG/PG)
+                prog_map = {b['branch_code']: b['program_type'] for b in branches_res}
+                # Map USN to Program
+                usn_to_prog = {s['usn']: prog_map.get(s['branch_code'], 'Unknown') for s in students_res}
+                # Map Course Code to details
+                course_map = {c['course_code']: {"title": c['course_title'], "sem": int(c['semester'])} for c in courses_res}
+
+                # 2. Fetch ALL historical results and sort by cycle_id to ensure chronological order
+                results_res = fetch_all_records("student_results", "usn, course_code, is_pass, cycle_id")
+                results_res.sort(key=lambda x: int(x.get('cycle_id', 0)))
+
+                # 3. Find the LATEST result for every USN + Course combination
+                latest_results = {}
+                for r in results_res:
+                    usn = r['usn']
+                    cc = r['course_code']
+                    if usn not in latest_results:
+                        latest_results[usn] = {}
+                    # Because it's sorted by cycle_id, the last seen record overwrites older ones
+                    latest_results[usn][cc] = r.get('is_pass', False)
+
+                # 4. Filter down to active backlogs matching our criteria
+                arrear_list = []
+                
+                for usn, courses in latest_results.items():
+                    # Check if student matches UG/PG
+                    if usn_to_prog.get(usn) == target_prog:
+                        for cc, is_pass in courses.items():
+                            if not is_pass: # It is an active backlog
+                                c_info = course_map.get(cc, {})
+                                c_sem = c_info.get("sem", 0)
+                                
+                                # Check if the backlog belongs to the requested semesters
+                                if c_sem in target_sems:
+                                    arrear_list.append({
+                                        "usn": usn,
+                                        "course_code": cc,
+                                        "academic_year": st.session_state.get('active_academic_year', '2025-26'), # Auto-fill
+                                        "semester_type": "BOTH", # Assuming arrears can be taken in concurrent cycles
+                                        "semester": c_sem
+                                    })
+
+                # 5. Generate Output
+                if not arrear_list:
+                    st.success(f"No active {target_prog} backlogs found for semesters {target_sems}.")
+                else:
+                    df_arrears = pd.DataFrame(arrear_list)
+                    # Sort for clean output
+                    df_arrears = df_arrears.sort_values(by=['semester', 'course_code', 'usn'])
+                    
+                    st.success(f"✅ Found {len(df_arrears)} active backlog registrations.")
+                    st.dataframe(df_arrears, use_container_width=True)
+                    
+                    # Ready to be uploaded immediately in Tab 1
+                    csv = df_arrears.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label=f"📥 Download {target_prog}_Arrear_Courses.csv",
+                        data=csv,
+                        file_name=f"{target_prog}_Arrear_Courses_Sem_{'_'.join(map(str, target_sems))}.csv",
+                        mime="text/csv"
+                    )
+                    
+            except Exception as e:
+                st.error(f"Error generating arrear list: {e}")
