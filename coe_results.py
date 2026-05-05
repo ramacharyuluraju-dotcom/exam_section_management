@@ -392,28 +392,43 @@ if not selected_cycle_id:
     st.error("⚠️ CRITICAL ERROR: No Exam Cycle Selected. Please select a cycle in the Sidebar.")
     st.stop()
 
-cycle_info = supabase.table("exam_cycles").select("exam_type, parent_cycle_id").eq("cycle_id", selected_cycle_id).execute().data
+# 🟢 NEW: Added `status_code` to the query so we know if we are in Phase 11 (Revaluation)
+cycle_info = supabase.table("exam_cycles").select("exam_type, parent_cycle_id, status_code").eq("cycle_id", selected_cycle_id).execute().data
 exam_type = cycle_info[0].get('exam_type', 'Regular') if cycle_info else 'Regular'
+status_code = cycle_info[0].get('status_code', 1) if cycle_info else 1
 parent_id = cycle_info[0].get('parent_cycle_id') if cycle_info else None
 
 st.title("🏆 Results & Grading Engine")
-st.info(f"📍 **Active Context:** Processing {exam_type} data strictly for Cycle: **{active_cycle_name}**")
+
+if status_code >= 11:
+    st.warning(f"📍 **Active Context:** Revaluation Phase (Phase {status_code}). Cycle: **{active_cycle_name}**")
+else:
+    st.info(f"📍 **Active Context:** Processing {exam_type} data strictly for Cycle: **{active_cycle_name}**")
 
 # 🟢 DYNAMIC TAB ROUTING SYSTEM 🟢
 show_cie, show_decoder, show_see, show_grading, show_mod, show_ledgers, show_dashboard = False, False, False, False, False, False, False
 show_makeup, show_reval = False, False
 
-if exam_type == 'Regular':
-    t1, t2, t3, t4, t5, t6, t7 = st.tabs(["1. CIE Consolidator", "2. Bundle Decoder", "3. SEE Consolidator", "4. Grading Engine", "5. Moderation", "6. Publish Ledgers", "7. CoE Dashboard"])
+if exam_type in ['Regular', 'Regular + Arrear (Concurrent)']:
+    if status_code >= 11:
+        # Phase 11: Unlocks the 8th Tab (Revaluation Engine)
+        t1, t2, t3, t4, t5, t6, t7, t_rev = st.tabs(["1. CIE Consolidator", "2. Bundle Decoder", "3. SEE Consolidator", "4. Grading Engine", "5. Moderation", "6. Publish Ledgers", "7. CoE Dashboard", "8. Revaluation Engine"])
+        show_reval = True
+    else:
+        t1, t2, t3, t4, t5, t6, t7 = st.tabs(["1. CIE Consolidator", "2. Bundle Decoder", "3. SEE Consolidator", "4. Grading Engine", "5. Moderation", "6. Publish Ledgers", "7. CoE Dashboard"])
+    
     show_cie, show_decoder, show_see, show_grading, show_mod, show_ledgers, show_dashboard = True, True, True, True, True, True, True
 
-elif exam_type in ['Make-up', 'Supplementary', 'Summer']:
-    t_mu, t3, t4, t6, t7 = st.tabs(["1. Auto-Sync Parent CIEs", "2. Upload Make-up SEEs", "3. Grading Engine", "4. Publish Ledgers", "5. CoE Dashboard"])
+elif exam_type in ['Make-up', 'Supplementary', 'Supplementary (Arrear Only)', 'Summer']:
+    if status_code >= 11:
+        # Phase 11: Unlocks the Revaluation Tab for Supplementary/Makeup Exams too
+        t_mu, t3, t4, t6, t7, t_rev = st.tabs(["1. Auto-Sync Parent CIEs", "2. Upload Make-up SEEs", "3. Grading Engine", "4. Publish Ledgers", "5. CoE Dashboard", "6. Revaluation Engine"])
+        show_reval = True
+    else:
+        t_mu, t3, t4, t6, t7 = st.tabs(["1. Auto-Sync Parent CIEs", "2. Upload Make-up SEEs", "3. Grading Engine", "4. Publish Ledgers", "5. CoE Dashboard"])
+        
     show_makeup, show_see, show_grading, show_ledgers, show_dashboard = True, True, True, True, True
 
-elif exam_type == 'Revaluation':
-    t_rev, t6, t7 = st.tabs(["1. Revaluation Engine (V1/V2/V3)", "2. Publish Updated Ledgers", "3. CoE Dashboard"])
-    show_reval, show_ledgers, show_dashboard = True, True, True
 
 # ----------------------------------------------------
 # TAB BLOCK: CIE ENTRY 
@@ -853,7 +868,7 @@ if show_mod:
                             'usn': 'USN',
                             'course_code': 'Course Code',
                             'old_see': 'Original Evaluator',
-                            'new_see': 'Moderator Mark',
+                            'new_see': 'Moderator/Revaluator Mark',
                             'reason': 'System Audit Note',
                             'created_at': 'Timestamp'
                         })
@@ -1287,6 +1302,7 @@ if show_dashboard:
                             st.success("🎉 All clear! All evaluated subjects have full marks uploaded.")
                 except Exception as e:
                     st.error(f"Dashboard Error: {e}")
+                    
 # ----------------------------------------------------
 # TAB BLOCK: REVALUATION ENGINE (Used in Reval Context)
 # ----------------------------------------------------
