@@ -13,24 +13,21 @@ active_cycle_id = st.session_state.get('active_cycle_id')
 # --- HELPER FUNCTIONS ---
 def fetch_all_records(table_name, select_query="*", filters=None):
     all_data = []
-    start, step = 0, 1000
+    start, step = 1000, 1000
+    current_start = 0
     while True:
-        # 🟢 FIX: Initialize query first
         query = supabase.table(table_name).select(select_query)
-        
-        # 🟢 FIX: Apply filters BEFORE the range limits
         if filters:
             for col, val in filters.items(): 
                 query = query.eq(col, val)
                 
-        # Apply pagination range last
-        query = query.range(start, start + step - 1)
+        query = query.range(current_start, current_start + step - 1)
         res = query.execute()
         
         if not res.data: break
         all_data.extend(res.data)
         if len(res.data) < step: break
-        start += step
+        current_start += step
     return all_data
 
 def safe_float(val, default=0.0):
@@ -41,14 +38,14 @@ def safe_float(val, default=0.0):
 PHASES = {
     1: {"name": "Initiation", "desc": "Setup cycle and prepare for timetable."},
     2: {"name": "Timetable Ready", "desc": "Schedule is locked. Student registrations required."},
-    3: {"name": "Applications Open", "desc": "Portal is open for students to verify subjects."},
-    4: {"name": "Applications Closed", "desc": "Application window is over. Reviewing eligibility."},
-    5: {"name": "Hall Ticket Phase", "desc": "Generating and releasing Admit Cards."},
+    3: {"name": "Applications Open", "desc": "Portal is open for students to apply for Regular & Arrear subjects."},
+    4: {"name": "Applications Closed", "desc": "Application window is over. Reviewing eligibility & fee payments."},
+    5: {"name": "Hall Ticket Phase", "desc": "Generating and releasing Admit Cards (Combining Regular + Arrear)."},
     6: {"name": "Attendance (Form B)", "desc": "Generating subject-wise attendance sheets."},
-    7: {"name": "Seating Allocation", "desc": "Mapping students to rooms and blocks."},
+    7: {"name": "Seating Allocation", "desc": "Mapping students to rooms (Ensuring no clash for concurrent students)."},
     8: {"name": "Logistics Ready", "desc": "Answer booklet allocation and QPDS indents."},
     9: {"name": "Live Examination", "desc": "Exam is currently in progress."},
-    10: {"name": "Results Processing", "desc": "SEE marks entry and consolidation."}
+    10: {"name": "Results Processing", "desc": "SEE marks entry, valuation, and grading."}
 }
 
 tabs = st.tabs(["🚀 Active Lifecycle", "🆕 Create New Cycle", "📊 Cycle History", "🎓 Semester Promotion"])
@@ -59,7 +56,6 @@ tabs = st.tabs(["🚀 Active Lifecycle", "🆕 Create New Cycle", "📊 Cycle Hi
 with tabs[0]:
     if not active_cycle_id:
         st.warning("Please select a cycle from the sidebar or create a new one to begin.")
-        st.info("The multi-cycle logic allows you to manage UG, PG, or Supplementary exams in parallel.")
     else:
         try:
             res = supabase.table("exam_cycles").select("*").eq("cycle_id", active_cycle_id).single().execute()
@@ -70,6 +66,9 @@ with tabs[0]:
 
             st.subheader(f"Managing Session: {current_cycle['cycle_name']}")
             
+            if current_cycle.get('exam_type') == "Regular + Arrear (Concurrent)":
+                st.info("💡 **Concurrent Cycle Active:** This cycle is managing both regular semester students and their previous semester backlogs. Ensure timetables and hall tickets account for both.")
+
             progress_val = current_status / 10
             st.progress(progress_val, text=f"Overall Progress: {int(progress_val*100)}%")
             
@@ -82,11 +81,11 @@ with tabs[0]:
 
             if current_status == 1:
                 st.markdown("### 📅 Step 1: Upload Exam Timetable")
-                st.info("Upload the CSV containing the schedule for this specific cycle.")
+                st.info("Upload the CSV containing the schedule. If this is a concurrent cycle (e.g. Sem 2 Regular + Sem 1 Arrears), include ALL course codes in this single file.")
                 
                 with st.expander("View CSV Template Guide"):
                     st.write("Columns: `course_code, exam_date, session` (Morning/Afternoon)")
-                    st.code("course_code,exam_date,session\n1BMATC101,2026-02-20,Morning")
+                    st.code("course_code,exam_date,session\n1BMATC101,2026-02-20,Morning\n1BENG206,2026-02-21,Afternoon")
                 
                 f_tt = st.file_uploader("Upload Timetable CSV", type='csv', key=f"tt_uploader_{active_cycle_id}")
                 
@@ -142,19 +141,28 @@ with tabs[0]:
 # ==========================================
 with tabs[1]:
     st.markdown("### 🆕 Initiate New Exam Session")
-    st.info("Parallel cycles allowed. Link Make-up/Arrear exams to their original Regular cycle.")
     
-    c_name = st.text_input("Cycle Name", placeholder="e.g., UG ODD Semesters Jan-2026")
+    c_name = st.text_input("Cycle Name", placeholder="e.g., Even Sem + Odd Arrears July 2026")
     
     col1, col2, col3 = st.columns(3)
     c_ay = col1.text_input("Academic Year", value="2025-26")
     
-    # 🟢 FIX: Removed "Revaluation". Added explicit "Arrear" labeling. 
-    # Revaluation is handled entirely inside the Results Module, not as a new physical exam!
-    c_type = col2.selectbox("Exam Type", ["Regular", "Supplementary (Arrear)", "Summer", "Make-up"])
+    # 🟢 NEW: Added "Regular + Arrear (Concurrent)" to handle the 1st/2nd sem overlap perfectly.
+    c_type = col2.selectbox("Exam Type", [
+        "Regular", 
+        "Regular + Arrear (Concurrent)", 
+        "Supplementary (Arrear Only)", 
+        "Make-up", 
+        "Summer"
+    ])
     
-    c_sem_type = col3.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"]) 
+    # Auto-suggest BOTH if Concurrent is selected
+    default_sem_type = "BOTH" if c_type == "Regular + Arrear (Concurrent)" else "EVEN"
+    c_sem_type = col3.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"], index=["ODD", "EVEN", "BOTH"].index(default_sem_type)) 
     
+    if c_type == "Regular + Arrear (Concurrent)":
+        st.success("💡 **Concurrent Mode:** This cycle will process both current semester subjects and backlog subjects at the same time. Please ensure you select **BOTH** as the Semester Type, and select the specific target semesters below (e.g., Semester 1 and 2).")
+
     # Dynamic Semester Selection based on the Semester Type
     if c_sem_type == "ODD":
         sem_options = [1, 3, 5, 7, 9]
@@ -166,12 +174,12 @@ with tabs[1]:
     c_target_sems = st.multiselect(
         "Select Target Semesters for this Cycle", 
         options=sem_options, 
-        default=sem_options, # Auto-selects all by default to save clicks
+        default=[1, 2] if c_type == "Regular + Arrear (Concurrent)" else sem_options, 
         help="Choose the specific semesters that will have exams in this cycle."
     )
     
     parent_cycle_id = None
-    if c_type != "Regular":
+    if c_type in ["Supplementary (Arrear Only)", "Make-up"]:
         st.markdown("🔗 **Link to Parent Exam Cycle**")
         try:
             existing_cycles = supabase.table("exam_cycles").select("cycle_id, cycle_name").execute().data
@@ -251,9 +259,8 @@ with tabs[2]:
 # ==========================================
 with tabs[3]:
     st.subheader("🎓 Master Semester Promotion")
-    st.info("Promote students to their next semester based on VTU progression rules. Ensure you select the correct Program Type, as UG and PG calendars often differ.")
+    st.info("Promote students to their next semester based on VTU progression rules. The engine evaluates ALL past cycles to determine active backlogs.")
 
-    # 1. Fetch branches to map Program Types (UG/PG) to Branch Codes
     try:
         all_branches = fetch_all_records("master_branches", "branch_code, program_type")
         ug_branches = [b['branch_code'] for b in all_branches if b.get('program_type') == 'UG']
@@ -286,17 +293,14 @@ with tabs[3]:
                 st.error("Please select at least one branch.")
             else:
                 with st.spinner(f"Updating {target_prog} student records..."):
-                    # We pass string to the filter because query params are stringified
                     target_sem_str = str(target_sem) 
                     all_sem_students = fetch_all_records("master_students", filters={"current_sem": target_sem_str})
                     
-                    # Filter down to ONLY the selected branches/program
                     students = [s for s in all_sem_students if s.get('branch_code') in target_branches]
                     
                     if not students:
                         st.warning(f"No active {target_prog} students found in Semester {target_sem} for the selected branches.")
                     else:
-                        # ✅ THE FIX: Pass the whole dictionary **s, but overwrite current_sem as an INTEGER
                         update_payload = [{**s, "current_sem": target_sem + 1} for s in students]
                         
                         for i in range(0, len(update_payload), 1000):
@@ -337,12 +341,13 @@ with tabs[3]:
                     current_even_sem_str = str(current_even_sem)
                     all_sem_students = fetch_all_records("master_students", filters={"current_sem": current_even_sem_str})
                     
-                    # Filter down to ONLY the selected branches/program
                     students = [s for s in all_sem_students if s.get('branch_code') in target_branches_even]
                     
                     if not students:
                         st.warning(f"No active {target_prog_even} students found in Semester {current_even_sem} for the selected branches.")
                     else:
+                        # 🟢 This queries the historical 'student_results' table. Because it grabs ALL cycles, 
+                        # if a student clears a Sem 1 backlog during the Sem 2 Concurrent cycle, the engine will see the latest passing grade!
                         all_results = fetch_all_records("student_results", "usn, course_code, is_pass, credits_earned, cycle_id")
                         all_results.sort(key=lambda x: int(x.get('cycle_id', 0)))
                         
@@ -377,7 +382,6 @@ with tabs[3]:
                                 is_eligible = total_credits >= threshold
                                 
                             if is_eligible:
-                                # ✅ THE FIX: Pass the whole dictionary **s, but overwrite current_sem as an INTEGER
                                 eligible_students.append({**s, "current_sem": current_even_sem + 1})
                             else:
                                 detained_students.append({"USN": usn, "Active Backlogs": active_backlogs, "Credits Earned": total_credits})
