@@ -252,17 +252,19 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     c.drawRightString(w - 30, y, f"Application Date: {datetime.date.today().strftime('%d-%m-%Y')}")
     y -= 25
 
-    c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Regular Subjects"); y -= 10
+    c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Regular & Arrear Subjects"); y -= 10
     
-    sub_rows = [["Course Code", "Course Title", "Select"]]
+    # 🟢 ADDED: 'Sem' Column to App Form
+    sub_rows = [["Sem", "Course Code", "Course Title", "Select"]]
     for s in subjects:
-        sub_rows.append([s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Applied"])
+        sub_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Applied"])
     
-    t2 = Table(sub_rows, colWidths=[90, 365, 80])
+    t2 = Table(sub_rows, colWidths=[40, 80, 335, 80])
     t2.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-        ('BACKGROUND', (0,0), (2,0), colors.lightgrey),
-        ('ALIGN', (2,0), (2,-1), 'CENTER'),
+        ('BACKGROUND', (0,0), (3,0), colors.lightgrey),
+        ('ALIGN', (0,0), (0,-1), 'CENTER'),
+        ('ALIGN', (3,0), (3,-1), 'CENTER'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE')
     ]))
     t2.wrapOn(c, w, h); _, th = t2.wrap(w, h); t2.drawOn(c, 30, y - th); y -= (th + 30)
@@ -299,7 +301,6 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     y -= 50
     c.setFont("Helvetica-Bold", 9); c.drawRightString(w - 30, y, "Signature of the Candidate")
     
-    # FIXED: Hardcoded clean blank lines for manual pen filling so "None" never shows up
     c.setFont("Helvetica", 8)
     c.drawRightString(w - 30, y - 12, "Contact No: ___________________________")
     c.drawRightString(w - 30, y - 24, "Email ID:   ___________________________")
@@ -360,20 +361,22 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     y -= (h_mast + 5)
 
     c.setFont("Helvetica-Bold", 9); c.drawString(30, y, "Exam Schedule:"); y -= 8
-    grid_data = [["Date", "Session", "Course Code", "Invigilator Sign"]]
+    
+    # 🟢 ADDED: 'Sem' Column to Hall Ticket
+    grid_data = [["Date", "Session", "Sem", "Course Code", "Invigilator Sign"]]
     
     row_count = 0
     for s in subjects:
         code = s['code']
         if not eligibility_map.get(code, False): continue 
         sch = timetable_map.get(code, {"date": "", "session": ""})
-        grid_data.append([sch['date'], sch['session'], code, ""])
+        grid_data.append([sch['date'], sch['session'], str(s.get('sem', '-')), code, ""])
         row_count += 1
 
     if row_count < 4:
-        for _ in range(4 - row_count): grid_data.append(["", "", "", ""])
+        for _ in range(4 - row_count): grid_data.append(["", "", "", "", ""])
 
-    tg = Table(grid_data, colWidths=[80, 130, 80, 245], rowHeights=16)
+    tg = Table(grid_data, colWidths=[75, 120, 35, 85, 220], rowHeights=16)
     tg.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
         ('FONTSIZE', (0,0), (-1,-1), 8),
@@ -393,15 +396,12 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     c.setFont("Helvetica-Bold", 9)
     sig_w = 80
     
-    # Left: Candidate
     c.line(40, y + 10, 40 + sig_w, y + 10)
     c.drawCentredString(40 + sig_w/2, y, "Candidate")
     
-    # Center: CoE
     c.line(w/2 - sig_w/2, y + 10, w/2 + sig_w/2, y + 10)
     c.drawCentredString(w/2, y, "CoE")
     
-    # Right: Principal
     c.line(w - 40 - sig_w, y + 10, w - 40, y + 10)
     c.drawCentredString(w - 40 - sig_w/2, y, "Principal")
     
@@ -421,8 +421,13 @@ with tabs[0]:
     st.info(f"Setting fees for cycle: **{active_cycle_name}**")
     with st.form("fees"):
         c1, c2 = st.columns(2)
-        e = c1.number_input("Regular Fee", 2000.0); a = c2.number_input("Arrear Fee", 0.0)
-        p = c1.number_input("Penalty", 0.0); m = c2.number_input("Misc", 400.0)
+        e = c1.number_input("Regular Fee", 2000.0)
+        a = c2.number_input("Arrear Fee", 0.0)
+        p = c1.number_input("Penalty", 0.0)
+        
+        # 🟢 UPDATED: Clarified the 'Misc' fee title in the UI
+        m = c2.number_input("App & Marks Card Fee (Misc)", value=400.0)
+        
         if st.form_submit_button("Save Fees"):
             supabase.table("master_fees").upsert([{"fee_type":k, "amount":v} for k,v in [("Exam",e),("Arrear",a),("Penalty",p),("Misc",m)]]).execute()
             st.success("Fees Saved.")
@@ -448,15 +453,23 @@ with tabs[1]:
             fees = {f['fee_type']: f['amount'] for f in fee_res.data}
 
             all_students = fetch_all_records("master_students")
-            all_regs = fetch_all_records("course_registrations", "usn, course_code, master_courses(title)", "cycle_id", selected_cycle_id)
+            
+            # 🟢 UPDATED: Fetching the 'semester' or 'semester_id' to map into the PDF
+            all_regs = fetch_all_records("course_registrations", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
             
             course_map = {}
             for r in all_regs:
                 usn = r['usn']
                 if usn not in course_map: course_map[usn] = []
                 
-                title = r.get('master_courses', {}).get('title', "Unknown Title") if r.get('master_courses') else "Unknown Title"
-                course_map[usn].append({"code": r['course_code'], "title": title})
+                mc = r.get('master_courses') or {}
+                title = mc.get('title', "Unknown Title")
+                
+                sem = r.get('semester')
+                if not sem:
+                    sem = mc.get('semester_id', '-')
+                    
+                course_map[usn].append({"code": r['course_code'], "title": title, "sem": sem})
                 
             usns = list(course_map.keys())
 
@@ -549,14 +562,19 @@ with tabs[2]:
                     st.stop()
                 stu = stu_res.data[0]
 
+                # 🟢 UPDATED: Fetching the 'semester' or 'semester_id' to map into the PDF
                 sub_res = supabase.table("course_registrations")\
-                    .select("course_code, master_courses(title)")\
+                    .select("course_code, semester, master_courses(title, semester_id)")\
                     .eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
                 
                 raw_subs = []
                 for r in sub_res.data:
-                    title = r.get('master_courses', {}).get('title', "Unknown Title") if r.get('master_courses') else "Unknown Title"
-                    raw_subs.append({"code": r['course_code'], "title": title})
+                    mc = r.get('master_courses') or {}
+                    title = mc.get('title', "Unknown Title")
+                    sem = r.get('semester')
+                    if not sem:
+                        sem = mc.get('semester_id', '-')
+                    raw_subs.append({"code": r['course_code'], "title": title, "sem": sem})
                     
                 unique_subs = []
                 seen_codes = set()
