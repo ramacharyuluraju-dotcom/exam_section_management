@@ -856,11 +856,31 @@ if show_mod:
             st.write("These students had a moderation difference of more than 15. Their grades have been frozen until a Third Evaluator score is provided.")
             
             if st.button("🔍 Fetch Pending Third Valuations", type="primary"):
-                with st.spinner("Scanning Audit Logs..."):
-                    tv_logs = fetch_all_records("marks_audit_log", filters={"cycle_id": selected_cycle_id, "change_type": "THIRD VALUATION PENDING"})
+                with st.spinner("Scanning Audit Logs and filtering out resolved cases..."):
+                    # 🟢 FIX: Fetch BOTH Pending and Resolved logs
+                    pending_logs = fetch_all_records("marks_audit_log", filters={"cycle_id": selected_cycle_id, "change_type": "THIRD VALUATION PENDING"})
+                    resolved_logs = fetch_all_records("marks_audit_log", filters={"cycle_id": selected_cycle_id, "change_type": "THIRD VALUATION - RESOLVED"})
+                    
+                    # Create a master list of all (USN, Course) combinations that are already RESOLVED
+                    resolved_keys = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()) for r in resolved_logs}
+                    
+                    tv_logs = []
+                    seen_keys = set()
+                    
+                    if pending_logs:
+                        # Sort by created_at descending so we get the most recent pending record first
+                        pending_df = pd.DataFrame(pending_logs).sort_values('created_at', ascending=False)
+                        
+                        for _, r in pending_df.iterrows():
+                            key = (str(r['usn']).strip().upper(), str(r['course_code']).strip().upper())
+                            
+                            # 🟢 Only add them to the list if they are NOT in the resolved_keys set
+                            if key not in resolved_keys and key not in seen_keys:
+                                seen_keys.add(key)
+                                tv_logs.append(r.to_dict())
                     
                     if not tv_logs:
-                        st.success("🎉 No pending Third Valuations found for this cycle!")
+                        st.success("🎉 No pending Third Valuations found for this cycle! All clear.")
                     else:
                         df_tv = pd.DataFrame(tv_logs)
                         display_cols = ['usn', 'course_code', 'old_see', 'new_see', 'reason', 'created_at']
