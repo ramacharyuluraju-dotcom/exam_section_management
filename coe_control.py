@@ -257,14 +257,15 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     # 🟢 ADDED: 'Sem' Column to App Form
     sub_rows = [["Sem", "Course Code", "Course Title", "Select"]]
     for s in subjects:
+        # Dynamically pulls the semester for each specific course
         sub_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Applied"])
     
     t2 = Table(sub_rows, colWidths=[40, 80, 335, 80])
     t2.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-        ('BACKGROUND', (0,0), (3,0), colors.lightgrey),
-        ('ALIGN', (0,0), (0,-1), 'CENTER'),
-        ('ALIGN', (3,0), (3,-1), 'CENTER'),
+        ('BACKGROUND', (0,0), (3,0), colors.lightgrey), # Grey background across all 4 columns
+        ('ALIGN', (0,0), (0,-1), 'CENTER'), # Center the Semester column
+        ('ALIGN', (3,0), (3,-1), 'CENTER'), # Center the "Applied" column
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE')
     ]))
     t2.wrapOn(c, w, h); _, th = t2.wrap(w, h); t2.drawOn(c, 30, y - th); y -= (th + 30)
