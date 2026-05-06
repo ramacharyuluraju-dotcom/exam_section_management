@@ -208,7 +208,9 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
 
     y = draw_header(c, w, h - 30, assets, is_hall_ticket=False)
     c.setFont("Helvetica-Bold", 11)
-    c.drawCentredString(w/2, y, f"Semester End Examination Application Form - {cycle_name}")
+    
+    # 🟢 UPDATED: Simplified Application Form Header
+    c.drawCentredString(w/2, y, f"Examination Application Form - {cycle_name}")
     y -= 25
 
     c.setFont("Helvetica-Bold", 10)
@@ -254,18 +256,16 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
 
     c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Regular & Arrear Subjects"); y -= 10
     
-    # 🟢 ADDED: 'Sem' Column to App Form
     sub_rows = [["Sem", "Course Code", "Course Title", "Select"]]
     for s in subjects:
-        # Dynamically pulls the semester for each specific course
         sub_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Applied"])
     
     t2 = Table(sub_rows, colWidths=[40, 80, 335, 80])
     t2.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-        ('BACKGROUND', (0,0), (3,0), colors.lightgrey), # Grey background across all 4 columns
-        ('ALIGN', (0,0), (0,-1), 'CENTER'), # Center the Semester column
-        ('ALIGN', (3,0), (3,-1), 'CENTER'), # Center the "Applied" column
+        ('BACKGROUND', (0,0), (3,0), colors.lightgrey),
+        ('ALIGN', (0,0), (0,-1), 'CENTER'),
+        ('ALIGN', (3,0), (3,-1), 'CENTER'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE')
     ]))
     t2.wrapOn(c, w, h); _, th = t2.wrap(w, h); t2.drawOn(c, 30, y - th); y -= (th + 30)
@@ -316,7 +316,8 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     y = draw_header(c, w, y_start, assets, is_hall_ticket=True)
     c.setFont("Helvetica-Bold", 11)
     
-    c.drawCentredString(w/2, y + 5, f"Admission Ticket for {header_branch} Examination - {cycle_name}")
+    # 🟢 UPDATED: Simplified Admission Ticket Header
+    c.drawCentredString(w/2, y + 5, f"Admission Ticket - {cycle_name}")
     c.setFont("Helvetica-Bold", 9)
     
     c.drawRightString(w - 40, y - 10, f"[{section}]")
@@ -363,7 +364,6 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
 
     c.setFont("Helvetica-Bold", 9); c.drawString(30, y, "Exam Schedule:"); y -= 8
     
-    # 🟢 ADDED: 'Sem' Column to Hall Ticket
     grid_data = [["Date", "Session", "Sem", "Course Code", "Invigilator Sign"]]
     
     row_count = 0
@@ -425,8 +425,6 @@ with tabs[0]:
         e = c1.number_input("Regular Fee", 2000.0)
         a = c2.number_input("Arrear Fee", 0.0)
         p = c1.number_input("Penalty", 0.0)
-        
-        # 🟢 UPDATED: Clarified the 'Misc' fee title in the UI
         m = c2.number_input("App & Marks Card Fee (Misc)", value=400.0)
         
         if st.form_submit_button("Save Fees"):
@@ -455,7 +453,6 @@ with tabs[1]:
 
             all_students = fetch_all_records("master_students")
             
-            # 🟢 UPDATED: Fetching the 'semester' or 'semester_id' to map into the PDF
             all_regs = fetch_all_records("course_registrations", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
             
             course_map = {}
@@ -563,7 +560,6 @@ with tabs[2]:
                     st.stop()
                 stu = stu_res.data[0]
 
-                # 🟢 UPDATED: Fetching the 'semester' or 'semester_id' to map into the PDF
                 sub_res = supabase.table("course_registrations")\
                     .select("course_code, semester, master_courses(title, semester_id)")\
                     .eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
