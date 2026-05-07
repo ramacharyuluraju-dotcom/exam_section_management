@@ -284,18 +284,15 @@ def generate_marks_card_pdf(buffer, usn, name, results_list, sgpa, has_pending=F
 
 
 def generate_a3_excel_ledger(b_name, b_df, course_list, branch_name_map, active_cycle_name):
-    """Generates an A3 print-ready Excel Ledger perfectly matching VTU formats."""
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {'in_memory': True})
     worksheet = workbook.add_worksheet(f"{b_name}_Ledger")
 
-    # A3 Landscape Print Setup
-    worksheet.set_paper(8)  # 8 = A3
+    worksheet.set_paper(8) 
     worksheet.set_landscape()
     worksheet.set_margins(left=0.2, right=0.2, top=0.4, bottom=0.4)
-    worksheet.fit_to_pages(1, 0)  # Fit columns to exactly 1 page wide
+    worksheet.fit_to_pages(1, 0) 
 
-    # Formatting Styles
     title_format = workbook.add_format({'bold': True, 'align': 'left', 'font_size': 14})
     subtitle_format = workbook.add_format({'bold': True, 'align': 'left', 'font_size': 12})
     header_merged = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#D9D9D9', 'font_size': 10, 'text_wrap': True})
@@ -306,18 +303,15 @@ def generate_a3_excel_ledger(b_name, b_df, course_list, branch_name_map, active_
 
     full_branch_name = branch_name_map.get(b_name, b_name).upper()
 
-    # University Header
     worksheet.write(0, 0, "AMC ENGINEERING COLLEGE", title_format)
     worksheet.write(1, 0, "Autonomous Institution affiliated to VTU, Belagavi", subtitle_format)
     worksheet.write(2, 0, f"DEPARTMENT OF {full_branch_name}", subtitle_format)
     worksheet.write(3, 0, f"Consolidated Result Sheet - {active_cycle_name}", subtitle_format)
 
-    # Column Widths
-    worksheet.set_column(0, 0, 5)   # Sl No
-    worksheet.set_column(1, 1, 13)  # USN
-    worksheet.set_column(2, 2, 22)  # Name
+    worksheet.set_column(0, 0, 5)   
+    worksheet.set_column(1, 1, 13)  
+    worksheet.set_column(2, 2, 22)  
 
-    # Write Table Headers
     row_idx = 5
     worksheet.merge_range(row_idx, 0, row_idx + 1, 0, "Sl. No", header_merged)
     worksheet.merge_range(row_idx, 1, row_idx + 1, 1, "USN", header_merged)
@@ -330,7 +324,7 @@ def generate_a3_excel_ledger(b_name, b_df, course_list, branch_name_map, active_
         worksheet.write(row_idx + 1, col_idx + 1, "SEE", header_normal)
         worksheet.write(row_idx + 1, col_idx + 2, "TOT", header_normal)
         worksheet.write(row_idx + 1, col_idx + 3, "GRD", header_normal)
-        worksheet.set_column(col_idx, col_idx + 3, 4.5)  # Compact marks columns
+        worksheet.set_column(col_idx, col_idx + 3, 4.5)  
         col_idx += 4
         
     end_headers = ["GRAND TOT", "%", "RESULT", "SGPA", "GRADE", "CREDITS"]
@@ -339,7 +333,6 @@ def generate_a3_excel_ledger(b_name, b_df, course_list, branch_name_map, active_
         worksheet.set_column(col_idx, col_idx, 7)
         col_idx += 1
 
-    # Write Data
     row_idx = 7
     for i, (_, stu) in enumerate(b_df.iterrows()):
         worksheet.write(row_idx, 0, i + 1, cell_center)
@@ -353,14 +346,10 @@ def generate_a3_excel_ledger(b_name, b_df, course_list, branch_name_map, active_
             tot = stu.get(f"{cc}_Tot", "")
             grd = stu.get(f"{cc}_Grd", "")
             
-            if pd.isna(cie) or cie == "":
-                cie = "-"
-            if pd.isna(see) or see == "":
-                see = "-"
-            if pd.isna(tot) or tot == "":
-                tot = "-"
-            if pd.isna(grd) or grd == "":
-                grd = "-"
+            if pd.isna(cie) or cie == "": cie = "-"
+            if pd.isna(see) or see == "": see = "-"
+            if pd.isna(tot) or tot == "": tot = "-"
+            if pd.isna(grd) or grd == "": grd = "-"
             
             fmt = fail_format if str(grd) in ['F', 'AB', 'NP', 'PND', 'PENDING'] else cell_center
             worksheet.write(row_idx, c_col, cie, cell_center)
@@ -392,7 +381,7 @@ if not selected_cycle_id:
     st.error("⚠️ CRITICAL ERROR: No Exam Cycle Selected. Please select a cycle in the Sidebar.")
     st.stop()
 
-# 🟢 NEW: Added `status_code` to the query so we know if we are in Phase 11 (Revaluation)
+# Context Check
 cycle_info = supabase.table("exam_cycles").select("exam_type, parent_cycle_id, status_code").eq("cycle_id", selected_cycle_id).execute().data
 exam_type = cycle_info[0].get('exam_type', 'Regular') if cycle_info else 'Regular'
 status_code = cycle_info[0].get('status_code', 1) if cycle_info else 1
@@ -411,7 +400,6 @@ show_makeup, show_reval = False, False
 
 if exam_type in ['Regular', 'Regular + Arrear (Concurrent)']:
     if status_code >= 11:
-        # Phase 11: Unlocks the 8th Tab (Revaluation Engine)
         t1, t2, t3, t4, t5, t6, t7, t_rev = st.tabs(["1. CIE Consolidator", "2. Bundle Decoder", "3. SEE Consolidator", "4. Grading Engine", "5. Moderation", "6. Publish Ledgers", "7. CoE Dashboard", "8. Revaluation Engine"])
         show_reval = True
     else:
@@ -421,7 +409,6 @@ if exam_type in ['Regular', 'Regular + Arrear (Concurrent)']:
 
 elif exam_type in ['Make-up', 'Supplementary', 'Supplementary (Arrear Only)', 'Summer']:
     if status_code >= 11:
-        # Phase 11: Unlocks the Revaluation Tab for Supplementary/Makeup Exams too
         t_mu, t3, t4, t6, t7, t_rev = st.tabs(["1. Auto-Sync Parent CIEs", "2. Upload Make-up SEEs", "3. Grading Engine", "4. Publish Ledgers", "5. CoE Dashboard", "6. Revaluation Engine"])
         show_reval = True
     else:
@@ -482,6 +469,64 @@ if show_cie:
                         supabase.table("student_results").upsert({"cycle_id": selected_cycle_id, "usn": m_usn, "course_code": m_cc, "cie_marks": m_marks}).execute()
                         st.success("✅ Saved.")
 
+# ----------------------------------------------------
+# TAB BLOCK: MAKE-UP / ARREAR CIE SYNC
+# ----------------------------------------------------
+if show_makeup:
+    with t_mu:
+        st.subheader("🔄 Auto-Sync Parent CIEs")
+        st.info("Make-up and Supplementary exams carry forward the student's Continuous Internal Evaluation (CIE) marks from their original regular semester.")
+        
+        if not parent_id:
+            st.error("🚨 Configuration Error: This cycle does not have a Parent Cycle linked. You cannot auto-sync CIEs without a parent cycle.")
+            st.info("If this is intentional, you must manually upload the CIEs using the database.")
+        else:
+            st.write(f"**Linked Parent Cycle ID:** {parent_id}")
+            
+            if st.button("📥 Sync CIEs from Parent Cycle", type="primary"):
+                with st.spinner("Fetching registrations and syncing historical CIE marks..."):
+                    try:
+                        curr_regs = fetch_all_records("course_registrations", "usn, course_code", filters={"cycle_id": selected_cycle_id})
+                        if not curr_regs:
+                            st.warning("No students registered for this cycle yet. Go to the Registrations module first.")
+                        else:
+                            parent_results = fetch_all_records("student_results", "usn, course_code, cie_marks", filters={"cycle_id": parent_id})
+                            
+                            parent_map = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): safe_float(r.get('cie_marks'), 0.0) for r in parent_results}
+                            
+                            sync_count = 0
+                            missing_count = 0
+                            payload = []
+                            
+                            for reg in curr_regs:
+                                u = str(reg['usn']).strip().upper()
+                                c = str(reg['course_code']).strip().upper()
+                                
+                                if (u, c) in parent_map:
+                                    payload.append({
+                                        "cycle_id": selected_cycle_id,
+                                        "usn": u,
+                                        "course_code": c,
+                                        "cie_marks": parent_map[(u, c)],
+                                        "exam_status": "PENDING", 
+                                        "grade": "PND"
+                                    })
+                                    sync_count += 1
+                                else:
+                                    missing_count += 1
+                                    
+                            if payload:
+                                for i in range(0, len(payload), 500):
+                                    supabase.table("student_results").upsert(payload[i:i+500]).execute()
+                                
+                                st.success(f"✅ Successfully synced {sync_count} CIE records from the Parent Cycle!")
+                                if missing_count > 0:
+                                    st.warning(f"⚠️ {missing_count} registered subjects had no CIE marks in the Parent Cycle.")
+                            else:
+                                st.error("No matching CIE records found in the Parent Cycle for these registrations.")
+                                
+                    except Exception as e:
+                        st.error(f"Sync failed: {e}")
 
 # ----------------------------------------------------
 # TAB BLOCK: BUNDLE DECODER
@@ -857,24 +902,18 @@ if show_mod:
             
             if st.button("🔍 Fetch Pending Third Valuations", type="primary"):
                 with st.spinner("Scanning Audit Logs and filtering out resolved cases..."):
-                    # 🟢 FIX: Fetch BOTH Pending and Resolved logs
                     pending_logs = fetch_all_records("marks_audit_log", filters={"cycle_id": selected_cycle_id, "change_type": "THIRD VALUATION PENDING"})
                     resolved_logs = fetch_all_records("marks_audit_log", filters={"cycle_id": selected_cycle_id, "change_type": "THIRD VALUATION - RESOLVED"})
                     
-                    # Create a master list of all (USN, Course) combinations that are already RESOLVED
                     resolved_keys = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()) for r in resolved_logs}
                     
                     tv_logs = []
                     seen_keys = set()
                     
                     if pending_logs:
-                        # Sort by created_at descending so we get the most recent pending record first
                         pending_df = pd.DataFrame(pending_logs).sort_values('created_at', ascending=False)
-                        
                         for _, r in pending_df.iterrows():
                             key = (str(r['usn']).strip().upper(), str(r['course_code']).strip().upper())
-                            
-                            # 🟢 Only add them to the list if they are NOT in the resolved_keys set
                             if key not in resolved_keys and key not in seen_keys:
                                 seen_keys.add(key)
                                 tv_logs.append(r.to_dict())
@@ -1322,7 +1361,7 @@ if show_dashboard:
                             st.success("🎉 All clear! All evaluated subjects have full marks uploaded.")
                 except Exception as e:
                     st.error(f"Dashboard Error: {e}")
-                    
+
 # ----------------------------------------------------
 # TAB BLOCK: REVALUATION ENGINE (Used in Reval Context)
 # ----------------------------------------------------
