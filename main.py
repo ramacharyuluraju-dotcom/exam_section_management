@@ -1,5 +1,8 @@
 import streamlit as st
 import pandas as pd
+import io
+import zipfile
+import datetime
 from utils import init_db, clean_data_for_db
 
 # --- CONFIGURATION ---
@@ -21,7 +24,8 @@ tabs = st.tabs([
     "⚙️ Global Settings", 
     "🏫 Infrastructure", 
     "👥 Stakeholders", 
-    "🎓 Academic Master"
+    "🎓 Academic Master",
+    "💾 Data Backup" # 🟢 NEW TAB ADDED
 ])
 
 # ==========================================
@@ -38,197 +42,130 @@ with tabs[0]:
         c1, c2 = st.columns(2)
         name = c1.text_input("Institution Name", value=curr.get('college_name', ''))
         univ = c1.text_input("University", value=curr.get('university', ''))
-        scheme = c2.selectbox("Syllabus Type", ["OBE", "CBCS"], index=0)
-        addr = st.text_area("Full Address", value=curr.get('address', ''))
+        scheme = c2.selectbox("Syllabus Scheme", ["2022 Scheme (NEP)", "2021 Scheme (CBCS)", "2018 Scheme"])
         
-        if st.form_submit_button("💾 Save Institutional DNA"):
-            settings = {'college_name': name, 'university': univ, 'scheme_type': scheme, 'address': addr}
-            data = [{'setting_key': k, 'setting_value': v} for k, v in settings.items()]
-            try:
-                supabase.table("global_settings").upsert(data).execute()
-                st.success("Global Settings Updated!")
-            except Exception as e:
-                st.error(f"🚨 RAW DATABASE ERROR: {e}")
+        if st.form_submit_button("Save Global Settings"):
+            data = [
+                {"setting_key": "college_name", "setting_value": name},
+                {"setting_key": "university", "setting_value": univ},
+                {"setting_key": "current_scheme", "setting_value": scheme}
+            ]
+            supabase.table("global_settings").upsert(data).execute()
+            st.success("Global Settings Updated!")
 
 # ==========================================
 # 1. INFRASTRUCTURE (ROOMS)
 # ==========================================
 with tabs[1]:
-    st.header("Step 1.1: Block & Room Master")
-    st.info("Note: Further infrastructure logic will be added later.")
+    st.header("Step 1: Exam Halls / Infrastructure")
     
-    with st.expander("Show CSV Format Guide"):
-        st.markdown("Required Columns: `room_no, block_name, capacity, bench_type, priority_order`")
-        st.markdown("**Note:** The system automatically maps 'Two Seater' to 'Double' to match database rules.")
-        
-    f_room = st.file_uploader("Upload Room CSV", type='csv', key="room")
-    if f_room and st.button("Register Rooms"):
-        df = pd.read_csv(f_room)
-        
-        # --- FIX: TRANSLATE BENCH TYPES TO DB ALLOWED VALUES ---
-        if 'bench_type' in df.columns:
-            # Clean string (remove accidental spaces)
-            df['bench_type'] = df['bench_type'].astype(str).str.strip().str.title()
-            
-            # Map CSV phrases to the exact words Supabase expects
-            mapping = {
-                'Two Seater': 'Double',
-                'Two_Seater': 'Double',
-                'Single Seater': 'Single',
-                'One Seater': 'Single',
-                'Gallery': 'Gallery'
-            }
-            df['bench_type'] = df['bench_type'].replace(mapping)
-            
-        expected = ['room_no', 'block_name', 'capacity', 'bench_type', 'priority_order']
-        data = clean_data_for_db(df, expected, numeric_cols=['capacity', 'priority_order'])
-        
-        try:
-            supabase.table("master_rooms").upsert(data).execute()
-            st.success(f"✅ Infrastructure Saved! {len(data)} rooms registered successfully.")
-        except Exception as e:
-            error_msg = str(e)
-            if "master_rooms_bench_type_check" in error_msg:
-                st.error("❌ Database rejected the 'bench_type'. Allowed values are only: 'Single', 'Double', 'Gallery'.")
-            else:
-                st.error(f"🚨 RAW DATABASE ERROR: {error_msg}")
-
-# ==========================================
-# 2. STAKEHOLDERS (STAFF/FACULTY)
-# ==========================================
-with tabs[2]:
-    st.header("Step 1.2: Faculty & Staff Master")
-    m_t1, m_t2 = st.tabs(["📤 Bulk Upload", "📝 Individual Manage"])
-    
-    with m_t1:
-        st.markdown("**CSV Required Columns:** `staff_id, name, role, dept, is_evaluator, phone, email`")
-        f_staff = st.file_uploader("Upload Stakeholders CSV", type='csv', key="staff_bulk")
-        if f_staff and st.button("Bulk Register Stakeholders"):
-            df = pd.read_csv(f_staff)
-            expected = ['staff_id', 'name', 'role', 'dept', 'is_evaluator', 'phone', 'email']
+    col_i1, col_i2 = st.columns(2)
+    with col_i1:
+        st.subheader("Bulk Upload Rooms")
+        f_rooms = st.file_uploader("Upload CSV (room_number, capacity, block_name)", type='csv')
+        if f_rooms and st.button("Upload Rooms"):
+            df = pd.read_csv(f_rooms)
+            expected = ['room_number', 'capacity', 'block_name']
             data = clean_data_for_db(df, expected)
             try:
-                supabase.table("master_stakeholders").upsert(data).execute()
-                st.success("✅ Stakeholders Registered!")
-            except Exception as e:
-                st.error(f"🚨 RAW DATABASE ERROR: {e}")
-
-    with m_t2:
-        with st.form("staff_individual"):
-            col1, col2 = st.columns(2)
-            s_id = col1.text_input("Staff ID (Primary Key)")
-            s_name = col2.text_input("Full Name")
-            s_role = col1.selectbox("Role", ["Faculty", "Admin", "COE", "Super User"])
-            s_dept = col2.text_input("Department")
-            s_phone = col1.text_input("Phone")
-            s_email = col2.text_input("Email")
-            s_eval = col1.checkbox("Is Evaluator?")
+                supabase.table("master_rooms").upsert(data).execute()
+                st.success(f"Added {len(data)} rooms successfully.")
+            except Exception as e: st.error(f"Error: {e}")
             
-            c1, c2, c3 = st.columns(3)
-            if c1.form_submit_button("💾 Add/Update Staff"):
-                s_data = {"staff_id": s_id, "name": s_name, "role": s_role, "dept": s_dept, "phone": s_phone, "email": s_email, "is_evaluator": s_eval}
-                try:
-                    supabase.table("master_stakeholders").upsert(s_data).execute()
-                    st.success(f"✅ Staff {s_id} updated.")
-                except Exception as e:
-                    st.error(f"🚨 RAW DATABASE ERROR: {e}")
-            
-            if c3.form_submit_button("🗑️ Delete Staff"):
-                try:
-                    supabase.table("master_stakeholders").delete().eq("staff_id", s_id).execute()
-                    st.warning(f"Staff {s_id} removed.")
-                except Exception as e:
-                    st.error(f"🚨 RAW DATABASE ERROR: {e}")
+    with col_i2:
+        st.subheader("Manual Entry")
+        with st.form("room_manual"):
+            r_num = st.text_input("Room Number (e.g. 201A)")
+            r_cap = st.number_input("Capacity", 10, 100, 40)
+            r_block = st.text_input("Block Name")
+            if st.form_submit_button("Add/Update Room"):
+                supabase.table("master_rooms").upsert({"room_number": r_num, "capacity": r_cap, "block_name": r_block}).execute()
+                st.success(f"Room {r_num} saved.")
 
 # ==========================================
-# 3. ACADEMIC MASTER
+# 2. STAKEHOLDERS (STUDENTS & EVALUATORS)
 # ==========================================
-with tabs[3]:
-    st.header("Step 1.3: Core Academic Records")
-    ac_t1, ac_t2, ac_t3 = st.tabs(["🏗️ Branches", "👥 Students", "📖 Course Scheme"])
+with tabs[2]:
+    st.header("Step 2: Stakeholder Master Data")
+    st_tabs = st.tabs(["Students", "Evaluators"])
     
-    with ac_t1:
-        st.subheader("Manual Branch Management")
-        with st.form("branch_manage"):
-            col1, col2 = st.columns(2)
-            b_code = col1.text_input("Branch Code (Primary Key)")
-            b_name = col2.text_input("Branch Name")
-            p_type = col1.selectbox("Program Type", ["UG", "PG", "PhD"])
-            d_type = col2.text_input("Degree Type (e.g. B.E.)")
-            dept_n = col1.text_input("Department Name")
-            
-            c1, c2, c3 = st.columns(3)
-            if c1.form_submit_button("💾 Save/Update Branch"):
-                b_data = {"branch_code": b_code, "branch_name": b_name, "program_type": p_type, "degree_type": d_type, "dept_name": dept_n}
-                try:
-                    supabase.table("master_branches").upsert(b_data).execute()
-                    st.success(f"✅ Branch {b_code} Saved.")
-                except Exception as e:
-                    st.error(f"🚨 RAW DATABASE ERROR: {e}")
-                    
-            if c3.form_submit_button("🗑️ Delete Branch"):
-                try:
-                    supabase.table("master_branches").delete().eq("branch_code", b_code).execute()
-                    st.warning(f"Branch {b_code} deleted.")
-                except Exception as e:
-                    st.error(f"🚨 RAW DATABASE ERROR: {e}")
-
-    with ac_t2:
-        st.subheader("Student Admissions")
-        s_m1, s_m2 = st.tabs(["📤 Bulk", "📝 Manual"])
-        with s_m1:
-            st.markdown("**CSV Required Columns:** `usn, full_name, branch_code, current_sem, section, email, phone, dob, contact, status`")
-            f_stu = st.file_uploader("Upload Student CSV", type='csv')
-            if f_stu and st.button("Bulk Admissions"):
-                df = pd.read_csv(f_stu).rename(columns={'name': 'full_name', 'sem': 'current_sem'})
-                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'section', 'email', 'phone', 'dob', 'contact', 'status']
-                data = clean_data_for_db(df, expected, numeric_cols=['current_sem'])
+    with st_tabs[0]:
+        st.subheader("Student Database Enrollment")
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, batch_year)", type='csv')
+            if f_stu and st.button("Upload Students"):
+                df = pd.read_csv(f_stu)
+                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'batch_year']
+                data = clean_data_for_db(df, expected)
                 try:
                     supabase.table("master_students").upsert(data).execute()
-                    st.success("✅ Students loaded.")
-                except Exception as e:
-                    st.error(f"🚨 RAW DATABASE ERROR: {e}")
-                    
-        with s_m2:
-            with st.form("stu_manual"):
-                col1, col2 = st.columns(2)
-                st_usn = col1.text_input("USN")
-                st_name = col2.text_input("Full Name")
-                st_bc = col1.text_input("Branch Code")
-                st_sem = col2.number_input("Current Sem", 1, 8, 1)
-                
-                if st.form_submit_button("💾 Add/Update Student"):
-                    try:
-                        supabase.table("master_students").upsert({"usn": st_usn, "full_name": st_name, "branch_code": st_bc, "current_sem": st_sem}).execute()
-                        st.success("✅ Student updated.")
-                    except Exception as e:
-                        st.error(f"🚨 RAW DATABASE ERROR: {e}")
-                        
-                if st.form_submit_button("🗑️ Delete Student"):
-                    try:
-                        supabase.table("master_students").delete().eq("usn", st_usn).execute()
-                        st.warning("Student removed.")
-                    except Exception as e:
-                        st.error(f"🚨 RAW DATABASE ERROR: {e}")
+                    st.success(f"Enrolled {len(data)} students.")
+                except Exception as e: st.error(f"Error: {e}")
+        
+        with col_s2:
+            st.info("Uploading Photos? Go to the 'Pre-Exam Docs' module for the bulk photo uploader.")
 
-    with ac_t3:
-        st.subheader("Course Scheme Repository")
-        c_m1, c_m2 = st.tabs(["📤 Bulk", "📝 Manual"])
+    with st_tabs[1]:
+        st.subheader("Faculty / Evaluators")
+        col_e1, col_e2 = st.columns(2)
+        with col_e1:
+            f_fac = st.file_uploader("Upload CSV (faculty_id, name, department)", type='csv')
+            if f_fac and st.button("Upload Faculty"):
+                df = pd.read_csv(f_fac)
+                expected = ['faculty_id', 'name', 'department']
+                data = clean_data_for_db(df, expected)
+                try:
+                    supabase.table("master_evaluators").upsert(data).execute()
+                    st.success(f"Added {len(data)} faculty members.")
+                except Exception as e: st.error(f"Error: {e}")
+        with col_e2:
+            with st.form("fac_manual"):
+                f_id = st.text_input("Faculty ID")
+                f_name = st.text_input("Full Name")
+                f_dep = st.text_input("Department")
+                if st.form_submit_button("Add/Update Faculty"):
+                    supabase.table("master_evaluators").upsert({"faculty_id": f_id, "name": f_name, "department": f_dep}).execute()
+                    st.success("Saved.")
+
+# ==========================================
+# 3. ACADEMIC MASTER (COURSES & BRANCHES)
+# ==========================================
+with tabs[3]:
+    st.header("Step 3: Academic Schema")
+    ac_tabs = st.tabs(["Branches / Programs", "Course Syllabus / Scheme"])
+    
+    with ac_tabs[0]:
+        c_b1, c_b2 = st.columns(2)
+        with c_b1:
+            f_br = st.file_uploader("Upload CSV (branch_code, branch_name, program_type)", type='csv')
+            if f_br and st.button("Upload Branches"):
+                df = pd.read_csv(f_br)
+                expected = ['branch_code', 'branch_name', 'program_type']
+                data = clean_data_for_db(df, expected)
+                try:
+                    supabase.table("master_branches").upsert(data).execute()
+                    st.success(f"Added {len(data)} branches.")
+                except Exception as e: st.error(f"Error: {e}")
+        with c_b2:
+            with st.form("branch_manual"):
+                b_c = st.text_input("Branch Code (e.g. CS)")
+                b_n = st.text_input("Branch Name (e.g. Computer Science)")
+                b_p = st.selectbox("Program Type", ["UG", "PG", "PHD"])
+                if st.form_submit_button("Save Branch"):
+                    supabase.table("master_branches").upsert({"branch_code": b_c, "branch_name": b_n, "program_type": b_p}).execute()
+                    st.success("Saved.")
+
+    with ac_tabs[1]:
+        st.info("The Master Course table defines every subject taught, its credits, and its max marks. This is critical for the grading engine.")
+        c_m1, c_m2 = st.columns(2)
+        
         with c_m1:
-            st.markdown("**CSV Required Columns:** `course_code, title, branch_code, semester_id, credits, max_cie, max_see, is_lab, is_integrated, type, course_type, is_elective, l_hours, t_hours, p_hours, saae_hours, exam_duration_hours, total_marks`")
-            f_sch = st.file_uploader("Upload Scheme CSV", type='csv')
-            if f_sch and st.button("Save Full Scheme"):
-                df = pd.read_csv(f_sch).rename(columns={'course_title': 'title'})
-                
-                # Pre-clean NaN values so JSON doesn't crash before it even reaches DB
-                if 'is_lab' in df.columns:
-                    df['is_lab'] = df['is_lab'].fillna(False)
-                df = df.where(pd.notnull(df), None)
-                
-                expected = ['course_code', 'title', 'branch_code', 'semester_id', 'credits', 'max_cie', 'max_see', 'is_lab', 'is_integrated', 'type', 'course_type', 'is_elective', 'l_hours', 't_hours', 'p_hours', 'saae_hours', 'exam_duration_hours', 'total_marks']
-                nums = ['semester_id', 'credits', 'max_cie', 'max_see', 'total_marks', 'l_hours', 't_hours', 'p_hours', 'saae_hours', 'exam_duration_hours']
-                data = clean_data_for_db(df, expected, numeric_cols=nums)
-                
+            f_crs = st.file_uploader("Upload Scheme CSV (course_code, title, branch_code, semester_id, credits, max_cie, max_see, total_marks)", type='csv')
+            if f_crs and st.button("Upload Scheme"):
+                df = pd.read_csv(f_crs)
+                expected = ['course_code', 'title', 'branch_code', 'semester_id', 'credits', 'max_cie', 'max_see', 'total_marks']
+                data = clean_data_for_db(df, expected)
                 try:
                     supabase.table("master_courses").upsert(data).execute()
                     st.success("✅ Scheme Updated Successfully.")
@@ -258,3 +195,94 @@ with tabs[3]:
                         st.warning("Course removed.")
                     except Exception as e:
                         st.error(f"🚨 RAW DATABASE ERROR: {e}")
+
+# ==========================================
+# 4. MASTER BACKUP & DISASTER RECOVERY
+# ==========================================
+with tabs[4]:
+    st.header("Step 4: Master Data Backup Engine")
+    st.info("This utility securely pulls your entire University ERP database (Students, Courses, Registrations, Results, Timetables, and Audit Logs) and packages it into a single, highly compressed ZIP file for offline storage.")
+
+    # Helper function to bypass the 1000-row limit for backups
+    def fetch_backup_records(table_name):
+        all_data = []
+        start = 0
+        step = 1000
+        while True:
+            try:
+                res = supabase.table(table_name).select("*").range(start, start + step - 1).execute()
+                if not res.data:
+                    break
+                all_data.extend(res.data)
+                if len(res.data) < step:
+                    break
+                start += step
+            except Exception as e:
+                st.error(f"Error fetching table {table_name}: {e}")
+                break
+        return all_data
+
+    st.write("### Prepare Offline Backup")
+
+    if st.button("🚀 Generate Master Database Backup", type="primary"):
+        # Define every critical table in your ERP ecosystem
+        tables_to_backup = [
+            "master_students", 
+            "master_courses", 
+            "master_branches", 
+            "master_fees",
+            "exam_cycles",
+            "exam_timetable",
+            "course_registrations",
+            "student_results",
+            "marks_audit_log"
+        ]
+        
+        # Create UI elements for progress tracking
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Create an in-memory ZIP file buffer
+        zip_buffer = io.BytesIO()
+        
+        try:
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                total_tables = len(tables_to_backup)
+                
+                for index, table in enumerate(tables_to_backup):
+                    # Update UI
+                    status_text.text(f"Extracting {table}... ({index + 1}/{total_tables})")
+                    
+                    # Fetch data
+                    data = fetch_backup_records(table)
+                    
+                    if data:
+                        # Convert to CSV string and write to ZIP
+                        df = pd.DataFrame(data)
+                        csv_string = df.to_csv(index=False)
+                        zf.writestr(f"{table}_backup.csv", csv_string)
+                    else:
+                        # Placeholder for empty tables
+                        zf.writestr(f"{table}_backup_EMPTY.csv", "No data currently exists in this table.")
+                    
+                    # Update progress bar
+                    progress_bar.progress((index + 1) / total_tables)
+                    
+            # Finalize filename
+            timestamp = datetime.datetime.now().strftime("%Y_%m_%d_%H%M")
+            zip_filename = f"AMC_ERP_Master_Backup_{timestamp}.zip"
+            
+            status_text.success("✅ Database compiled successfully! Ready for download.")
+            
+            # Display the actual download button
+            st.download_button(
+                label="📥 Download Master Backup (ZIP)",
+                data=zip_buffer.getvalue(),
+                file_name=zip_filename,
+                mime="application/zip",
+                type="primary",
+                use_container_width=True
+            )
+            
+        except Exception as e:
+            status_text.error(f"🚨 Backup generation failed: {e}")
