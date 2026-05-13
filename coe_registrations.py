@@ -57,6 +57,10 @@ def get_checkbox():
     ]))
     return t
 
+def natural_sort_key(s):
+    """Splits strings into text and numbers so '202' comes after '201' properly."""
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+
 # ==========================================
 # PHOTO BUCKET MAPPING UTILS 
 # ==========================================
@@ -219,21 +223,8 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, form_tit
     _, t2_h = t2.wrap(w, h)
     t2.drawOn(c, margin, y - t2_h)
     y -= (t2_h + 25)
-    
-    # 🟢 DECLARATION
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(margin, y, "DECLARATION:")
-    y -= 15
-    
-    p_style = getSampleStyleSheet()['Normal']
-    p_style.fontSize = 9
-    decl = Paragraph("I hereby declare that the information provided is true to the best of my knowledge. I have carefully selected the courses listed above and I request to be registered for the same in the current semester.", p_style)
-    decl.wrapOn(c, content_w, 50)
-    _, decl_h = decl.wrap(content_w, 50)
-    decl.drawOn(c, margin, y - decl_h)
-    y -= (decl_h + 25)
 
-    # 🟢 FOUR STUDENT UNDERTAKINGS
+    # 🟢 FOUR STUDENT UNDERTAKINGS FIRST
     c.setFont("Helvetica-Bold", 10)
     c.drawString(margin, y, "STUDENT UNDERTAKING:")
     y -= 15
@@ -253,7 +244,20 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, form_tit
         c.drawString(margin + 18, y - 6, u)
         y -= 18
 
-    y -= 30
+    y -= 10
+    
+    # 🟢 DECLARATION SECOND
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(margin, y, "DECLARATION:")
+    y -= 15
+    
+    p_style = getSampleStyleSheet()['Normal']
+    p_style.fontSize = 9
+    decl = Paragraph("I hereby declare that the information provided is true to the best of my knowledge. I have carefully selected the courses listed above and I request to be registered for the same in the current semester.", p_style)
+    decl.wrapOn(c, content_w, 50)
+    _, decl_h = decl.wrap(content_w, 50)
+    decl.drawOn(c, margin, y - decl_h)
+    y -= (decl_h + 30)
 
     # 🟢 SIGNATURES (Date Left, Student Right)
     sig_data = [
@@ -304,7 +308,6 @@ with reg_tabs[0]:
     branch_prog_map = {b['branch_code']: b.get('program_type', 'UG') for b in branches_data}
     branch_list = [b['branch_code'] for b in branches_data if str(b['branch_code']).upper() != 'COMMON']
     
-    # Added "ALL BRANCHES" option
     f_branch = col_f2.selectbox("Target Branch", ["-- Select --", "ALL BRANCHES"] + branch_list)
     f_sem = col_f3.number_input("Target Semester", min_value=1, max_value=10, value=1)
     
@@ -317,7 +320,6 @@ with reg_tabs[0]:
         else:
             with st.spinner(f"Fetching cloud assets and compiling batch PDF..."):
                 try:
-                    # 1. Fetch Students based on selection
                     if f_branch == "ALL BRANCHES":
                         students = fetch_all_records("master_students", "*", {"current_sem": str(f_sem)})
                     else:
@@ -328,7 +330,6 @@ with reg_tabs[0]:
                     else:
                         branch_courses_dict = {}
                         
-                        # 2. Logic: Process Courses from CSV vs Database
                         if f_csv is not None:
                             df_crs = pd.read_csv(f_csv)
                             col_map = {c.strip().upper(): c for c in df_crs.columns}
@@ -381,11 +382,10 @@ with reg_tabs[0]:
                             s_br = str(stu['branch_code']).upper()
                             prog_type = branch_prog_map.get(s_br, "UG")
                             
-                            # Fetch and sort specific courses for this student's branch
                             raw_courses = branch_courses_dict.get(s_br, []) + branch_courses_dict.get("COMMON", [])
-                            raw_courses = sorted(raw_courses, key=lambda x: str(x['course_code']))
+                            # 🟢 NEW: Sorted mathematically using Natural Sort
+                            raw_courses = sorted(raw_courses, key=lambda x: natural_sort_key(x['course_code']))
                             
-                            # Deduplicate in case of overlaps
                             seen = set()
                             dedup_courses = []
                             for crs in raw_courses:
@@ -423,7 +423,6 @@ with reg_tabs[1]:
     col_b1, col_b2 = st.columns(2)
     
     with col_b1:
-        # 🟢 NEW UNIVERSAL TEMPLATE LOGIC
         st.subheader("A. Download Universal Template")
         st.info("Upload your syllabus CSV here. We will generate ONE massive template containing ALL students mapped to their respective subjects based on the 'Streams' column!")
         
@@ -460,10 +459,9 @@ with reg_tabs[1]:
                         for s in stu_data:
                             s_branch = str(s['branch_code']).upper()
                             
-                            # Safely fetch branch-specific courses AND common subjects
                             my_courses = branch_courses.get(s_branch, []) + branch_courses.get("COMMON", []) + branch_courses.get("FIRST_YEAR", [])
-                            # Deduplicate and Sort
-                            my_courses = sorted(list(set(my_courses)))
+                            # 🟢 NEW: Sorted mathematically using Natural Sort
+                            my_courses = sorted(list(set(my_courses)), key=natural_sort_key)
                             
                             for c in my_courses:
                                 template_rows.append({"usn": s['usn'], "course_code": c, "academic_year": t_ay, "semester_type": t_type, "semester": t_sem})
@@ -477,7 +475,10 @@ with reg_tabs[1]:
 
     with col_b2:
         st.subheader("B. Upload Finalized Registrations")
+        # 🟢 NEW: Added expected CSV columns to avoid user errors
+        st.markdown("⚠️ **Expected Columns:** `usn`, `course_code`, `academic_year`, `semester_type`, `semester`")
         f_reg = st.file_uploader("Upload Edited CSV", type='csv', key="reg_bulk_upload")
+        
         if f_reg and st.button("🚀 Execute Bulk Registration", type="primary"):
             df = pd.read_csv(f_reg)
             data = clean_data_for_db(df, ['usn', 'course_code', 'academic_year', 'semester_type', 'semester'])
@@ -521,7 +522,8 @@ with reg_tabs[2]:
             if selected_student_label != "-- Select --":
                 selected_usn = student_options[selected_student_label]
                 applicable_courses = [c for c in fetch_all_records("master_courses", "course_code, title, branch_code") if c['branch_code'] in [selected_branch, 'COMMON']]
-                applicable_courses = sorted(applicable_courses, key=lambda x: str(x['course_code']))
+                # 🟢 NEW: Sorted mathematically using Natural Sort
+                applicable_courses = sorted(applicable_courses, key=lambda x: natural_sort_key(x['course_code']))
                 
                 if not applicable_courses: st.warning("No courses mapped to this branch.")
                 else:
