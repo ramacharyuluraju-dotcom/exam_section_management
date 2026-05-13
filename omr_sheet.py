@@ -194,7 +194,6 @@ def draw_4_corner_question_block(c, x_start, y_start, block_w, num_qs):
     block_h = (rows * row_h) + (num_gaps * group_gap) + 8*mm
     y_bottom = y_start - block_h
     
-    # THE 4 CORNER ANCHORS
     anchor_s = 5 * mm
     c.setFillColor(colors.black)
     c.rect(x_start, y_start - anchor_s, anchor_s, anchor_s, fill=1, stroke=0) 
@@ -206,7 +205,6 @@ def draw_4_corner_question_block(c, x_start, y_start, block_w, num_qs):
     q_start_x = x_start + anchor_s + 2*mm
     q_start_y = y_start - anchor_s - 2*mm
     
-    # DIVIDERS
     c.saveState()
     c.setStrokeColor(DROPOUT_GREY)
     c.setDash(2, 2)
@@ -215,7 +213,6 @@ def draw_4_corner_question_block(c, x_start, y_start, block_w, num_qs):
         c.line(div_x, y_start - anchor_s, div_x, y_bottom + anchor_s)
     c.restoreState()
 
-    # QUESTIONS
     q_current = 1
     for col in range(cols):
         curr_y = q_start_y
@@ -251,9 +248,14 @@ def generate_batch_omr_pdf(college, left_logo, right_logo, watermark, students_d
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     
+    # Identify proper columns regardless of case
+    cols = [c.upper().strip() for c in students_data.columns]
+    usn_col = students_data.columns[cols.index('USN')] if 'USN' in cols else students_data.columns[0]
+    name_col = students_data.columns[cols.index('NAME')] if 'NAME' in cols else students_data.columns[1] if len(students_data.columns) > 1 else None
+
     for _, student in students_data.iterrows():
-        usn = str(student.get('USN', student.iloc[0]))
-        name = str(student.get('Name', student.iloc[1]))
+        usn = str(student[usn_col])
+        name = str(student[name_col]) if name_col else ""
         
         draw_omr_watermark(c, watermark)
         y_start = OMR_PAGE_H - 12*mm 
@@ -337,8 +339,9 @@ def generate_diary_pdf(college, left_logo, right_logo):
     c.showPage(); c.save(); buffer.seek(0)
     return buffer
 
+st.set_page_config(page_title="AMC Exam Tools V14.0 (Final)", layout="centered")
 st.title("📄 AMC Exam Sheet Generator")
-st.markdown("Generates: **OMR (4-Corner Mapping, No Collisions)**, **CAED**, and **Relieving Diary**.")
+st.markdown("Generates: **OMR (4-Corner Mapping)**, **CAED**, and **Relieving Diary**.")
 
 with st.sidebar:
     st.header("Select Format")
@@ -359,7 +362,7 @@ if "OMR" in sheet_type:
     num_qs = st.selectbox("Number of Questions", [50, 100])
     
     st.markdown("### Target Audience")
-    st.markdown("Upload a CSV containing the student list. Ensure it has columns named **USN** and **Name**.")
+    st.markdown("Upload a CSV containing the student list. System auto-maps standard columns.")
     uploaded_file = st.file_uploader("Upload Student List (CSV)", type=["csv"])
     
     if uploaded_file is not None:
@@ -368,6 +371,11 @@ if "OMR" in sheet_type:
             st.success(f"Loaded {len(df)} students.")
             st.dataframe(df.head())
             
+            # Check for generic columns
+            cols = [c.upper().strip() for c in df.columns]
+            if 'USN' not in cols:
+                st.warning("⚠️ Could not definitively identify a 'USN' column. Proceeding using the first column.")
+            
             if st.button("Generate Batch OMR PDFs", type="primary"):
                 pdf_out = generate_batch_omr_pdf(college_name, left_logo, right_logo, watermark, df, course_code, exam_type, num_qs)
                 fname = f"AMC_OMR_{course_code}_{num_qs}Q_Batch.pdf"
@@ -375,7 +383,7 @@ if "OMR" in sheet_type:
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
     else:
-        st.info("Waiting for CSV upload. Format required: 'USN', 'Name'")
+        st.info("Waiting for CSV upload.")
 
 elif st.button("Generate PDF", type="primary"):
     if sheet_type == "CAED Printout Sheet":
