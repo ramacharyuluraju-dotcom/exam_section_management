@@ -4,7 +4,15 @@ import numpy as np
 import pandas as pd
 import fitz  # PyMuPDF
 import io
+import os
 import itertools
+import zipfile
+
+# Automatically create the dataset folder if it doesn't exist for ML Harvesting
+DATASET_DIR = "omr_training_data/needs_review"
+os.makedirs(DATASET_DIR, exist_ok=True)
+
+st.set_page_config(page_title="AMC OMR Evaluator (With ERP Export)", layout="wide")
 
 st.title("🎯 AMC OMR Sheet Evaluator")
 st.markdown("Powered by **Perfect-Rectangle Homography, PyZbar & Global Scaling**.")
@@ -51,7 +59,10 @@ def find_anchors_and_warp(image, config):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
-    cnts, _ = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Robust contour checking across OpenCV versions
+    cnts_res = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = cnts_res[0] if len(cnts_res) == 2 else cnts_res[1]
     
     candidates = []
     for c in cnts:
@@ -126,9 +137,11 @@ def find_anchors_and_warp(image, config):
     return best_corners, thresh, gray, version_anchor, warped_thresh, warped_color
 
 def evaluate_image(image, multi_master_key, fill_percentage, config):
+    flagged_log = []
+    
     res = find_anchors_and_warp(image, config)
     if res[0] is None:
-        return {"USN": "Error", "Course": "Error", "Version": "N/A", "Score": 0, "Confidence": "0%", "Needs Moderation": "YES", "Status": "Failed to map 4 perfect corners."}, image.copy(), None
+        return {"USN": "Error", "Course": "Error", "Version": "N/A", "Score": 0, "Confidence": "0%", "Needs Moderation": "YES", "Flagged Questions": "Failed to map 4 perfect corners", "Status": "Failed to map 4 perfect corners."}, image.copy(), None
 
     corners, thresh, gray, version_anchor, warped_thresh, warped_color = res
 
@@ -140,28 +153,21 @@ def evaluate_image(image, multi_master_key, fill_percentage, config):
     tr_large = cv2.resize(top_right_gray, (0,0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
     tr_thresh = cv2.threshold(tr_large, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
 
-    # --- PYZBAR ENGINE ---
     try:
         from pyzbar.pyzbar import decode
         decoded = decode(tr_large)
-        if decoded: 
-            qr_data = decoded[0].data.decode('utf-8')
-        
+        if decoded: qr_data = decoded[0].data.decode('utf-8')
         if not qr_data:
             decoded = decode(tr_thresh)
-            if decoded: 
-                qr_data = decoded[0].data.decode('utf-8')
+            if decoded: qr_data = decoded[0].data.decode('utf-8')
     except ImportError:
         pass 
 
-    # --- OPENCV FALLBACK ENGINE ---
     if not qr_data:
         qr_detector = cv2.QRCodeDetector()
         qr_data, _, _ = qr_detector.detectAndDecode(tr_large)
-        if not qr_data:
-            qr_data, _, _ = qr_detector.detectAndDecode(tr_thresh)
-        if not qr_data:
-            qr_data, _, _ = qr_detector.detectAndDecode(gray) 
+        if not qr_data: qr_data, _, _ = qr_detector.detectAndDecode(tr_thresh)
+        if not qr_data: qr_data, _, _ = qr_detector.detectAndDecode(gray) 
 
     usn, course_code = "Unknown", "Unknown"
     if qr_data and '|' in qr_data:
@@ -185,7 +191,6 @@ def evaluate_image(image, multi_master_key, fill_percentage, config):
         global_scale = dist_px / (config['warped_w'] / 10.0) 
         
         vx, vy = version_anchor['x'], version_anchor['y']
-        
         b_start_x = vx + (68 * global_scale) 
         b_spacing = 11 * global_scale
         b_rad = int(3.2 * global_scale)      
@@ -209,6 +214,7 @@ def evaluate_image(image, multi_master_key, fill_percentage, config):
             detected_version = "Blank"
             flags_count += 1
             needs_moderation = "YES"
+            flagged_log.append("Version Code")
 
     # ================== MULTI-VERSION ROUTING ==================
     actual_score = 0
@@ -220,7 +226,7 @@ def evaluate_image(image, multi_master_key, fill_percentage, config):
         active_key = multi_master_key.get('A', {})
         final_status = "Warning: Version Code Invalid."
 
-    # ================== EVALUATE QUESTIONS (IN WARPED SPACE) ==================
+    # ================== EVALUATE QUESTIONS ==================
     q_current = 1
     bubble_area = 3.1415 * (config['b_radius'] ** 2)
     
@@ -265,10 +271,22 @@ def evaluate_image(image, multi_master_key, fill_percentage, config):
                 ans = "Blank"
                 is_confident = False
                 
-            # Moderation Flagging (Removed ML Harvesting Disk I/O for Cloud Safe Execution)
             if not is_confident or ans in ["Multiple", "Blank"]:
                 flags_count += 1
                 needs_moderation = "YES"
+                
+                if ans == "Multiple": flagged_log.append(f"Q{q_current} (Multiple)")
+                else: flagged_log.append(f"Q{q_current} (Blank/Light)")
+
+                y1 = max(0, int(curr_y - config['b_radius'] * 2.5))
+                y2 = min(warped_color.shape[0], int(curr_y + config['b_radius'] * 2.5))
+                x1 = max(0, int(b_start_x - config['b_radius'] * 2))
+                x2 = min(warped_color.shape[1], int(b_start_x + (4 * config['b_spacing']) + config['b_radius']))
+                
+                crop_img = warped_color[y1:y2, x1:x2] 
+                if crop_img.size > 0:
+                    filename = os.path.join(DATASET_DIR, f"{usn}_Q{q_current}_guess_{ans}.jpg")
+                    cv2.imwrite(filename, crop_img)
 
             if active_key and ans == active_key.get(q_current):
                 actual_score += 1
@@ -279,12 +297,13 @@ def evaluate_image(image, multi_master_key, fill_percentage, config):
     confidence_score = max(0, 100 - (flags_count * 2))
 
     result_dict = {
-        "USN": usn, 
-        "Course": course_code, 
+        "usn": usn, 
+        "course_code": course_code,
+        "see_marks": actual_score,  # Renamed for ERP matching
         "Version": detected_version,
-        "Score": actual_score, 
         "Confidence": f"{confidence_score}%",
         "Needs Moderation": needs_moderation,
+        "Flagged Questions": ", ".join(flagged_log) if flagged_log else "None",
         "Status": final_status
     }
     return result_dict, debug_original, warped_color
@@ -299,8 +318,11 @@ with st.sidebar:
     active_config = CONFIG_50Q if sheet_format == "50 Questions" else CONFIG_100Q
     
     st.divider()
-    st.header("2. Master Key Upload")
+    st.header("2. ERP Sync Data")
+    target_cycle_id = st.number_input("Target Exam Cycle ID (for Bulk Upload)", min_value=1, value=1, help="Appends this to the output CSV so it can be uploaded directly into the main ERP.")
     
+    st.divider()
+    st.header("3. Master Key Upload")
     template_df = pd.DataFrame({
         "Question": range(1, active_config['total_q'] + 1),
         "Version_A": ["A"] * active_config['total_q'],
@@ -308,13 +330,7 @@ with st.sidebar:
         "Version_C": ["C"] * active_config['total_q'],
         "Version_D": ["D"] * active_config['total_q']
     })
-    csv_template = template_df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Download Multi-Version CSV Template",
-        data=csv_template,
-        file_name=f"AMC_Master_Key_{active_config['total_q']}Q.csv",
-        mime="text/csv"
-    )
+    st.download_button("📥 Multi-Version CSV Template", template_df.to_csv(index=False).encode('utf-8'), f"AMC_Master_Key_{active_config['total_q']}Q.csv", "text/csv")
     
     uploaded_key = st.file_uploader("Upload Master Key", type=["csv"])
     multi_master_key_dict = {'A': {}, 'B': {}, 'C': {}, 'D': {}}
@@ -330,14 +346,14 @@ with st.sidebar:
                 multi_master_key_dict['D'][q] = str(row.get("Version_D", 'D')).strip().upper()
             st.success("✅ Multi-Version Key Loaded.")
         except Exception as e:
-            st.error("Error reading CSV. Ensure columns are named 'Question', 'Version_A', etc.")
+            st.error("Error reading CSV.")
     else:
         st.info("ℹ️ Using default test pattern for all versions until uploaded.")
         for v in ['A', 'B', 'C', 'D']:
             multi_master_key_dict[v] = {i: ['A', 'B', 'C', 'D'][(i-1) % 4] for i in range(1, active_config['total_q'] + 1)}
 
     st.divider()
-    st.header("3. Ink Threshold")
+    st.header("4. Ink Threshold")
     fill_percent = st.slider("Required Ink Fill (%)", min_value=10, max_value=80, value=30, step=5) / 100.0
 
 # --- TAB LAYOUT ---
@@ -366,9 +382,9 @@ with tab1:
             col_res, col_orig, col_warp = st.columns([1, 1.5, 1.5])
             
             with col_res:
-                st.write(f"**USN:** {result.get('USN', 'N/A')}")
+                st.write(f"**USN:** {result.get('usn', 'N/A')}")
                 st.write(f"**Version:** {result.get('Version', 'N/A')}")
-                st.write(f"**Score:** {result.get('Score', 0)}/{active_config['total_q']}")
+                st.write(f"**Score:** {result.get('see_marks', 0)}/{active_config['total_q']}")
                 
                 conf_val = int(result['Confidence'].strip('%'))
                 color = "green" if conf_val > 90 else "orange" if conf_val > 70 else "red"
@@ -377,17 +393,14 @@ with tab1:
                 mod_color = "red" if result['Needs Moderation'] == "YES" else "green"
                 st.markdown(f"**Needs Moderation:** <span style='color:{mod_color}; font-weight:bold;'>{result['Needs Moderation']}</span>", unsafe_allow_html=True)
                 
+                if result.get('Flagged Questions', "None") != "None":
+                    st.markdown(f"**Flagged Items to Check:** <span style='color:red;'>{result['Flagged Questions']}</span>", unsafe_allow_html=True)
+                
                 st.divider()
                 st.markdown("### Debug Exports")
                 is_success, orig_buffer = cv2.imencode(".png", debug_original)
-                if is_success:
-                    st.download_button("📥 Original Corners Map", orig_buffer.tobytes(), "Anchor_Map_Original.png", "image/png")
+                if is_success: st.download_button("📥 Original Corners Map", orig_buffer.tobytes(), "Anchor_Map_Original.png", "image/png")
                     
-                if warped_color is not None:
-                    is_success_w, warp_buffer = cv2.imencode(".png", warped_color)
-                    if is_success_w:
-                        st.download_button("📥 Flattened Math Grid", warp_buffer.tobytes(), "Anchor_Map_Flattened.png", "image/png")
-
             with col_orig:
                 st.markdown("**1. Original Scan (Corner Lock)**")
                 st.image(cv2.cvtColor(debug_original, cv2.COLOR_BGR2RGB), use_container_width=True)
@@ -443,13 +456,30 @@ with tab2:
             my_bar.empty() 
             st.success(f"Successfully processed {processed} sheets!")
             
-            results_df = pd.DataFrame(results_list)[["USN", "Course", "Version", "Score", "Confidence", "Needs Moderation", "Status", "File Name"]]
+            # Map for ERP integration
+            results_df = pd.DataFrame(results_list)
+            results_df["cycle_id"] = target_cycle_id
+            results_df["status"] = "PRESENT" 
+            
+            export_cols = ["cycle_id", "usn", "course_code", "see_marks", "status", "Version", "Confidence", "Needs Moderation", "Flagged Questions", "File Name"]
+            results_df = results_df[export_cols]
             
             def highlight_moderation(val):
-                color = 'red' if val == 'YES' else ''
-                return f'color: {color}'
+                return 'color: red' if val == 'YES' else ''
                 
             st.dataframe(results_df.style.map(highlight_moderation, subset=['Needs Moderation']), use_container_width=True)
             
-            csv = results_df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download Final Report (CSV)", csv, "AMC_Evaluation_Report.csv", "text/csv")
+            col_csv, col_zip = st.columns(2)
+            with col_csv:
+                csv = results_df.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download Final Report (CSV for ERP Upload)", csv, "AMC_Evaluation_Report.csv", "text/csv", type="primary")
+                
+            # Allow downloading the harvested ML images
+            with col_zip:
+                if os.path.exists(DATASET_DIR) and len(os.listdir(DATASET_DIR)) > 0:
+                    zip_buf = io.BytesIO()
+                    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for fname in os.listdir(DATASET_DIR):
+                            fpath = os.path.join(DATASET_DIR, fname)
+                            zf.write(fpath, fname)
+                    st.download_button("🗂️ Download Flagged Questions (ZIP for Manual Review)", zip_buf.getvalue(), "Flagged_OMR_Review.zip", "application/zip")
