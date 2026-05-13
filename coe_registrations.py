@@ -1,7 +1,14 @@
 import streamlit as st
 import pandas as pd
-import os
+import io
+import zipfile
 from utils import init_db, clean_data_for_db
+
+# --- REPORTLAB IMPORTS FOR PDF GENERATION ---
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 # --- CONFIGURATION ---
 supabase = init_db()
@@ -34,6 +41,90 @@ def safe_float(val, default=0.0):
     try: return float(val) if val and pd.notna(val) else default
     except: return default
 
+# --- PDF GENERATOR FUNCTION FOR REGISTRATION FORMS ---
+def generate_registration_form(buffer, student, courses_list, academic_year, semester):
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    style_center = ParagraphStyle('Center', parent=styles['Heading1'], alignment=1, fontSize=14, spaceAfter=5)
+    style_sub = ParagraphStyle('Sub', parent=styles['Heading3'], alignment=1, fontSize=10, spaceAfter=20)
+    
+    # Header
+    elements.append(Paragraph("AMC ENGINEERING COLLEGE", style_center))
+    elements.append(Paragraph("Autonomous Institution Affiliated to VTU, Belagavi", style_sub))
+    elements.append(Paragraph(f"<b>SEMESTER COURSE REGISTRATION FORM (Academic Year: {academic_year})</b>", style_center))
+    elements.append(Spacer(1, 15))
+    
+    # Student Details
+    s_data = [
+        ["USN:", student['usn'], "Name:", student.get('full_name', '')],
+        ["Branch:", student.get('branch_code', ''), "Semester:", str(semester)]
+    ]
+    t_info = Table(s_data, colWidths=[60, 180, 60, 180])
+    t_info.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+        ('BACKGROUND', (0,0), (0,-1), colors.lightgrey),
+        ('BACKGROUND', (2,0), (2,-1), colors.lightgrey),
+        ('PADDING', (0,0), (-1,-1), 6)
+    ]))
+    elements.append(t_info)
+    elements.append(Spacer(1, 20))
+    
+    # Instructions
+    elements.append(Paragraph("<i>Instructions: Please tick (✓) the box next to the courses you are registering for. Core courses are mandatory. Ensure credit limits are met.</i>", styles['Normal']))
+    elements.append(Spacer(1, 10))
+    
+    # Courses Table
+    c_data = [["Sl", "Course Code", "Course Title", "Type", "Credits", "Opted (✓)"]]
+    
+    for i, c in enumerate(courses_list):
+        c_type = c.get('type', 'Core')
+        is_elec = c.get('is_elective', False)
+        display_type = "Elective" if is_elec else c_type
+        
+        c_data.append([
+            str(i+1),
+            c['course_code'],
+            Paragraph(c.get('title', ''), styles['Normal']),
+            display_type,
+            str(c.get('credits', 0)),
+            "" # Empty box for ticking
+        ])
+        
+    t_courses = Table(c_data, colWidths=[30, 80, 220, 60, 45, 60])
+    t_courses.setStyle(TableStyle([
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('ALIGN', (0,0), (0,-1), 'CENTER'), # Sl
+        ('ALIGN', (3,0), (5,-1), 'CENTER'), # Type, Credits, Opted
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('PADDING', (0,0), (-1,-1), 6)
+    ]))
+    elements.append(t_courses)
+    elements.append(Spacer(1, 40))
+    
+    # Signatures
+    sig_data = [
+        ["________________________", "________________________", "________________________"],
+        ["Signature of the Student", "Signature of Faculty Advisor", "Signature of HOD"],
+        ["Date:", "Date:", "Date:"]
+    ]
+    t_sig = Table(sig_data, colWidths=[160, 160, 160])
+    t_sig.setStyle(TableStyle([
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 10)
+    ]))
+    elements.append(t_sig)
+    
+    doc.build(elements)
+
+
 # --- GLOBAL CONTEXT ---
 selected_cycle_id = st.session_state.get('active_cycle_id')
 
@@ -41,25 +132,88 @@ if not selected_cycle_id:
     st.warning("⚠️ Please select an Active Exam Cycle in the Sidebar to proceed.")
     st.stop()
 
-st.info(f"🔵 Currently Registering Students for Cycle: **{st.session_state.get('active_cycle_name')}**")
+st.info(f"🔵 Currently Managing Registrations for Cycle: **{st.session_state.get('active_cycle_name')}**")
 
 # ==========================================
 # NAVIGATION TABS
 # ==========================================
 reg_tabs = st.tabs([
-    "📤 Bulk Registration", 
-    "📝 Manual Mapping", 
+    "📄 Generate Forms",  # 🟢 NEW TAB ADDED FOR DAY 1 WORKFLOW
+    "📤 Bulk Upload", 
+    "📝 Interactive Mapping", 
     "🔍 View Registrations", 
     "📸 Photo Backup", 
     "📥 Arrear Extractor",
-    "🚑 Make-up Extractor" # 🟢 NEW TAB ADDED
+    "🚑 Make-up Extractor" 
 ])
 
 # ==========================================
-# 1. BULK REGISTRATION (CSV)
+# 1. GENERATE REGISTRATION FORMS (DAY 1)
 # ==========================================
 with reg_tabs[0]:
+    st.header("Step 1: Generate Physical Registration Forms")
+    st.info("Generates PDF forms listing all available courses for a specific semester/branch. Distribute these to students for physical signature before doing data entry.")
+    
+    col_f1, col_f2, col_f3 = st.columns(3)
+    f_ay = col_f1.text_input("Academic Year for Form", value=st.session_state.get('active_academic_year', '2025-26'))
+    
+    branches_data = fetch_all_records("master_branches", "branch_code, branch_name")
+    branch_list = [b['branch_code'] for b in branches_data]
+    f_branch = col_f2.selectbox("Select Branch", ["-- Select --"] + branch_list)
+    
+    f_sem = col_f3.number_input("Target Semester", min_value=1, max_value=10, value=1)
+    
+    if st.button("🖨️ Generate PDF Forms (ZIP)", type="primary"):
+        if f_branch == "-- Select --":
+            st.error("Please select a valid branch.")
+        else:
+            with st.spinner(f"Compiling courses and generating forms for {f_branch} Semester {f_sem}..."):
+                try:
+                    # 1. Fetch Students for this branch and sem
+                    students = fetch_all_records("master_students", "*", {"branch_code": f_branch, "current_sem": str(f_sem)})
+                    
+                    if not students:
+                        st.warning(f"No students found currently enrolled in {f_branch} Semester {f_sem}.")
+                    else:
+                        # 2. Fetch Courses for this branch/sem AND COMMON
+                        courses_res = fetch_all_records("master_courses", "course_code, title, branch_code, credits, type, is_elective", {"semester_id": f_sem})
+                        
+                        # Filter down to specific branch + COMMON
+                        valid_courses = [c for c in courses_res if c['branch_code'] in [f_branch, 'COMMON']]
+                        
+                        if not valid_courses:
+                            st.warning(f"No courses found in the Master Syllabus for {f_branch} or COMMON in Semester {f_sem}. Please update the Academic Master first.")
+                        else:
+                            # 3. Generate ZIP of PDFs
+                            zip_buffer = io.BytesIO()
+                            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                                progress_bar = st.progress(0)
+                                total_stu = len(students)
+                                
+                                for i, stu in enumerate(students):
+                                    pdf_buf = io.BytesIO()
+                                    generate_registration_form(pdf_buf, stu, valid_courses, f_ay, f_sem)
+                                    zf.writestr(f"Registration_Form_{stu['usn']}.pdf", pdf_buf.getvalue())
+                                    progress_bar.progress((i + 1) / total_stu)
+                                    
+                            st.success(f"✅ Generated {len(students)} personalized Registration Forms!")
+                            
+                            st.download_button(
+                                label=f"📥 Download {f_branch}_Sem{f_sem}_RegForms.zip",
+                                data=zip_buffer.getvalue(),
+                                file_name=f"Reg_Forms_{f_branch}_Sem{f_sem}_{f_ay}.zip",
+                                mime="application/zip",
+                                type="primary"
+                            )
+                except Exception as e:
+                    st.error(f"Generation Error: {e}")
+
+# ==========================================
+# 2. BULK REGISTRATION (CSV)
+# ==========================================
+with reg_tabs[1]:
     st.header("Step 2.1: Bulk Course Mapping")
+    st.info("Once forms are collected and signed, upload the finalized data here.")
     f_reg = st.file_uploader("Upload Registration CSV", type='csv', key="reg_bulk")
     
     if f_reg and st.button("Execute Bulk Registration"):
@@ -77,45 +231,91 @@ with reg_tabs[0]:
             st.error(f"Registration failed: {e}")
 
 # ==========================================
-# 2. MANUAL MAPPING
-# ==========================================
-with reg_tabs[1]:
-    st.header("Step 2.2: Individual Student Mapping")
-    with st.form("manual_reg_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        r_usn = col1.text_input("Student USN")
-        r_course = col2.text_input("Course Code")
-        r_ay = col1.text_input("Academic Year", value="2025-26")
-        r_sem_type = col2.selectbox("Semester Type", ["ODD", "EVEN"])
-        r_semester = col1.number_input("Semester", min_value=1, max_value=10, value=2)
-        
-        c1, c2 = st.columns(2)
-        if c1.form_submit_button("💾 Register Course"):
-            reg_data = {
-                "cycle_id": selected_cycle_id, 
-                "usn": r_usn.strip().upper(), 
-                "course_code": r_course.strip().upper(), 
-                "academic_year": r_ay, 
-                "semester_type": r_sem_type,
-                "semester": r_semester
-            }
-            try: 
-                supabase.table("course_registrations").upsert(reg_data).execute()
-                st.success(f"✅ Registered {r_course} for {r_usn}")
-            except Exception as e: 
-                st.error(f"Error: {e}")
-                
-        if c2.form_submit_button("🗑️ Remove Registration"):
-            try: 
-                supabase.table("course_registrations").delete().match({"cycle_id": selected_cycle_id, "usn": r_usn.strip().upper(), "course_code": r_course.strip().upper()}).execute()
-                st.warning(f"Removed registration.")
-            except Exception as e: 
-                st.error(f"Error: {e}")
-
-# ==========================================
-# 3. VIEW REGISTRATIONS
+# 3. INTERACTIVE INDIVIDUAL MAPPING
 # ==========================================
 with reg_tabs[2]:
+    st.header("Step 2.2: Interactive Individual Registration")
+    st.info("Select a branch and student to dynamically load applicable courses based on the syllabus.")
+    
+    col1, col2 = st.columns(2)
+    
+    branch_list_interactive = []
+    try:
+        branches_data_int = fetch_all_records("master_branches", "branch_code, branch_name")
+        branch_list_interactive = [b['branch_code'] for b in branches_data_int]
+    except: pass
+    
+    selected_branch = col1.selectbox("1. Select Branch", ["-- Select --"] + branch_list_interactive, key="int_branch")
+    
+    if selected_branch != "-- Select --":
+        students_data = fetch_all_records("master_students", "usn, full_name", {"branch_code": selected_branch})
+        
+        if not students_data:
+            st.warning(f"No students found in the database for branch: {selected_branch}")
+        else:
+            student_options = {f"{s['usn']} - {s['full_name']}": s['usn'] for s in students_data}
+            selected_student_label = col2.selectbox("2. Select Student", ["-- Select --"] + list(student_options.keys()))
+            
+            if selected_student_label != "-- Select --":
+                selected_usn = student_options[selected_student_label]
+                
+                courses_data = fetch_all_records("master_courses", "course_code, title, branch_code")
+                applicable_courses = [c for c in courses_data if c['branch_code'] in [selected_branch, 'COMMON']]
+                
+                if not applicable_courses:
+                    st.warning("No courses mapped to this branch or 'COMMON'.")
+                else:
+                    st.markdown("### 3. Select Subjects to Register")
+                    
+                    existing_regs = fetch_all_records("course_registrations", "course_code", {
+                        "cycle_id": selected_cycle_id, 
+                        "usn": selected_usn
+                    })
+                    already_registered = [r['course_code'] for r in existing_regs]
+                    
+                    with st.form("dynamic_registration_form"):
+                        c1, c2 = st.columns(2)
+                        r_ay = c1.text_input("Academic Year", value=st.session_state.get('active_academic_year', '2025-26'))
+                        r_sem_type = c2.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"])
+                        r_semester = c1.number_input("Semester (for these subjects)", min_value=1, max_value=10, value=1)
+                        
+                        st.divider()
+                        
+                        selected_course_codes = []
+                        for course in applicable_courses:
+                            is_checked = course['course_code'] in already_registered
+                            if st.checkbox(f"{course['course_code']} - {course['title']}", value=is_checked):
+                                selected_course_codes.append(course['course_code'])
+                        
+                        if st.form_submit_button("💾 Save Registrations", type="primary"):
+                            with st.spinner("Updating records..."):
+                                try:
+                                    supabase.table("course_registrations").delete().match({
+                                        "cycle_id": selected_cycle_id, 
+                                        "usn": selected_usn
+                                    }).execute()
+                                    
+                                    if selected_course_codes:
+                                        payload = []
+                                        for cc in selected_course_codes:
+                                            payload.append({
+                                                "cycle_id": selected_cycle_id, 
+                                                "usn": selected_usn, 
+                                                "course_code": cc, 
+                                                "academic_year": r_ay, 
+                                                "semester_type": r_sem_type,
+                                                "semester": r_semester
+                                            })
+                                        supabase.table("course_registrations").insert(payload).execute()
+                                        
+                                    st.success(f"✅ Successfully updated registrations for {selected_usn}! Total subjects mapped: {len(selected_course_codes)}")
+                                except Exception as e:
+                                    st.error(f"Database Error: {e}")
+
+# ==========================================
+# 4. VIEW REGISTRATIONS
+# ==========================================
+with reg_tabs[3]:
     st.header(f"🔍 Current Course Mappings for {st.session_state.get('active_cycle_name')}")
     search_usn = st.text_input("Filter by USN (Optional)")
     
@@ -132,9 +332,9 @@ with reg_tabs[2]:
             st.write("No registration records found.")
 
 # ==========================================
-# 4. PHOTO BACKUP UTILITY (ZIP DOWNLOAD)
+# 5. PHOTO BACKUP UTILITY (ZIP DOWNLOAD)
 # ==========================================
-with reg_tabs[3]:
+with reg_tabs[4]:
     st.header("📸 Student Photo Server Backup")
     st.info("Grabs all student photos from your Supabase cloud and packages them into a single ZIP file.")
     BUCKET_NAME = "StakeHolders_Photos"
@@ -195,9 +395,9 @@ with reg_tabs[3]:
             status_text.error(f"🚨 Critical Error: {e}")
 
 # ==========================================
-# 5. ARREAR EXTRACTOR
+# 6. ARREAR EXTRACTOR
 # ==========================================
-with reg_tabs[4]:
+with reg_tabs[5]:
     st.header("📥 Extract Active Arrear Courses")
     st.info("Generates a CSV of pending subjects for students based on their latest exam results.")
 
@@ -253,9 +453,9 @@ with reg_tabs[4]:
                 st.error(f"Error generating arrear list: {e}")
 
 # ==========================================
-# 6. MAKE-UP EXAM EXTRACTOR
+# 7. MAKE-UP EXAM EXTRACTOR
 # ==========================================
-with reg_tabs[5]:
+with reg_tabs[6]:
     st.header("🚑 Extract Eligible Make-up Candidates")
     st.info("Hunts for two scenarios: 1. Absent students with valid internals (Medical). 2. Failed students with >= 90% internals (X-Grade).")
 
@@ -296,7 +496,6 @@ with reg_tabs[5]:
                     for cc, data in courses.items():
                         grade = data['grade']
                         
-                        # We only care about Absent or Failed students
                         if grade in ['AB', 'F']:
                             c_info = course_map.get(cc, {"max_cie": 50.0, "title": "Unknown", "sem": 0})
                             max_cie = c_info['max_cie']
@@ -306,11 +505,8 @@ with reg_tabs[5]:
                             
                             eligibility_category = None
                             
-                            # SCENARIO 1: The Academic Safety Net (Failed but brilliant internals)
                             if grade == 'F' and cie_percentage >= x_grade_thresh:
                                 eligibility_category = "⭐ X-Grade: Failed but High CIE"
-                                
-                            # SCENARIO 2: The Medical Case (Absent with valid passing internals)
                             elif grade == 'AB' and cie_percentage >= med_thresh:
                                 eligibility_category = "🏥 I-Grade: Absent (Pending Medical)"
                             
@@ -339,8 +535,8 @@ with reg_tabs[5]:
                     st.success(f"✅ Found {len(df_makeup)} eligible candidates for Make-up exams.")
                     
                     def highlight_categories(val):
-                        if 'X-Grade' in str(val): return 'color: #4CAF50; font-weight: bold' # Green for auto-approve
-                        elif 'I-Grade' in str(val): return 'color: #FF9800; font-weight: bold' # Orange for pending review
+                        if 'X-Grade' in str(val): return 'color: #4CAF50; font-weight: bold' 
+                        elif 'I-Grade' in str(val): return 'color: #FF9800; font-weight: bold' 
                         return ''
                         
                     st.dataframe(df_makeup.style.map(highlight_categories, subset=['eligibility_category']), use_container_width=True)
