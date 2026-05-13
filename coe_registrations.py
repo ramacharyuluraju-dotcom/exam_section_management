@@ -138,7 +138,7 @@ st.info(f"🔵 Currently Managing Registrations for Cycle: **{st.session_state.g
 # NAVIGATION TABS
 # ==========================================
 reg_tabs = st.tabs([
-    "📄 Generate Forms",  # 🟢 NEW TAB ADDED FOR DAY 1 WORKFLOW
+    "📄 Generate Forms",
     "📤 Bulk Upload", 
     "📝 Interactive Mapping", 
     "🔍 View Registrations", 
@@ -158,7 +158,8 @@ with reg_tabs[0]:
     f_ay = col_f1.text_input("Academic Year for Form", value=st.session_state.get('active_academic_year', '2025-26'))
     
     branches_data = fetch_all_records("master_branches", "branch_code, branch_name")
-    branch_list = [b['branch_code'] for b in branches_data]
+    # Filter out COMMON from the UI dropdown
+    branch_list = [b['branch_code'] for b in branches_data if str(b['branch_code']).upper() != 'COMMON']
     f_branch = col_f2.selectbox("Select Branch", ["-- Select --"] + branch_list)
     
     f_sem = col_f3.number_input("Target Semester", min_value=1, max_value=10, value=1)
@@ -308,7 +309,8 @@ with reg_tabs[1]:
                         st.success(f"✅ Successfully registered {len(data)} student-course mappings!")
                     except Exception as e:
                         st.error(f"Registration failed: {e}")
-                        
+
+
 # ==========================================
 # 3. INTERACTIVE INDIVIDUAL MAPPING
 # ==========================================
@@ -321,7 +323,8 @@ with reg_tabs[2]:
     branch_list_interactive = []
     try:
         branches_data_int = fetch_all_records("master_branches", "branch_code, branch_name")
-        branch_list_interactive = [b['branch_code'] for b in branches_data_int]
+        # Filter out COMMON from the UI dropdown
+        branch_list_interactive = [b['branch_code'] for b in branches_data_int if str(b['branch_code']).upper() != 'COMMON']
     except: pass
     
     selected_branch = col1.selectbox("1. Select Branch", ["-- Select --"] + branch_list_interactive, key="int_branch")
