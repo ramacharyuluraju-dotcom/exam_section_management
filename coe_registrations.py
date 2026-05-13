@@ -57,9 +57,16 @@ def get_checkbox():
     ]))
     return t
 
-def natural_sort_key(s):
-    """Splits strings into text and numbers so '202' comes after '201' properly."""
-    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+def course_sort_key(s):
+    """
+    Extracts the main 3-digit course number (e.g., 201, 202) for perfect numeric sorting.
+    It finds all numbers in the string and uses the last one as the primary sort key.
+    """
+    code_str = str(s).strip().upper()
+    numbers = re.findall(r'\d+', code_str)
+    # The course number is almost always the last set of digits in the code (e.g. '1BESC204C' -> 204)
+    main_num = int(numbers[-1]) if numbers else 9999
+    return (main_num, code_str)
 
 # ==========================================
 # PHOTO BUCKET MAPPING UTILS 
@@ -383,8 +390,8 @@ with reg_tabs[0]:
                             prog_type = branch_prog_map.get(s_br, "UG")
                             
                             raw_courses = branch_courses_dict.get(s_br, []) + branch_courses_dict.get("COMMON", [])
-                            # 🟢 NEW: Sorted mathematically using Natural Sort
-                            raw_courses = sorted(raw_courses, key=lambda x: natural_sort_key(x['course_code']))
+                            # 🟢 NEW: Sorted perfectly by the numeric 3-digit course number (201, 202, 203)
+                            raw_courses = sorted(raw_courses, key=lambda x: course_sort_key(x['course_code']))
                             
                             seen = set()
                             dedup_courses = []
@@ -460,8 +467,8 @@ with reg_tabs[1]:
                             s_branch = str(s['branch_code']).upper()
                             
                             my_courses = branch_courses.get(s_branch, []) + branch_courses.get("COMMON", []) + branch_courses.get("FIRST_YEAR", [])
-                            # 🟢 NEW: Sorted mathematically using Natural Sort
-                            my_courses = sorted(list(set(my_courses)), key=natural_sort_key)
+                            # 🟢 NEW: Courses are sorted perfectly by their numeric values (201, 202, 203)
+                            my_courses = sorted(list(set(my_courses)), key=course_sort_key)
                             
                             for c in my_courses:
                                 template_rows.append({"usn": s['usn'], "course_code": c, "academic_year": t_ay, "semester_type": t_type, "semester": t_sem})
@@ -475,7 +482,6 @@ with reg_tabs[1]:
 
     with col_b2:
         st.subheader("B. Upload Finalized Registrations")
-        # 🟢 NEW: Added expected CSV columns to avoid user errors
         st.markdown("⚠️ **Expected Columns:** `usn`, `course_code`, `academic_year`, `semester_type`, `semester`")
         f_reg = st.file_uploader("Upload Edited CSV", type='csv', key="reg_bulk_upload")
         
@@ -522,8 +528,8 @@ with reg_tabs[2]:
             if selected_student_label != "-- Select --":
                 selected_usn = student_options[selected_student_label]
                 applicable_courses = [c for c in fetch_all_records("master_courses", "course_code, title, branch_code") if c['branch_code'] in [selected_branch, 'COMMON']]
-                # 🟢 NEW: Sorted mathematically using Natural Sort
-                applicable_courses = sorted(applicable_courses, key=lambda x: natural_sort_key(x['course_code']))
+                # 🟢 NEW: Sorted mathematically using numeric course sort
+                applicable_courses = sorted(applicable_courses, key=lambda x: course_sort_key(x['course_code']))
                 
                 if not applicable_courses: st.warning("No courses mapped to this branch.")
                 else:
