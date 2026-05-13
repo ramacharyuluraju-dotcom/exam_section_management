@@ -213,23 +213,102 @@ with reg_tabs[0]:
 # ==========================================
 with reg_tabs[1]:
     st.header("Step 2.1: Bulk Course Mapping")
-    st.info("Once forms are collected and signed, upload the finalized data here.")
-    f_reg = st.file_uploader("Upload Registration CSV", type='csv', key="reg_bulk")
+    st.info("Download a pre-filled template containing all students and courses for a branch. Open it in Excel, delete rows for courses the student did NOT select on their physical form, and upload it back.")
     
-    if f_reg and st.button("Execute Bulk Registration"):
-        df = pd.read_csv(f_reg)
-        expected = ['usn', 'course_code', 'academic_year', 'semester_type', 'semester']
-        data = clean_data_for_db(df, expected)
+    col_b1, col_b2 = st.columns(2)
+    
+    with col_b1:
+        st.subheader("A. Download Pre-filled Template")
         
-        for row in data: 
-            row['cycle_id'] = selected_cycle_id
-            
+        # Fetch branches and filter out COMMON
         try:
-            supabase.table("course_registrations").upsert(data).execute()
-            st.success(f"✅ Successfully registered {len(data)} student-course mappings for this cycle.")
-        except Exception as e:
-            st.error(f"Registration failed: {e}")
+            b_data = fetch_all_records("master_branches", "branch_code")
+            tmpl_branches = [b['branch_code'] for b in b_data if str(b['branch_code']).upper() != 'COMMON']
+        except:
+            tmpl_branches = []
+            
+        t_branch = st.selectbox("Target Branch", ["-- Select --"] + tmpl_branches, key="t_branch")
+        t_sem = st.number_input("Target Semester", min_value=1, max_value=10, value=1, key="t_sem")
+        t_ay = st.text_input("Academic Year", value=st.session_state.get('active_academic_year', '2025-26'), key="t_ay")
+        t_type = st.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"], key="t_type")
+        
+        if st.button("📥 Generate CSV Template", type="secondary"):
+            if t_branch == "-- Select --":
+                st.error("Please select a branch.")
+            else:
+                with st.spinner("Building master template..."):
+                    # Fetch students in this branch/sem
+                    stu_data = fetch_all_records("master_students", "usn", {"branch_code": t_branch, "current_sem": str(t_sem)})
+                    # Fetch courses for this sem
+                    crs_data = fetch_all_records("master_courses", "course_code, branch_code", {"semester_id": t_sem})
+                    # Filter valid courses (Branch specific + COMMON)
+                    valid_crs = [c['course_code'] for c in crs_data if c['branch_code'] in [t_branch, 'COMMON']]
+                    
+                    if not stu_data:
+                        st.warning(f"No students found in {t_branch} Semester {t_sem}.")
+                    elif not valid_crs:
+                        st.warning(f"No courses found for {t_branch} / COMMON in Semester {t_sem}.")
+                    else:
+                        # Cross-join students and courses
+                        template_rows = []
+                        for s in stu_data:
+                            for c in valid_crs:
+                                template_rows.append({
+                                    "usn": s['usn'],
+                                    "course_code": c,
+                                    "academic_year": t_ay,
+                                    "semester_type": t_type,
+                                    "semester": t_sem
+                                })
+                        
+                        df_tmpl = pd.DataFrame(template_rows)
+                        csv_bytes = df_tmpl.to_csv(index=False).encode('utf-8')
+                        
+                        st.success("✅ Template generated! Edit this file, then upload it on the right.")
+                        st.download_button(
+                            label=f"📥 Download {t_branch} Sem {t_sem} Template",
+                            data=csv_bytes,
+                            file_name=f"Registration_Template_{t_branch}_Sem{t_sem}.csv",
+                            mime="text/csv",
+                            type="primary"
+                        )
 
+    with col_b2:
+        st.subheader("B. Upload Finalized Registrations")
+        f_reg = st.file_uploader("Upload Edited CSV", type='csv', key="reg_bulk")
+        
+        if f_reg and st.button("🚀 Execute Bulk Registration", type="primary"):
+            df = pd.read_csv(f_reg)
+            expected = ['usn', 'course_code', 'academic_year', 'semester_type', 'semester']
+            data = clean_data_for_db(df, expected)
+            
+            if not data:
+                st.error("Invalid CSV format. Please ensure all columns are present.")
+            else:
+                with st.spinner("Processing registrations..."):
+                    try:
+                        # Safety feature: Find all USNs in the upload and wipe their old registrations 
+                        # for this cycle. This ensures that if you deleted a row in the CSV, it actually 
+                        # gets removed from the database.
+                        uploaded_usns = list(set([r['usn'] for r in data]))
+                        
+                        # Delete in batches to avoid URL length errors
+                        for i in range(0, len(uploaded_usns), 100):
+                            batch_usns = uploaded_usns[i:i+100]
+                            supabase.table("course_registrations").delete().eq("cycle_id", selected_cycle_id).in_("usn", batch_usns).execute()
+                        
+                        # Insert the new, finalized data
+                        for row in data: 
+                            row['cycle_id'] = selected_cycle_id
+                            
+                        # Insert in batches
+                        for i in range(0, len(data), 500):
+                            supabase.table("course_registrations").insert(data[i:i+500]).execute()
+                            
+                        st.success(f"✅ Successfully registered {len(data)} student-course mappings!")
+                    except Exception as e:
+                        st.error(f"Registration failed: {e}")
+                        
 # ==========================================
 # 3. INTERACTIVE INDIVIDUAL MAPPING
 # ==========================================
