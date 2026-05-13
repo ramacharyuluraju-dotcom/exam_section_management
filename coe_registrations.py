@@ -12,7 +12,7 @@ from utils import init_db, clean_data_for_db
 # --- REPORTLAB IMPORTS FOR PDF GENERATION ---
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
+from reportlab.platypus import Table, TableStyle, Paragraph, Spacer, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
@@ -49,7 +49,7 @@ def safe_float(val, default=0.0):
     except: return default
 
 # ==========================================
-# PHOTO BUCKET MAPPING UTILS (From Pre-Exam)
+# PHOTO BUCKET MAPPING UTILS 
 # ==========================================
 def fetch_complete_bucket_map(bucket_name):
     file_map = {}
@@ -118,7 +118,6 @@ def draw_header(c, w, y_start, assets):
     return y_start - 65
 
 def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem, date_str, prog_type):
-    # Watermark
     if assets.get("watermark"):
         c.saveState()
         c.setFillAlpha(0.08)
@@ -127,52 +126,59 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
 
     y = draw_header(c, w, h - 30, assets)
     
-    # Title
     c.setFont("Helvetica-Bold", 12)
     sem_str = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth", "Ninth", "Tenth"][int(sem)-1] if 1 <= int(sem) <= 10 else str(sem)
     c.drawCentredString(w/2, y, f"Course Registration - {sem_str} Semester {ay}")
     y -= 25
 
-    # Student Details
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, "Student Details")
     y -= 5
 
-    # Process Photo for Table
+    # 🟢 BUG FIXED HERE: Replaced conditional empty tuple logic to prevent "tuple index out of range"
     if photo_io:
         photo_io.seek(0)
         p_img = RLImage(photo_io, width=55, height=70)
         p_img.hAlign = 'CENTER'
         p_img.vAlign = 'MIDDLE'
+        s_data = [
+            ["USN", "Student Name", "Branch", "Type", "Photo"],
+            [student['usn'], student.get('full_name',''), student.get('branch_code',''), prog_type, p_img]
+        ]
+        style_cmds = [
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE')
+        ]
     else:
         p_img = Paragraph("<para align=center>PHOTO</para>", getSampleStyleSheet()['Normal'])
+        s_data = [
+            ["USN", "Student Name", "Branch", "Type", p_img],
+            [student['usn'], student.get('full_name',''), student.get('branch_code',''), prog_type, ""]
+        ]
+        style_cmds = [
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('SPAN', (4, 0), (4, 1)) # Explicitly merge if no photo is available
+        ]
 
-    s_data = [
-        ["USN", "Student Name", "Branch", "Type", "Photo"],
-        [student['usn'], student.get('full_name',''), student.get('branch_code',''), prog_type, p_img]
-    ]
-    
     t1 = Table(s_data, colWidths=[80, 200, 60, 60, 80], rowHeights=[20, 75])
-    t1.setStyle(TableStyle([
-        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('SPAN', (4, 0), (4, 1)) if not photo_io else (), # If no photo, merge to say "PHOTO"
-    ]))
+    t1.setStyle(TableStyle(style_cmds))
     t1.wrapOn(c, w, h)
     _, t1_h = t1.wrap(w, h)
     t1.drawOn(c, 30, y - t1_h)
     y -= (t1_h + 20)
 
-    # Semester & Date Line
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, f"Semester: {sem}")
     c.drawRightString(w - 30, y, f"Date: {date_str}")
     y -= 20
 
-    # Courses Table
     c.drawString(30, y, "Courses offered")
     y -= 5
 
@@ -185,7 +191,7 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
             crs['course_code'],
             Paragraph(crs.get('title',''), getSampleStyleSheet()['Normal']),
             str(int(cr_val) if cr_val.is_integer() else cr_val),
-            "" # Leaves a clean blank space in the column for them to tick
+            "" 
         ])
     c_data.append(["", Paragraph("<b>Total Credits</b>", getSampleStyleSheet()['Normal']), str(int(total_cr)), ""])
 
@@ -194,8 +200,8 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('ALIGN', (0,0), (0,-1), 'CENTER'), # Code
-        ('ALIGN', (2,0), (-1,-1), 'CENTER'), # Credits & Select
+        ('ALIGN', (0,0), (0,-1), 'CENTER'), 
+        ('ALIGN', (2,0), (-1,-1), 'CENTER'), 
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
     ]))
     t2.wrapOn(c, w, h)
@@ -203,24 +209,20 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
     t2.drawOn(c, 30, y - t2_h)
     y -= (t2_h + 30)
 
-    # Undertaking Section with Checkboxes
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, "Student Undertaking:")
     y -= 15
 
-    # Checkbox 1
     c.setLineWidth(1)
     c.rect(30, y - 8, 10, 10)
     c.setFont("Helvetica", 10)
     c.drawString(48, y - 6, "I will follow the AMCEC / VTU autonomy guidelines.")
     y -= 25
 
-    # Checkbox 2
     c.rect(30, y - 8, 10, 10)
     c.drawString(48, y - 6, "I have paid the full tuition fees and examination fees for the current semester.")
     y -= 60
 
-    # Signatures
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, "________________________")
     c.drawString(40, y - 15, "Signature of the Student")
@@ -276,20 +278,18 @@ with reg_tabs[0]:
         else:
             with st.spinner(f"Fetching cloud assets and compiling batch PDF for {f_branch} Semester {f_sem}..."):
                 try:
-                    # 1. Fetch Students
                     students = fetch_all_records("master_students", "*", {"branch_code": f_branch, "current_sem": str(f_sem)})
                     
                     if not students:
                         st.warning(f"No students found currently enrolled in {f_branch} Semester {f_sem}.")
                     else:
                         valid_courses = []
-                        # 2. Logic: CSV Upload vs Database
                         if f_csv is not None:
                             df_crs = pd.read_csv(f_csv)
                             col_map = {c.strip().upper(): c for c in df_crs.columns}
                             
                             code_col = col_map.get('COURSE CODE', df_crs.columns[0])
-                            title_col = col_map.get('COURSE NAME', col_map.get('TITLE', df_crs.columns[1]))
+                            title_col = col_map.get('COURSE NAME', col_map.get('TITLE', df_crs.columns[1] if len(df_crs.columns) > 1 else df_crs.columns[0]))
                             stream_col = col_map.get('STREAMS', col_map.get('BRANCH', None))
                             cred_col = col_map.get('CREDITS', None)
                             
@@ -306,7 +306,6 @@ with reg_tabs[0]:
                         if not valid_courses:
                             st.warning(f"No courses found for {f_branch}. If using CSV, ensure the 'Streams' column matches the branch exactly.")
                         else:
-                            # 3. Fetch Cloud Assets
                             system_assets = {"logo": None, "naac": None, "watermark": None}
                             sys_map = {"logo": LOGO_FILENAME, "naac": NAAC_FILENAME, "watermark": WATERMARK_FILENAME}
                             for k, f in sys_map.items():
@@ -317,13 +316,11 @@ with reg_tabs[0]:
                             
                             photo_file_map = fetch_complete_bucket_map("StakeHolders_Photos")
                             
-                            # 4. Generate Single PDF Document
                             final_pdf_buffer = io.BytesIO()
                             c = canvas.Canvas(final_pdf_buffer, pagesize=A4)
                             progress_bar = st.progress(0)
                             total_stu = len(students)
                             
-                            # Parallel Download Photos
                             batch_photos = {}
                             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                                 futures = {executor.submit(download_photo_worker, (s['usn'], photo_file_map)): s['usn'] for s in students}
@@ -337,12 +334,11 @@ with reg_tabs[0]:
                             for i, stu in enumerate(students):
                                 photo_stream = batch_photos.get(stu['usn'])
                                 draw_registration_page(c, A4[0], A4[1], stu, valid_courses, system_assets, photo_stream, f_ay, f_sem, date_str, prog_type)
-                                c.showPage() # Page break for next student
+                                c.showPage() 
                                 progress_bar.progress((i + 1) / total_stu)
                                 
                             c.save()
                             
-                            # Cleanup memory
                             for stream in batch_photos.values(): stream.close()
                                     
                             st.success(f"✅ Generated {total_stu} pages into a single Master PDF!")
