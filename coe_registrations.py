@@ -2,23 +2,32 @@ import streamlit as st
 import pandas as pd
 import io
 import zipfile
+import datetime
+import os
+import re
+import concurrent.futures
+from PIL import Image as PILImage
 from utils import init_db, clean_data_for_db
 
 # --- REPORTLAB IMPORTS FOR PDF GENERATION ---
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
 
 # --- CONFIGURATION ---
+LOGO_FILENAME = "College_logo.png"       
+NAAC_FILENAME = "NAAC_A_Logo.jpg"        
+WATERMARK_FILENAME = "AMC_watermark.png" 
 supabase = init_db()
 
 st.title("📝 Semester Course Registration")
 st.sidebar.markdown("### Operational Phase")
 
-# --- HELPER FUNCTION ---
+# --- HELPER FUNCTIONS ---
 def fetch_all_records(table_name, select_query="*", filters=None):
-    """Fetches all records from Supabase bypassing the 1000 row limit."""
     all_data = []
     step = 1000
     current_start = 0
@@ -27,10 +36,8 @@ def fetch_all_records(table_name, select_query="*", filters=None):
         if filters:
             for col, val in filters.items(): 
                 query = query.eq(col, val)
-                
         query = query.range(current_start, current_start + step - 1)
         res = query.execute()
-        
         if not res.data: break
         all_data.extend(res.data)
         if len(res.data) < step: break
@@ -42,98 +49,187 @@ def safe_float(val, default=0.0):
     except: return default
 
 # ==========================================
-# 🟢 ORIGINAL PDF FORMAT GENERATOR
+# PHOTO BUCKET MAPPING UTILS (From Pre-Exam)
 # ==========================================
-def generate_registration_form(buffer, student, courses_list, academic_year, semester):
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=35, leftMargin=35, topMargin=35, bottomMargin=35)
-    elements = []
-    styles = getSampleStyleSheet()
+def fetch_complete_bucket_map(bucket_name):
+    file_map = {}
+    limit = 1000; offset = 0
+    while True:
+        try:
+            files = supabase.storage.from_(bucket_name).list("", options={"limit": limit, "offset": offset})
+            if not files: break
+            for f in files:
+                fname = f.get('name', '')
+                if not fname or fname == '.emptyFolderPlaceholder': continue
+                basename = os.path.basename(fname)
+                key = re.sub(r'[^A-Z0-9]', '', os.path.splitext(basename)[0].upper())
+                file_map[key] = fname
+            if len(files) < limit: break
+            offset += limit
+        except: break
+    return file_map
+
+def download_photo_worker(args):
+    usn, file_map = args
+    clean_usn = re.sub(r'[^A-Z0-9]', '', usn.upper())
     
-    style_center = ParagraphStyle('Center', parent=styles['Heading1'], alignment=1, fontSize=14, spaceAfter=5)
-    style_sub = ParagraphStyle('Sub', parent=styles['Heading3'], alignment=1, fontSize=10, spaceAfter=15)
-    style_norm = styles['Normal']
+    if clean_usn in file_map:
+        try:
+            res = supabase.storage.from_("StakeHolders_Photos").download(file_map[clean_usn])
+            if res:
+                img = PILImage.open(io.BytesIO(res))
+                if img.mode != 'RGB': img = img.convert('RGB')
+                clean_io = io.BytesIO()
+                img.save(clean_io, format='JPEG', quality=95)
+                clean_io.seek(0)
+                return usn, clean_io
+        except: pass
+
+    for ext in ['.webp', '.jpg', '.jpeg', '.png', '.WEBP', '.JPG', '.PNG']:
+        try:
+            res = supabase.storage.from_("StakeHolders_Photos").download(f"{clean_usn}{ext}")
+            if res:
+                img = PILImage.open(io.BytesIO(res))
+                if img.mode != 'RGB': img = img.convert('RGB')
+                clean_io = io.BytesIO()
+                img.save(clean_io, format='JPEG', quality=95)
+                clean_io.seek(0)
+                return usn, clean_io
+        except: pass
+            
+    return usn, None
+
+# ==========================================
+# 🟢 EXACT REPLICA PDF GENERATOR ENGINE
+# ==========================================
+def draw_header(c, w, y_start, assets):
+    if assets.get("logo"):
+        c.drawImage(ImageReader(assets["logo"]), 35, y_start - 35, width=60, height=60, mask='auto', preserveAspectRatio=True)
+    if assets.get("naac"):
+        c.drawImage(ImageReader(assets["naac"]), w - 95, y_start - 35, width=60, height=60, mask='auto', preserveAspectRatio=True)
+
+    c.setFont("Helvetica-Bold", 15)
+    c.drawCentredString(w/2, y_start, "AMC ENGINEERING COLLEGE")
+    c.setFont("Helvetica", 9)
+    c.drawCentredString(w/2, y_start - 15, "AMC Campus, Bannerghatta Road, Bengaluru, Karnataka - 560083")
+    c.drawCentredString(w/2, y_start - 27, "Autonomous Institution Affiliated to VTU, Belagavi | NAAC A+ Accredited")
+    c.setLineWidth(1)
+    c.line(30, y_start - 45, w - 30, y_start - 45)
+    return y_start - 65
+
+def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem, date_str, prog_type):
+    # Watermark
+    if assets.get("watermark"):
+        c.saveState()
+        c.setFillAlpha(0.08)
+        c.drawImage(ImageReader(assets["watermark"]), w/2 - 175, h/2 - 175, width=350, height=350, mask='auto', preserveAspectRatio=True)
+        c.restoreState()
+
+    y = draw_header(c, w, h - 30, assets)
     
-    # 1. Header
-    elements.append(Paragraph("<b>AMC ENGINEERING COLLEGE</b>", style_center))
-    elements.append(Paragraph("Autonomous Institution Affiliated to VTU, Belagavi", style_sub))
-    elements.append(Paragraph(f"<b>SEMESTER COURSE REGISTRATION FORM (AY: {academic_year})</b>", ParagraphStyle('C', alignment=1, spaceAfter=15)))
-    
-    # 2. Student Details with Photo Box
-    photo_placeholder = Paragraph("<para align=center fontSize=8>Affix Recent<br/>Passport Size<br/>Photo</para>", style_norm)
-    
+    # Title
+    c.setFont("Helvetica-Bold", 12)
+    sem_str = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth", "Ninth", "Tenth"][int(sem)-1] if 1 <= int(sem) <= 10 else str(sem)
+    c.drawCentredString(w/2, y, f"Course Registration - {sem_str} Semester {ay}")
+    y -= 25
+
+    # Student Details
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(30, y, "Student Details")
+    y -= 5
+
+    # Process Photo for Table
+    if photo_io:
+        photo_io.seek(0)
+        p_img = RLImage(photo_io, width=55, height=70)
+        p_img.hAlign = 'CENTER'
+        p_img.vAlign = 'MIDDLE'
+    else:
+        p_img = Paragraph("<para align=center>PHOTO</para>", getSampleStyleSheet()['Normal'])
+
     s_data = [
-        ["USN:", student.get('usn', ''), "Name:", student.get('full_name', ''), photo_placeholder],
-        ["Branch:", student.get('branch_code', ''), "Semester:", str(semester), ""]
+        ["USN", "Student Name", "Branch", "Type", "Photo"],
+        [student['usn'], student.get('full_name',''), student.get('branch_code',''), prog_type, p_img]
     ]
     
-    t_info = Table(s_data, colWidths=[55, 140, 55, 180, 80], rowHeights=[30, 30])
-    t_info.setStyle(TableStyle([
-        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-        ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
-        ('SPAN', (4, 0), (4, 1)), # Merge the two rows for the photo box
-        ('ALIGN', (4, 0), (4, 1), 'CENTER'),
-        ('VALIGN', (4, 0), (4, 1), 'MIDDLE'),
+    t1 = Table(s_data, colWidths=[80, 200, 60, 60, 80], rowHeights=[20, 75])
+    t1.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-        ('BACKGROUND', (0,0), (0,-1), colors.lightgrey),
-        ('BACKGROUND', (2,0), (2,-1), colors.lightgrey),
-        ('PADDING', (0,0), (-1,-1), 5)
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('SPAN', (4, 0), (4, 1)) if not photo_io else (), # If no photo, merge to say "PHOTO"
     ]))
-    elements.append(t_info)
-    elements.append(Spacer(1, 15))
-    
-    # 3. Instructions & Courses Table
-    elements.append(Paragraph("<i>Instructions: Please tick (✓) the box next to the courses you are registering for. Ensure credit limits are met.</i>", style_norm))
-    elements.append(Spacer(1, 10))
-    
-    c_data = [["Sl. No.", "Course Code", "Course Title", "Credits", "Opted (✓)"]]
-    for i, c in enumerate(courses_list):
+    t1.wrapOn(c, w, h)
+    _, t1_h = t1.wrap(w, h)
+    t1.drawOn(c, 30, y - t1_h)
+    y -= (t1_h + 20)
+
+    # Semester & Date Line
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(30, y, f"Semester: {sem}")
+    c.drawRightString(w - 30, y, f"Date: {date_str}")
+    y -= 20
+
+    # Courses Table
+    c.drawString(30, y, "Courses offered")
+    y -= 5
+
+    c_data = [["Course code", "Course title", "Credits", "Select"]]
+    total_cr = 0
+    for crs in courses:
+        cr_val = safe_float(crs.get('credits', 0))
+        total_cr += cr_val
         c_data.append([
-            str(i+1),
-            c['course_code'],
-            Paragraph(c.get('title', ''), style_norm),
-            str(c.get('credits', '-')),
-            "" 
+            crs['course_code'],
+            Paragraph(crs.get('title',''), getSampleStyleSheet()['Normal']),
+            str(int(cr_val) if cr_val.is_integer() else cr_val),
+            "" # Leaves a clean blank space in the column for them to tick
         ])
-        
-    t_courses = Table(c_data, colWidths=[45, 90, 260, 50, 65])
-    t_courses.setStyle(TableStyle([
+    c_data.append(["", Paragraph("<b>Total Credits</b>", getSampleStyleSheet()['Normal']), str(int(total_cr)), ""])
+
+    t2 = Table(c_data, colWidths=[90, 270, 60, 60])
+    t2.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('ALIGN', (0,0), (0,-1), 'CENTER'), 
-        ('ALIGN', (3,0), (4,-1), 'CENTER'), 
+        ('ALIGN', (0,0), (0,-1), 'CENTER'), # Code
+        ('ALIGN', (2,0), (-1,-1), 'CENTER'), # Credits & Select
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('PADDING', (0,0), (-1,-1), 6)
     ]))
-    elements.append(t_courses)
-    elements.append(Spacer(1, 30))
-    
-    # 4. Declaration & Undertaking
-    decl_text = """<b>DECLARATION & UNDERTAKING BY STUDENT:</b><br/><br/>
-    I hereby declare that the courses opted above are final and I wish to register for them in the current semester. 
-    I undertake to abide by the rules, regulations, and academic guidelines of the college and VTU. 
-    I am fully aware that I must maintain a minimum of <b>85% attendance</b> in each course and complete all Continuous 
-    Internal Evaluation (CIE) requirements to be eligible to appear for the Semester End Examinations (SEE). 
-    I understand that shortage of attendance will lead to disqualification."""
-    
-    elements.append(Paragraph(decl_text, style_norm))
-    elements.append(Spacer(1, 50))
-    
-    # 5. Signatures
-    sig_data = [
-        ["________________________", "________________________", "________________________"],
-        ["Signature of the Student", "Signature of Faculty Advisor", "Signature of HOD"],
-        ["Date:", "Date:", "Date:"]
-    ]
-    t_sig = Table(sig_data, colWidths=[175, 175, 175])
-    t_sig.setStyle(TableStyle([
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 10)
-    ]))
-    elements.append(t_sig)
-    
-    doc.build(elements)
+    t2.wrapOn(c, w, h)
+    _, t2_h = t2.wrap(w, h)
+    t2.drawOn(c, 30, y - t2_h)
+    y -= (t2_h + 30)
+
+    # Undertaking Section with Checkboxes
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(30, y, "Student Undertaking:")
+    y -= 15
+
+    # Checkbox 1
+    c.setLineWidth(1)
+    c.rect(30, y - 8, 10, 10)
+    c.setFont("Helvetica", 10)
+    c.drawString(48, y - 6, "I will follow the AMCEC / VTU autonomy guidelines.")
+    y -= 25
+
+    # Checkbox 2
+    c.rect(30, y - 8, 10, 10)
+    c.drawString(48, y - 6, "I have paid the full tuition fees and examination fees for the current semester.")
+    y -= 60
+
+    # Signatures
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(30, y, "________________________")
+    c.drawString(40, y - 15, "Signature of the Student")
+
+    c.drawString(200, y, "________________________")
+    c.drawString(205, y - 15, "Signature of the Proctor")
+
+    c.drawRightString(w - 30, y, "________________________")
+    c.drawRightString(w - 45, y - 15, "Signature of the HOD")
 
 
 # --- GLOBAL CONTEXT ---
@@ -159,25 +255,26 @@ reg_tabs = st.tabs([
 # ==========================================
 with reg_tabs[0]:
     st.header("Step 1: Generate Physical Registration Forms")
-    st.info("Generates PDF forms containing a Photo Box, Declaration, Undertaking, and the Course List. You can use the database courses OR upload a custom CSV syllabus.")
+    st.info("Generates a single, bulk PDF containing registration forms for the entire branch. Automatically maps Logos, Watermarks, and Student Photos from the cloud.")
     
     col_f1, col_f2, col_f3 = st.columns(3)
     f_ay = col_f1.text_input("Academic Year for Form", value=st.session_state.get('active_academic_year', '2025-26'))
     
-    branches_data = fetch_all_records("master_branches", "branch_code, branch_name")
+    branches_data = fetch_all_records("master_branches", "branch_code, branch_name, program_type")
+    branch_prog_map = {b['branch_code']: b.get('program_type', 'UG') for b in branches_data}
     branch_list = [b['branch_code'] for b in branches_data if str(b['branch_code']).upper() != 'COMMON']
     f_branch = col_f2.selectbox("Target Branch", ["-- Select --"] + branch_list)
     
     f_sem = col_f3.number_input("Target Semester", min_value=1, max_value=10, value=1)
     
     st.markdown("#### Course Source")
-    f_csv = st.file_uploader("Override Syllabus with Custom CSV (Optional - Will filter by 'Streams' column)", type="csv")
+    f_csv = st.file_uploader("Override Syllabus with Custom CSV (Optional - Filters by 'Streams')", type="csv")
     
-    if st.button("🖨️ Generate PDF Forms (ZIP)", type="primary"):
+    if st.button("🖨️ Generate Master PDF (Branch Batch)", type="primary"):
         if f_branch == "-- Select --":
             st.error("Please select a valid branch.")
         else:
-            with st.spinner(f"Compiling courses and generating forms for {f_branch} Semester {f_sem}..."):
+            with st.spinner(f"Fetching cloud assets and compiling batch PDF for {f_branch} Semester {f_sem}..."):
                 try:
                     # 1. Fetch Students
                     students = fetch_all_records("master_students", "*", {"branch_code": f_branch, "current_sem": str(f_sem)})
@@ -186,7 +283,6 @@ with reg_tabs[0]:
                         st.warning(f"No students found currently enrolled in {f_branch} Semester {f_sem}.")
                     else:
                         valid_courses = []
-                        
                         # 2. Logic: CSV Upload vs Database
                         if f_csv is not None:
                             df_crs = pd.read_csv(f_csv)
@@ -199,15 +295,10 @@ with reg_tabs[0]:
                             
                             if stream_col:
                                 df_filtered = df_crs[df_crs[stream_col].astype(str).str.strip().str.upper() == f_branch.upper()]
-                            else:
-                                df_filtered = df_crs
+                            else: df_filtered = df_crs
                                 
                             for _, r in df_filtered.iterrows():
-                                valid_courses.append({
-                                    'course_code': r[code_col],
-                                    'title': r[title_col],
-                                    'credits': r[cred_col] if cred_col else '-'
-                                })
+                                valid_courses.append({'course_code': r[code_col], 'title': r[title_col], 'credits': r[cred_col] if cred_col else '-'})
                         else:
                             courses_res = fetch_all_records("master_courses", "course_code, title, branch_code, credits", {"semester_id": f_sem})
                             valid_courses = [c for c in courses_res if c['branch_code'] in [f_branch, 'COMMON']]
@@ -215,25 +306,52 @@ with reg_tabs[0]:
                         if not valid_courses:
                             st.warning(f"No courses found for {f_branch}. If using CSV, ensure the 'Streams' column matches the branch exactly.")
                         else:
-                            # 3. Generate ZIP of PDFs
-                            zip_buffer = io.BytesIO()
-                            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                                progress_bar = st.progress(0)
-                                total_stu = len(students)
+                            # 3. Fetch Cloud Assets
+                            system_assets = {"logo": None, "naac": None, "watermark": None}
+                            sys_map = {"logo": LOGO_FILENAME, "naac": NAAC_FILENAME, "watermark": WATERMARK_FILENAME}
+                            for k, f in sys_map.items():
+                                try:
+                                    res = supabase.storage.from_("College_Logos").download(f)
+                                    if res: system_assets[k] = io.BytesIO(res) 
+                                except: pass
+                            
+                            photo_file_map = fetch_complete_bucket_map("StakeHolders_Photos")
+                            
+                            # 4. Generate Single PDF Document
+                            final_pdf_buffer = io.BytesIO()
+                            c = canvas.Canvas(final_pdf_buffer, pagesize=A4)
+                            progress_bar = st.progress(0)
+                            total_stu = len(students)
+                            
+                            # Parallel Download Photos
+                            batch_photos = {}
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                                futures = {executor.submit(download_photo_worker, (s['usn'], photo_file_map)): s['usn'] for s in students}
+                                for future in concurrent.futures.as_completed(futures):
+                                    u, p_stream = future.result()
+                                    if p_stream: batch_photos[u] = p_stream
+
+                            date_str = datetime.date.today().strftime('%d-%m-%Y')
+                            prog_type = branch_prog_map.get(f_branch, "UG")
+
+                            for i, stu in enumerate(students):
+                                photo_stream = batch_photos.get(stu['usn'])
+                                draw_registration_page(c, A4[0], A4[1], stu, valid_courses, system_assets, photo_stream, f_ay, f_sem, date_str, prog_type)
+                                c.showPage() # Page break for next student
+                                progress_bar.progress((i + 1) / total_stu)
                                 
-                                for i, stu in enumerate(students):
-                                    pdf_buf = io.BytesIO()
-                                    generate_registration_form(pdf_buf, stu, valid_courses, f_ay, f_sem)
-                                    zf.writestr(f"Registration_Form_{stu['usn']}.pdf", pdf_buf.getvalue())
-                                    progress_bar.progress((i + 1) / total_stu)
+                            c.save()
+                            
+                            # Cleanup memory
+                            for stream in batch_photos.values(): stream.close()
                                     
-                            st.success(f"✅ Generated {len(students)} personalized Registration Forms!")
+                            st.success(f"✅ Generated {total_stu} pages into a single Master PDF!")
                             
                             st.download_button(
-                                label=f"📥 Download {f_branch}_Sem{f_sem}_RegForms.zip",
-                                data=zip_buffer.getvalue(),
-                                file_name=f"Reg_Forms_{f_branch}_Sem{f_sem}_{f_ay}.zip",
-                                mime="application/zip",
+                                label=f"📥 Download {f_branch} Batch Registrations (PDF)",
+                                data=final_pdf_buffer.getvalue(),
+                                file_name=f"Batch_Registrations_{f_branch}_Sem{f_sem}.pdf",
+                                mime="application/pdf",
                                 type="primary"
                             )
                 except Exception as e:
