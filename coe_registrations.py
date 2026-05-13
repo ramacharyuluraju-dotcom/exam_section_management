@@ -103,28 +103,34 @@ def download_photo_worker(args):
 # 🟢 EXACT REPLICA PDF GENERATOR ENGINE
 # ==========================================
 def draw_header(c, w, y_start, assets):
+    margin = 35
     if assets.get("logo"):
-        c.drawImage(ImageReader(assets["logo"]), 35, y_start - 35, width=60, height=60, mask='auto', preserveAspectRatio=True)
+        c.drawImage(ImageReader(assets["logo"]), margin, y_start - 35, width=60, height=60, mask='auto', preserveAspectRatio=True)
     if assets.get("naac"):
-        c.drawImage(ImageReader(assets["naac"]), w - 95, y_start - 35, width=60, height=60, mask='auto', preserveAspectRatio=True)
+        c.drawImage(ImageReader(assets["naac"]), w - margin - 60, y_start - 35, width=60, height=60, mask='auto', preserveAspectRatio=True)
 
     c.setFont("Helvetica-Bold", 15)
     c.drawCentredString(w/2, y_start, "AMC ENGINEERING COLLEGE")
     c.setFont("Helvetica", 9)
     c.drawCentredString(w/2, y_start - 15, "AMC Campus, Bannerghatta Road, Bengaluru, Karnataka - 560083")
     c.drawCentredString(w/2, y_start - 27, "Autonomous Institution Affiliated to VTU, Belagavi | NAAC A+ Accredited")
+    
+    # Header line stretching exactly margin to margin
     c.setLineWidth(1)
-    c.line(30, y_start - 45, w - 30, y_start - 45)
+    c.line(margin, y_start - 45, w - margin, y_start - 45)
     return y_start - 65
 
 def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem, date_str, prog_type):
+    margin = 35
+    content_w = w - (2 * margin) # Exact width for tables to align with right header line
+    
     if assets.get("watermark"):
         c.saveState()
         c.setFillAlpha(0.08)
         c.drawImage(ImageReader(assets["watermark"]), w/2 - 175, h/2 - 175, width=350, height=350, mask='auto', preserveAspectRatio=True)
         c.restoreState()
 
-    y = draw_header(c, w, h - 30, assets)
+    y = draw_header(c, w, h - margin, assets)
     
     c.setFont("Helvetica-Bold", 12)
     sem_str = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth", "Ninth", "Tenth"][int(sem)-1] if 1 <= int(sem) <= 10 else str(sem)
@@ -132,10 +138,9 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
     y -= 25
 
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(30, y, "Student Details")
+    c.drawString(margin, y, "Student Details")
     y -= 5
 
-    # 🟢 BUG FIXED HERE: Replaced conditional empty tuple logic to prevent "tuple index out of range"
     if photo_io:
         photo_io.seek(0)
         p_img = RLImage(photo_io, width=55, height=70)
@@ -164,22 +169,22 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
             ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
             ('ALIGN', (0,0), (-1,-1), 'CENTER'),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('SPAN', (4, 0), (4, 1)) # Explicitly merge if no photo is available
+            ('SPAN', (4, 0), (4, 1))
         ]
 
-    t1 = Table(s_data, colWidths=[80, 200, 60, 60, 80], rowHeights=[20, 75])
+    # Dynamically calculated column widths to precisely equal content_w (525.27 points)
+    t1 = Table(s_data, colWidths=[70, 205.27, 60, 90, 100], rowHeights=[20, 75])
     t1.setStyle(TableStyle(style_cmds))
     t1.wrapOn(c, w, h)
     _, t1_h = t1.wrap(w, h)
-    t1.drawOn(c, 30, y - t1_h)
+    t1.drawOn(c, margin, y - t1_h)
     y -= (t1_h + 20)
 
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(30, y, f"Semester: {sem}")
-    c.drawRightString(w - 30, y, f"Date: {date_str}")
+    c.drawString(margin, y, f"Semester: {sem}")
     y -= 20
 
-    c.drawString(30, y, "Courses offered")
+    c.drawString(margin, y, "Courses offered")
     y -= 5
 
     c_data = [["Course code", "Course title", "Credits", "Select"]]
@@ -191,11 +196,12 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
             crs['course_code'],
             Paragraph(crs.get('title',''), getSampleStyleSheet()['Normal']),
             str(int(cr_val) if cr_val.is_integer() else cr_val),
-            "" 
+            "[   ]" # 🟢 Added Checkbox brackets for the Select column
         ])
     c_data.append(["", Paragraph("<b>Total Credits</b>", getSampleStyleSheet()['Normal']), str(int(total_cr)), ""])
 
-    t2 = Table(c_data, colWidths=[90, 270, 60, 60])
+    # Courses Table dynamically sized to content_w
+    t2 = Table(c_data, colWidths=[80, 315.27, 60, 70])
     t2.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
@@ -206,32 +212,60 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
     ]))
     t2.wrapOn(c, w, h)
     _, t2_h = t2.wrap(w, h)
-    t2.drawOn(c, 30, y - t2_h)
-    y -= (t2_h + 30)
+    t2.drawOn(c, margin, y - t2_h)
+    y -= (t2_h + 25)
 
+    # 🟢 NEW: Declaration Section
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(30, y, "Student Undertaking:")
+    c.drawString(margin, y, "DECLARATION:")
+    y -= 15
+    
+    p_style = getSampleStyleSheet()['Normal']
+    p_style.fontSize = 9
+    decl = Paragraph("I hereby declare that the information provided is true to the best of my knowledge. I have carefully selected the courses listed above and I request to be registered for the same in the current semester.", p_style)
+    decl.wrapOn(c, content_w, 50)
+    _, decl_h = decl.wrap(content_w, 50)
+    decl.drawOn(c, margin, y - decl_h)
+    y -= (decl_h + 15)
+
+    # 🟢 EXPANDED: Student Undertaking
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(margin, y, "STUDENT UNDERTAKING:")
     y -= 15
 
     c.setLineWidth(1)
-    c.rect(30, y - 8, 10, 10)
-    c.setFont("Helvetica", 10)
-    c.drawString(48, y - 6, "I will follow the AMCEC / VTU autonomy guidelines.")
-    y -= 25
+    c.setFont("Helvetica", 9)
+    
+    undertakings = [
+        "I will follow the AMCEC / VTU autonomy guidelines.",
+        "I have paid the full tuition fees and examination fees for the current semester.",
+        "I am aware that I must maintain a minimum of 85% attendance to appear for SEE.",
+        "I have verified that my selected credits align with the academic regulations."
+    ]
+    
+    for u in undertakings:
+        c.rect(margin, y - 8, 10, 10) # Drawing perfectly square checkboxes
+        c.drawString(margin + 18, y - 6, u)
+        y -= 18
 
-    c.rect(30, y - 8, 10, 10)
-    c.drawString(48, y - 6, "I have paid the full tuition fees and examination fees for the current semester.")
-    y -= 60
+    y -= 30
 
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(30, y, "________________________")
-    c.drawString(40, y - 15, "Signature of the Student")
-
-    c.drawString(200, y, "________________________")
-    c.drawString(205, y - 15, "Signature of the Proctor")
-
-    c.drawRightString(w - 30, y, "________________________")
-    c.drawRightString(w - 45, y - 15, "Signature of the HOD")
+    # 🟢 RESTRUCTURED: Signatures (Date Left, Proctor Center, Student Right)
+    sig_data = [
+        [f"Date: {date_str}", "________________________", "________________________"],
+        ["", "Signature of the Proctor / HOD", "Signature of the Student"]
+    ]
+    t_sig = Table(sig_data, colWidths=[content_w/3, content_w/3, content_w/3])
+    t_sig.setStyle(TableStyle([
+        ('ALIGN', (0,0), (0,-1), 'LEFT'),
+        ('ALIGN', (1,0), (1,-1), 'CENTER'),
+        ('ALIGN', (2,0), (2,-1), 'RIGHT'),
+        ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,-1), 10),
+    ]))
+    t_sig.wrapOn(c, content_w, 50)
+    _, sig_h = t_sig.wrap(content_w, 50)
+    t_sig.drawOn(c, margin, y - sig_h)
 
 
 # --- GLOBAL CONTEXT ---
