@@ -52,7 +52,7 @@ def get_checkbox():
     """Generates a perfect square box for the table cells"""
     t = Table([[""]], colWidths=[12], rowHeights=[12])
     t.setStyle(TableStyle([
-        ('GRID', (0,0), (-1,-1), 1, colors.black),
+        ('GRID', (0,0), (-1,-1), 0.8, colors.black),
         ('BACKGROUND', (0,0), (-1,-1), colors.white)
     ]))
     return t
@@ -219,28 +219,8 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, form_tit
     _, t2_h = t2.wrap(w, h)
     t2.drawOn(c, margin, y - t2_h)
     y -= (t2_h + 25)
-
-    # 🟢 STUDENT UNDERTAKING FIRST
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(margin, y, "STUDENT UNDERTAKING:")
-    y -= 15
-
-    c.setLineWidth(1)
-    c.setFont("Helvetica", 9)
     
-    undertakings = [
-        "I will follow the AMCEC / VTU autonomy guidelines.",
-        "I have paid the full tuition fees and examination fees for the current semester."
-    ]
-    
-    for u in undertakings:
-        c.rect(margin, y - 8, 10, 10) 
-        c.drawString(margin + 18, y - 6, u)
-        y -= 18
-
-    y -= 10
-    
-    # 🟢 DECLARATION SECOND
+    # 🟢 DECLARATION
     c.setFont("Helvetica-Bold", 10)
     c.drawString(margin, y, "DECLARATION:")
     y -= 15
@@ -251,7 +231,29 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, form_tit
     decl.wrapOn(c, content_w, 50)
     _, decl_h = decl.wrap(content_w, 50)
     decl.drawOn(c, margin, y - decl_h)
-    y -= (decl_h + 30)
+    y -= (decl_h + 25)
+
+    # 🟢 FOUR STUDENT UNDERTAKINGS
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(margin, y, "STUDENT UNDERTAKING:")
+    y -= 15
+
+    c.setLineWidth(1)
+    c.setFont("Helvetica", 9)
+    
+    undertakings = [
+        "I will follow the AMCEC / VTU autonomy guidelines.",
+        "I have paid the full tuition fees and examination fees for the current semester.",
+        "I am aware that I must maintain a minimum of 85% attendance to appear for SEE.",
+        "I have verified that my selected credits align with the academic regulations."
+    ]
+    
+    for u in undertakings:
+        c.rect(margin, y - 8, 10, 10) 
+        c.drawString(margin + 18, y - 6, u)
+        y -= 18
+
+    y -= 30
 
     # 🟢 SIGNATURES (Date Left, Student Right)
     sig_data = [
@@ -301,25 +303,32 @@ with reg_tabs[0]:
     branches_data = fetch_all_records("master_branches", "branch_code, branch_name, program_type")
     branch_prog_map = {b['branch_code']: b.get('program_type', 'UG') for b in branches_data}
     branch_list = [b['branch_code'] for b in branches_data if str(b['branch_code']).upper() != 'COMMON']
-    f_branch = col_f2.selectbox("Target Branch", ["-- Select --"] + branch_list)
     
+    # Added "ALL BRANCHES" option
+    f_branch = col_f2.selectbox("Target Branch", ["-- Select --", "ALL BRANCHES"] + branch_list)
     f_sem = col_f3.number_input("Target Semester", min_value=1, max_value=10, value=1)
     
     st.markdown("#### Course Source")
-    f_csv = st.file_uploader("Override Syllabus with Custom CSV (Optional - Filters by 'Streams')", type="csv")
+    f_csv = st.file_uploader("Override Syllabus with Custom CSV (Optional - Filters by 'Streams')", type="csv", key="pdf_csv_upload")
     
-    if st.button("🖨️ Generate Master PDF (Branch Batch)", type="primary"):
+    if st.button("🖨️ Generate Master PDF", type="primary"):
         if f_branch == "-- Select --":
-            st.error("Please select a valid branch.")
+            st.error("Please select a target branch.")
         else:
-            with st.spinner(f"Fetching cloud assets and compiling batch PDF for {f_branch} Semester {f_sem}..."):
+            with st.spinner(f"Fetching cloud assets and compiling batch PDF..."):
                 try:
-                    students = fetch_all_records("master_students", "*", {"branch_code": f_branch, "current_sem": str(f_sem)})
+                    # 1. Fetch Students based on selection
+                    if f_branch == "ALL BRANCHES":
+                        students = fetch_all_records("master_students", "*", {"current_sem": str(f_sem)})
+                    else:
+                        students = fetch_all_records("master_students", "*", {"branch_code": f_branch, "current_sem": str(f_sem)})
                     
                     if not students:
-                        st.warning(f"No students found currently enrolled in {f_branch} Semester {f_sem}.")
+                        st.warning(f"No students found for this criteria.")
                     else:
-                        valid_courses = []
+                        branch_courses_dict = {}
+                        
+                        # 2. Logic: Process Courses from CSV vs Database
                         if f_csv is not None:
                             df_crs = pd.read_csv(f_csv)
                             col_map = {c.strip().upper(): c for c in df_crs.columns}
@@ -329,63 +338,79 @@ with reg_tabs[0]:
                             stream_col = col_map.get('STREAMS', col_map.get('BRANCH', None))
                             cred_col = col_map.get('CREDITS', None)
                             
-                            if stream_col:
-                                df_filtered = df_crs[df_crs[stream_col].astype(str).str.strip().str.upper() == f_branch.upper()]
-                            else: df_filtered = df_crs
-                                
-                            for _, r in df_filtered.iterrows():
-                                valid_courses.append({'course_code': r[code_col], 'title': r[title_col], 'credits': r[cred_col] if cred_col else '-'})
+                            for _, r in df_crs.iterrows():
+                                br = str(r[stream_col]).strip().upper() if stream_col else "COMMON"
+                                if br not in branch_courses_dict: branch_courses_dict[br] = []
+                                branch_courses_dict[br].append({
+                                    'course_code': str(r[code_col]).strip(),
+                                    'title': str(r[title_col]),
+                                    'credits': r[cred_col] if cred_col else '-'
+                                })
                         else:
-                            courses_res = fetch_all_records("master_courses", "course_code, title, branch_code, credits", {"semester_id": f_sem})
-                            valid_courses = [c for c in courses_res if c['branch_code'] in [f_branch, 'COMMON']]
+                            all_courses = fetch_all_records("master_courses", "course_code, title, branch_code, credits", {"semester_id": f_sem})
+                            for c in all_courses:
+                                br = str(c['branch_code']).strip().upper()
+                                if br not in branch_courses_dict: branch_courses_dict[br] = []
+                                branch_courses_dict[br].append(c)
+
+                        system_assets = {"logo": None, "naac": None, "watermark": None}
+                        sys_map = {"logo": LOGO_FILENAME, "naac": NAAC_FILENAME, "watermark": WATERMARK_FILENAME}
+                        for k, f in sys_map.items():
+                            try:
+                                res = supabase.storage.from_("College_Logos").download(f)
+                                if res: system_assets[k] = io.BytesIO(res) 
+                            except: pass
                         
-                        if not valid_courses:
-                            st.warning(f"No courses found for {f_branch}. If using CSV, ensure the 'Streams' column matches the branch exactly.")
-                        else:
-                            system_assets = {"logo": None, "naac": None, "watermark": None}
-                            sys_map = {"logo": LOGO_FILENAME, "naac": NAAC_FILENAME, "watermark": WATERMARK_FILENAME}
-                            for k, f in sys_map.items():
-                                try:
-                                    res = supabase.storage.from_("College_Logos").download(f)
-                                    if res: system_assets[k] = io.BytesIO(res) 
-                                except: pass
-                            
-                            photo_file_map = fetch_complete_bucket_map("StakeHolders_Photos")
-                            
-                            final_pdf_buffer = io.BytesIO()
-                            c = canvas.Canvas(final_pdf_buffer, pagesize=A4)
-                            progress_bar = st.progress(0)
-                            total_stu = len(students)
-                            
-                            batch_photos = {}
-                            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                                futures = {executor.submit(download_photo_worker, (s['usn'], photo_file_map)): s['usn'] for s in students}
-                                for future in concurrent.futures.as_completed(futures):
-                                    u, p_stream = future.result()
-                                    if p_stream: batch_photos[u] = p_stream
+                        photo_file_map = fetch_complete_bucket_map("StakeHolders_Photos")
+                        
+                        final_pdf_buffer = io.BytesIO()
+                        c = canvas.Canvas(final_pdf_buffer, pagesize=A4)
+                        progress_bar = st.progress(0)
+                        total_stu = len(students)
+                        
+                        batch_photos = {}
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                            futures = {executor.submit(download_photo_worker, (s['usn'], photo_file_map)): s['usn'] for s in students}
+                            for future in concurrent.futures.as_completed(futures):
+                                u, p_stream = future.result()
+                                if p_stream: batch_photos[u] = p_stream
 
-                            date_str = datetime.date.today().strftime('%d-%m-%Y')
-                            prog_type = branch_prog_map.get(f_branch, "UG")
+                        date_str = datetime.date.today().strftime('%d-%m-%Y')
 
-                            for i, stu in enumerate(students):
-                                photo_stream = batch_photos.get(stu['usn'])
-                                draw_registration_page(c, A4[0], A4[1], stu, valid_courses, system_assets, photo_stream, f_title, f_sem, date_str, prog_type)
-                                c.showPage() 
-                                progress_bar.progress((i + 1) / total_stu)
+                        for i, stu in enumerate(students):
+                            s_br = str(stu['branch_code']).upper()
+                            prog_type = branch_prog_map.get(s_br, "UG")
+                            
+                            # Fetch and sort specific courses for this student's branch
+                            raw_courses = branch_courses_dict.get(s_br, []) + branch_courses_dict.get("COMMON", [])
+                            raw_courses = sorted(raw_courses, key=lambda x: str(x['course_code']))
+                            
+                            # Deduplicate in case of overlaps
+                            seen = set()
+                            dedup_courses = []
+                            for crs in raw_courses:
+                                if crs['course_code'] not in seen:
+                                    seen.add(crs['course_code'])
+                                    dedup_courses.append(crs)
+                            
+                            photo_stream = batch_photos.get(stu['usn'])
+                            draw_registration_page(c, A4[0], A4[1], stu, dedup_courses, system_assets, photo_stream, f_title, f_sem, date_str, prog_type)
+                            c.showPage() 
+                            progress_bar.progress((i + 1) / total_stu)
+                            
+                        c.save()
+                        for stream in batch_photos.values(): stream.close()
                                 
-                            c.save()
-                            
-                            for stream in batch_photos.values(): stream.close()
-                                    
-                            st.success(f"✅ Generated {total_stu} pages into a single Master PDF!")
-                            
-                            st.download_button(
-                                label=f"📥 Download {f_branch} Batch Registrations (PDF)",
-                                data=final_pdf_buffer.getvalue(),
-                                file_name=f"Batch_Registrations_{f_branch}_Sem{f_sem}.pdf",
-                                mime="application/pdf",
-                                type="primary"
-                            )
+                        st.success(f"✅ Generated {total_stu} pages into a single Master PDF!")
+                        
+                        dl_name = f"Batch_Registrations_ALL_Sem{f_sem}.pdf" if f_branch == "ALL BRANCHES" else f"Batch_Registrations_{f_branch}_Sem{f_sem}.pdf"
+                        st.download_button(
+                            label=f"📥 Download Master PDF",
+                            data=final_pdf_buffer.getvalue(),
+                            file_name=dl_name,
+                            mime="application/pdf",
+                            type="primary"
+                        )
                 except Exception as e:
                     st.error(f"Generation Error: {e}")
 
@@ -394,60 +419,61 @@ with reg_tabs[0]:
 # ==========================================
 with reg_tabs[1]:
     st.header("Step 2.1: Bulk Course Mapping")
-    st.info("Download a pre-filled template containing all students and courses for a branch. Open it in Excel, delete rows for courses the student did NOT select on their physical form, and upload it back.")
     
     col_b1, col_b2 = st.columns(2)
     
     with col_b1:
-        st.subheader("A. Download Pre-filled Template")
-        try:
-            b_data = fetch_all_records("master_branches", "branch_code")
-            tmpl_branches = [b['branch_code'] for b in b_data if str(b['branch_code']).upper() != 'COMMON']
-        except: tmpl_branches = []
-            
-        t_branch = st.selectbox("Target Branch", ["-- Select --"] + tmpl_branches, key="t_branch_tmpl")
+        # 🟢 NEW UNIVERSAL TEMPLATE LOGIC
+        st.subheader("A. Download Universal Template")
+        st.info("Upload your syllabus CSV here. We will generate ONE massive template containing ALL students mapped to their respective subjects based on the 'Streams' column!")
+        
         t_sem = st.number_input("Target Semester", min_value=1, max_value=10, value=1, key="t_sem_tmpl")
         t_ay = st.text_input("Academic Year", value=st.session_state.get('active_academic_year', '2025-26'), key="t_ay_tmpl")
         t_type = st.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"], key="t_type_tmpl")
+        t_csv = st.file_uploader("Upload Universal Syllabus (CSV)", type="csv", key="t_csv_tmpl")
         
-        # 🟢 NEW: Allow CSV upload to filter the template generator!
-        t_csv = st.file_uploader("Override Syllabus with Custom CSV (Optional)", type="csv", key="t_csv_tmpl")
-        
-        if st.button("📥 Generate CSV Template", type="secondary"):
-            if t_branch == "-- Select --":
-                st.error("Please select a branch.")
+        if st.button("📥 Generate Universal CSV Template", type="secondary"):
+            if t_csv is None:
+                st.error("Please upload your Course Syllabus CSV to map the subjects.")
             else:
-                with st.spinner("Building master template..."):
-                    stu_data = fetch_all_records("master_students", "usn", {"branch_code": t_branch, "current_sem": str(t_sem)})
+                with st.spinner("Building universal template for all students..."):
+                    stu_data = fetch_all_records("master_students", "usn, branch_code", {"current_sem": str(t_sem)})
                     
-                    valid_crs = []
-                    if t_csv is not None:
-                        df_crs = pd.read_csv(t_csv)
-                        col_map = {c.strip().upper(): c for c in df_crs.columns}
-                        code_col = col_map.get('COURSE CODE', df_crs.columns[0])
-                        stream_col = col_map.get('STREAMS', col_map.get('BRANCH', None))
-                        
-                        if stream_col:
-                            df_filtered = df_crs[df_crs[stream_col].astype(str).str.strip().str.upper() == t_branch.upper()]
-                        else: 
-                            df_filtered = df_crs
+                    df_crs = pd.read_csv(t_csv)
+                    col_map = {c.strip().upper(): c for c in df_crs.columns}
+                    code_col = col_map.get('COURSE CODE', df_crs.columns[0])
+                    stream_col = col_map.get('STREAMS', col_map.get('BRANCH', None))
+                    
+                    if not stream_col:
+                        st.error("Your uploaded CSV must contain a 'Streams' or 'Branch' column!")
+                    elif not stu_data:
+                        st.warning(f"No students found in Semester {t_sem}.")
+                    else:
+                        branch_courses = {}
+                        for _, r in df_crs.iterrows():
+                            br = str(r[stream_col]).strip().upper()
+                            cc = str(r[code_col]).strip()
+                            if br not in branch_courses: branch_courses[br] = []
+                            branch_courses[br].append(cc)
                             
-                        valid_crs = df_filtered[code_col].tolist()
-                    else:
-                        crs_data = fetch_all_records("master_courses", "course_code, branch_code", {"semester_id": t_sem})
-                        valid_crs = [c['course_code'] for c in crs_data if c['branch_code'] in [t_branch, 'COMMON']]
-                    
-                    if not stu_data: st.warning(f"No students found in {t_branch} Semester {t_sem}.")
-                    elif not valid_crs: st.warning(f"No courses found for {t_branch} / COMMON in Semester {t_sem}.")
-                    else:
                         template_rows = []
                         for s in stu_data:
-                            for c in valid_crs:
+                            s_branch = str(s['branch_code']).upper()
+                            
+                            # Safely fetch branch-specific courses AND common subjects
+                            my_courses = branch_courses.get(s_branch, []) + branch_courses.get("COMMON", []) + branch_courses.get("FIRST_YEAR", [])
+                            # Deduplicate and Sort
+                            my_courses = sorted(list(set(my_courses)))
+                            
+                            for c in my_courses:
                                 template_rows.append({"usn": s['usn'], "course_code": c, "academic_year": t_ay, "semester_type": t_type, "semester": t_sem})
                         
-                        df_tmpl = pd.DataFrame(template_rows)
-                        st.success("✅ Template generated! Edit this file, then upload it on the right.")
-                        st.download_button(label=f"📥 Download {t_branch} Sem {t_sem} Template", data=df_tmpl.to_csv(index=False).encode('utf-8'), file_name=f"Registration_Template_{t_branch}_Sem{t_sem}.csv", mime="text/csv", type="primary")
+                        if template_rows:
+                            df_tmpl = pd.DataFrame(template_rows)
+                            st.success(f"✅ Universal Template generated containing {len(stu_data)} students!")
+                            st.download_button(label=f"📥 Download Universal Sem {t_sem} Template", data=df_tmpl.to_csv(index=False).encode('utf-8'), file_name=f"Universal_Registration_Template_Sem{t_sem}.csv", mime="text/csv", type="primary")
+                        else:
+                            st.error("Failed to map any subjects. Check if the branch codes in 'Streams' match the database.")
 
     with col_b2:
         st.subheader("B. Upload Finalized Registrations")
@@ -495,6 +521,7 @@ with reg_tabs[2]:
             if selected_student_label != "-- Select --":
                 selected_usn = student_options[selected_student_label]
                 applicable_courses = [c for c in fetch_all_records("master_courses", "course_code, title, branch_code") if c['branch_code'] in [selected_branch, 'COMMON']]
+                applicable_courses = sorted(applicable_courses, key=lambda x: str(x['course_code']))
                 
                 if not applicable_courses: st.warning("No courses mapped to this branch.")
                 else:
