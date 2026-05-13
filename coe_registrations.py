@@ -48,6 +48,15 @@ def safe_float(val, default=0.0):
     try: return float(val) if val and pd.notna(val) else default
     except: return default
 
+def get_checkbox():
+    """Generates a perfect square box for the table cells"""
+    t = Table([[""]], colWidths=[12], rowHeights=[12])
+    t.setStyle(TableStyle([
+        ('GRID', (0,0), (-1,-1), 1, colors.black),
+        ('BACKGROUND', (0,0), (-1,-1), colors.white)
+    ]))
+    return t
+
 # ==========================================
 # PHOTO BUCKET MAPPING UTILS 
 # ==========================================
@@ -115,14 +124,13 @@ def draw_header(c, w, y_start, assets):
     c.drawCentredString(w/2, y_start - 15, "AMC Campus, Bannerghatta Road, Bengaluru, Karnataka - 560083")
     c.drawCentredString(w/2, y_start - 27, "Autonomous Institution Affiliated to VTU, Belagavi | NAAC A+ Accredited")
     
-    # Header line stretching exactly margin to margin
     c.setLineWidth(1)
     c.line(margin, y_start - 45, w - margin, y_start - 45)
     return y_start - 65
 
-def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem, date_str, prog_type):
+def draw_registration_page(c, w, h, student, courses, assets, photo_io, form_title, sem, date_str, prog_type):
     margin = 35
-    content_w = w - (2 * margin) # Exact width for tables to align with right header line
+    content_w = w - (2 * margin) 
     
     if assets.get("watermark"):
         c.saveState()
@@ -133,8 +141,7 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
     y = draw_header(c, w, h - margin, assets)
     
     c.setFont("Helvetica-Bold", 12)
-    sem_str = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth", "Ninth", "Tenth"][int(sem)-1] if 1 <= int(sem) <= 10 else str(sem)
-    c.drawCentredString(w/2, y, f"Course Registration - {sem_str} Semester {ay}")
+    c.drawCentredString(w/2, y, form_title)
     y -= 25
 
     c.setFont("Helvetica-Bold", 10)
@@ -172,7 +179,6 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
             ('SPAN', (4, 0), (4, 1))
         ]
 
-    # Dynamically calculated column widths to precisely equal content_w (525.27 points)
     t1 = Table(s_data, colWidths=[70, 205.27, 60, 90, 100], rowHeights=[20, 75])
     t1.setStyle(TableStyle(style_cmds))
     t1.wrapOn(c, w, h)
@@ -196,11 +202,10 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
             crs['course_code'],
             Paragraph(crs.get('title',''), getSampleStyleSheet()['Normal']),
             str(int(cr_val) if cr_val.is_integer() else cr_val),
-            "[   ]" # 🟢 Added Checkbox brackets for the Select column
+            get_checkbox()
         ])
     c_data.append(["", Paragraph("<b>Total Credits</b>", getSampleStyleSheet()['Normal']), str(int(total_cr)), ""])
 
-    # Courses Table dynamically sized to content_w
     t2 = Table(c_data, colWidths=[80, 315.27, 60, 70])
     t2.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
@@ -215,7 +220,27 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
     t2.drawOn(c, margin, y - t2_h)
     y -= (t2_h + 25)
 
-    # 🟢 NEW: Declaration Section
+    # 🟢 STUDENT UNDERTAKING FIRST
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(margin, y, "STUDENT UNDERTAKING:")
+    y -= 15
+
+    c.setLineWidth(1)
+    c.setFont("Helvetica", 9)
+    
+    undertakings = [
+        "I will follow the AMCEC / VTU autonomy guidelines.",
+        "I have paid the full tuition fees and examination fees for the current semester."
+    ]
+    
+    for u in undertakings:
+        c.rect(margin, y - 8, 10, 10) 
+        c.drawString(margin + 18, y - 6, u)
+        y -= 18
+
+    y -= 10
+    
+    # 🟢 DECLARATION SECOND
     c.setFont("Helvetica-Bold", 10)
     c.drawString(margin, y, "DECLARATION:")
     y -= 15
@@ -226,40 +251,17 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, ay, sem,
     decl.wrapOn(c, content_w, 50)
     _, decl_h = decl.wrap(content_w, 50)
     decl.drawOn(c, margin, y - decl_h)
-    y -= (decl_h + 15)
+    y -= (decl_h + 30)
 
-    # 🟢 EXPANDED: Student Undertaking
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(margin, y, "STUDENT UNDERTAKING:")
-    y -= 15
-
-    c.setLineWidth(1)
-    c.setFont("Helvetica", 9)
-    
-    undertakings = [
-        "I will follow the AMCEC / VTU autonomy guidelines.",
-        "I have paid the full tuition fees and examination fees for the current semester.",
-        "I am aware that I must maintain a minimum of 85% attendance to appear for SEE.",
-        "I have verified that my selected credits align with the academic regulations."
-    ]
-    
-    for u in undertakings:
-        c.rect(margin, y - 8, 10, 10) # Drawing perfectly square checkboxes
-        c.drawString(margin + 18, y - 6, u)
-        y -= 18
-
-    y -= 30
-
-    # 🟢 RESTRUCTURED: Signatures (Date Left, Proctor Center, Student Right)
+    # 🟢 SIGNATURES (Date Left, Student Right)
     sig_data = [
-        [f"Date: {date_str}", "________________________", "________________________"],
-        ["", "Signature of the Proctor / HOD", "Signature of the Student"]
+        [f"Date: {date_str}", "________________________"],
+        ["", "Signature of the Student"]
     ]
-    t_sig = Table(sig_data, colWidths=[content_w/3, content_w/3, content_w/3])
+    t_sig = Table(sig_data, colWidths=[content_w/2, content_w/2])
     t_sig.setStyle(TableStyle([
         ('ALIGN', (0,0), (0,-1), 'LEFT'),
-        ('ALIGN', (1,0), (1,-1), 'CENTER'),
-        ('ALIGN', (2,0), (2,-1), 'RIGHT'),
+        ('ALIGN', (1,0), (1,-1), 'RIGHT'),
         ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
         ('FONTSIZE', (0,0), (-1,-1), 10),
     ]))
@@ -294,7 +296,7 @@ with reg_tabs[0]:
     st.info("Generates a single, bulk PDF containing registration forms for the entire branch. Automatically maps Logos, Watermarks, and Student Photos from the cloud.")
     
     col_f1, col_f2, col_f3 = st.columns(3)
-    f_ay = col_f1.text_input("Academic Year for Form", value=st.session_state.get('active_academic_year', '2025-26'))
+    f_title = col_f1.text_input("Form Header Title", value="Course Registration - Second Semester 2025-26")
     
     branches_data = fetch_all_records("master_branches", "branch_code, branch_name, program_type")
     branch_prog_map = {b['branch_code']: b.get('program_type', 'UG') for b in branches_data}
@@ -367,7 +369,7 @@ with reg_tabs[0]:
 
                             for i, stu in enumerate(students):
                                 photo_stream = batch_photos.get(stu['usn'])
-                                draw_registration_page(c, A4[0], A4[1], stu, valid_courses, system_assets, photo_stream, f_ay, f_sem, date_str, prog_type)
+                                draw_registration_page(c, A4[0], A4[1], stu, valid_courses, system_assets, photo_stream, f_title, f_sem, date_str, prog_type)
                                 c.showPage() 
                                 progress_bar.progress((i + 1) / total_stu)
                                 
@@ -408,14 +410,32 @@ with reg_tabs[1]:
         t_ay = st.text_input("Academic Year", value=st.session_state.get('active_academic_year', '2025-26'), key="t_ay_tmpl")
         t_type = st.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"], key="t_type_tmpl")
         
+        # 🟢 NEW: Allow CSV upload to filter the template generator!
+        t_csv = st.file_uploader("Override Syllabus with Custom CSV (Optional)", type="csv", key="t_csv_tmpl")
+        
         if st.button("📥 Generate CSV Template", type="secondary"):
             if t_branch == "-- Select --":
                 st.error("Please select a branch.")
             else:
                 with st.spinner("Building master template..."):
                     stu_data = fetch_all_records("master_students", "usn", {"branch_code": t_branch, "current_sem": str(t_sem)})
-                    crs_data = fetch_all_records("master_courses", "course_code, branch_code", {"semester_id": t_sem})
-                    valid_crs = [c['course_code'] for c in crs_data if c['branch_code'] in [t_branch, 'COMMON']]
+                    
+                    valid_crs = []
+                    if t_csv is not None:
+                        df_crs = pd.read_csv(t_csv)
+                        col_map = {c.strip().upper(): c for c in df_crs.columns}
+                        code_col = col_map.get('COURSE CODE', df_crs.columns[0])
+                        stream_col = col_map.get('STREAMS', col_map.get('BRANCH', None))
+                        
+                        if stream_col:
+                            df_filtered = df_crs[df_crs[stream_col].astype(str).str.strip().str.upper() == t_branch.upper()]
+                        else: 
+                            df_filtered = df_crs
+                            
+                        valid_crs = df_filtered[code_col].tolist()
+                    else:
+                        crs_data = fetch_all_records("master_courses", "course_code, branch_code", {"semester_id": t_sem})
+                        valid_crs = [c['course_code'] for c in crs_data if c['branch_code'] in [t_branch, 'COMMON']]
                     
                     if not stu_data: st.warning(f"No students found in {t_branch} Semester {t_sem}.")
                     elif not valid_crs: st.warning(f"No courses found for {t_branch} / COMMON in Semester {t_sem}.")
