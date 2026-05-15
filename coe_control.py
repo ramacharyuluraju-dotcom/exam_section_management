@@ -6,7 +6,7 @@ import hashlib
 import os
 import re
 import concurrent.futures
-from PIL import Image as PILImage  # Aliased to prevent conflict with ReportLab
+from PIL import Image as PILImage  
 from utils import init_db
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
@@ -46,6 +46,13 @@ def generate_app_id(usn, cycle_id):
     h = hashlib.md5(f"{usn}{cycle_id}{datetime.date.today()}".encode()).hexdigest()[:6].upper()
     return f"AMC-26-{h}"
 
+def get_sem_num(sem_val):
+    """Safely extracts the numeric semester value to evaluate Regular vs Arrear"""
+    try:
+        return int(re.search(r'\d+', str(sem_val)).group())
+    except:
+        return 99
+
 def fetch_all_records(table, columns="*", filter_col=None, filter_val=None):
     rows = []
     start = 0; step = 1000
@@ -64,7 +71,6 @@ def fetch_all_records(table, columns="*", filter_col=None, filter_val=None):
 # ==========================================
 # 2. BULLETPROOF PHOTO LOGIC
 # ==========================================
-
 def fetch_complete_bucket_map(bucket_name):
     file_map = {}
     limit = 1000; offset = 0
@@ -120,7 +126,6 @@ def download_photo_worker(args):
 # ==========================================
 # 3. DATA FETCHING UTILS
 # ==========================================
-
 def fetch_branches_map():
     branch_map = {}
     try:
@@ -180,7 +185,6 @@ def sort_subjects_by_timetable(subs, timetable_map):
 # ==========================================
 # 4. PDF ENGINE (EXACT ORIGINAL LAYOUT)
 # ==========================================
-
 def draw_header(c, w, y_start, assets, is_hall_ticket=False):
     if assets.get("logo"):
         c.drawImage(ImageReader(assets["logo"]), 35, y_start - 35, width=60, height=60, mask='auto', preserveAspectRatio=True)
@@ -209,7 +213,6 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     y = draw_header(c, w, h - 30, assets, is_hall_ticket=False)
     c.setFont("Helvetica-Bold", 11)
     
-    # 🟢 UPDATED: Simplified Application Form Header
     c.drawCentredString(w/2, y, f"Examination Application Form - {cycle_name}")
     y -= 25
 
@@ -225,9 +228,12 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     else:
         p_img = Paragraph("<para align=center>PHOTO</para>", getSampleStyleSheet()['Normal'])
     
+    stu_sem_str = str(student.get('current_sem', '1'))
+    stu_sem_num = get_sem_num(stu_sem_str)
+
     s_data = [
         ["USN", student['usn'], "Student Name", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal']), p_img],
-        ["Semester", str(student.get('current_sem', '1')), "Student Type", prog_type, ""],
+        ["Semester", stu_sem_str, "Student Type", prog_type, ""],
         ["Branch Code", db_branch_code, "Programme", Paragraph(f"<b>{branch_name_str}</b>", getSampleStyleSheet()['Normal']), ""]
     ]
     
@@ -256,9 +262,23 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
 
     c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Regular & Arrear Subjects"); y -= 10
     
-    sub_rows = [["Sem", "Course Code", "Course Title", "Select"]]
+    sub_rows = [["Sem", "Course Code", "Course Title", "Type"]]
+    arrear_count = 0
+    regular_count = 0
+
     for s in subjects:
-        sub_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Applied"])
+        sub_sem_str = str(s.get('sem', '-'))
+        sub_sem_num = get_sem_num(sub_sem_str)
+        
+        # 🟢 SMART DETECTION: If course semester is lower than student semester, it is an Arrear
+        if sub_sem_num < stu_sem_num:
+            s_type = "Arrear"
+            arrear_count += 1
+        else:
+            s_type = "Regular"
+            regular_count += 1
+            
+        sub_rows.append([sub_sem_str, s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), s_type])
     
     t2 = Table(sub_rows, colWidths=[40, 80, 335, 80])
     t2.setStyle(TableStyle([
@@ -270,15 +290,26 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     ]))
     t2.wrapOn(c, w, h); _, th = t2.wrap(w, h); t2.drawOn(c, 30, y - th); y -= (th + 30)
 
+    # 🟢 DYNAMIC FEE CALCULATION
     c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Fee Details"); y -= 5
-    total = sum([float(fees.get(k, 0)) for k in ['Exam', 'Arrear', 'Penalty', 'Misc']])
-    if total == 0: total = 2400.00
+    
+    base_exam_fee = float(fees.get('Exam', 2000))
+    fee_exam = base_exam_fee if regular_count > 0 else 0.0  # Only charge regular fee if regular subjects exist
+    
+    fee_arrear_per_sub = float(fees.get('Arrear', 0))
+    fee_arrear_total = fee_arrear_per_sub * arrear_count
+    
+    fee_penalty = float(fees.get('Penalty', 0))
+    fee_misc = float(fees.get('Misc', 400))
+    
+    total = fee_exam + fee_arrear_total + fee_penalty + fee_misc
+    
     f_rows = [
         ["Description", "Amount (Rs)"],
-        ["Regular Examination Fees", f"{float(fees.get('Exam', 2000)):.2f}"],
-        ["Arrear Examination Fees", f"{float(fees.get('Arrear', 0)):.2f}"],
-        ["Penalty Fees", f"{float(fees.get('Penalty', 0)):.2f}"],
-        ["Application & Marks Card Fees", f"{float(fees.get('Misc', 400)):.2f}"],
+        ["Regular Examination Fees", f"{fee_exam:.2f}"],
+        [f"Arrear Examination Fees ({arrear_count} x {fee_arrear_per_sub:.2f})", f"{fee_arrear_total:.2f}"],
+        ["Penalty Fees", f"{fee_penalty:.2f}"],
+        ["Application & Marks Card Fees", f"{fee_misc:.2f}"],
         ["TOTAL AMOUNT", f"{total:.2f}"]
     ]
     t3 = Table(f_rows, colWidths=[435, 100])
@@ -316,7 +347,6 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     y = draw_header(c, w, y_start, assets, is_hall_ticket=True)
     c.setFont("Helvetica-Bold", 11)
     
-    # 🟢 UPDATED: Simplified Admission Ticket Header
     c.drawCentredString(w/2, y + 5, f"Admission Ticket - {cycle_name}")
     c.setFont("Helvetica-Bold", 9)
     
@@ -413,9 +443,8 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     return y - 15
 
 # ==========================================
-# 5. APP MAIN LOGIC (PARALLEL BATCHES)
+# 5. APP MAIN LOGIC
 # ==========================================
-
 tabs = st.tabs(["💰 Fees", "🚀 Bulk Generator", "📄 Individual"])
 
 with tabs[0]:
@@ -423,7 +452,7 @@ with tabs[0]:
     with st.form("fees"):
         c1, c2 = st.columns(2)
         e = c1.number_input("Regular Fee", 2000.0)
-        a = c2.number_input("Arrear Fee", 0.0)
+        a = c2.number_input("Arrear Fee (Per Subject)", 0.0) # 🟢 Updated UI Hint
         p = c1.number_input("Penalty", 0.0)
         m = c2.number_input("App & Marks Card Fee (Misc)", value=400.0)
         
@@ -515,13 +544,8 @@ with tabs[1]:
                     draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                     c.showPage()
                     
-                    # Top Ticket
                     ticket1_end_y = draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
-                    
-                    # Dynamic Scissor line
                     c.setDash(4, 4); c.line(20, ticket1_end_y, A4[0]-20, ticket1_end_y); c.setDash([])
-                    
-                    # Lowered College Copy
                     draw_hall_ticket_half(c, A4[0], ticket1_end_y - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     c.showPage()
                 
@@ -600,13 +624,8 @@ with tabs[2]:
                     draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                     c.showPage()
                     
-                    # Top Ticket
                     ticket1_end_y = draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
-                    
-                    # Dynamic Scissor line
                     c.setDash(4, 4); c.line(20, ticket1_end_y, A4[0]-20, ticket1_end_y); c.setDash([])
-                    
-                    # Lowered College Copy
                     draw_hall_ticket_half(c, A4[0], ticket1_end_y - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     c.showPage(); c.save()
                     
