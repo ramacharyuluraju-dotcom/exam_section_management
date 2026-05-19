@@ -668,7 +668,9 @@ with reg_tabs[5]:
                 for usn, courses in latest_results.items():
                     if usn_to_prog.get(usn) == target_prog:
                         for cc, data in courses.items():
-                            if not data['is_pass']: 
+                            # 🟢 STRICT FILTER: Must not be passed, AND must not be pending/frozen
+                            grade_val = str(data.get('grade', '')).strip().upper()
+                            if not data['is_pass'] and grade_val not in ['PND', 'PENDING', 'FROZEN', '']: 
                                 c_info = course_map.get(cc, {})
                                 c_sem = c_info.get("sem", 0)
                                 if c_sem in target_sems:
