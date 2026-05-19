@@ -1318,7 +1318,7 @@ if show_dashboard:
 
                         total_evals = len(df)
                         pending_evals = len(df[df['grade'].isin(['PND', 'PENDING'])])
-                        failed_evals = len(df[df['grade'] == 'F'])
+                        failed_evals = len(df[df['grade'].isin(['F', 'AB', 'NP', 'MP', 'WH'])])
                         passed_evals = total_evals - pending_evals - failed_evals
                         completed_evals = total_evals - pending_evals
                         pass_pct = (passed_evals / completed_evals * 100) if completed_evals > 0 else 0
