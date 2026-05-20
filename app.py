@@ -39,19 +39,22 @@ results_page = st.Page("coe_results.py", title="6. Results & Grading", icon="�
 analytics_page = st.Page("analytics_hub.py", title="7. Global Analytics", icon="📊")
 utilities_page = st.Page("doc_utilities.py", title="8. Doc Generator", icon="🖨️")
 
-# 🟢 ADD YOUR TWO NEW OMR PAGES HERE
+# 🟢 OMR PAGES
 omr_gen_page = st.Page("omr_sheet.py", title="9. OMR Generator", icon="🖨️")
 omr_eval_page = st.Page("OMR_evaluation.py", title="10. OMR Evaluator", icon="🎯")
+
+# 🟢 SMART TIMETABLE PAGE
+timetable_page = st.Page("smart_timetable.py", title="11. Smart Timetable", icon="📆")
 
 # 5. BUILD NAVIGATION MENU
 pages = {
     "🏠 Welcome": [home_page],
-    "📅 Exam Management": [lifecycle_page, registration_page],
+    
+    # 🟢 INJECTED TIMETABLE PAGE INTO EXAM MANAGEMENT
+    "📅 Exam Management": [lifecycle_page, registration_page, timetable_page],
+    
     "🚀 Operations": [pre_exam_page, exam_day_page, results_page, utilities_page],
-    
-    # 🟢 CREATE A NEW CATEGORY FOR YOUR OMR TOOLS
     "🎯 OMR Suite": [omr_gen_page, omr_eval_page],
-    
     "📈 Intelligence": [analytics_page]
 }
 
