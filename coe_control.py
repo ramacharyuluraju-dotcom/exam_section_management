@@ -182,9 +182,6 @@ def sort_subjects_by_timetable(subs, timetable_map):
             return datetime.datetime(2099, 1, 1)
     return sorted(subs, key=get_date)
 
-# ==========================================
-# 4. PDF ENGINE (EXACT ORIGINAL LAYOUT)
-# ==========================================
 def draw_header(c, w, y_start, assets, is_hall_ticket=False):
     if assets.get("logo"):
         c.drawImage(ImageReader(assets["logo"]), 35, y_start - 35, width=60, height=60, mask='auto', preserveAspectRatio=True)
@@ -204,6 +201,9 @@ def draw_header(c, w, y_start, assets, is_hall_ticket=False):
     c.line(30, y_start - 50, w - 30, y_start - 50)
     return y_start - 70
 
+# ==========================================
+# 4. PDF ENGINE (DYNAMIC LAYOUT)
+# ==========================================
 def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycle_name, photo_bytes_io, prog_type, db_branch_code, branch_name_str):
     if assets.get("watermark"):
         c.saveState(); c.setFillAlpha(0.08)
@@ -252,8 +252,10 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
         ('ALIGN', (3,0), (3,2), 'LEFT'), 
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), 
     ]))
-    t1.wrapOn(c, w, h); t1.drawOn(c, 30, y - 84)
-    y -= 110
+    t1.wrapOn(c, w, h)
+    _, th1 = t1.wrap(w, h)
+    t1.drawOn(c, 30, y - th1)
+    y -= (th1 + 20) # Dynamic Spacing
     
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, f"Application ID: {app_id}")
@@ -270,7 +272,6 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
         sub_sem_str = str(s.get('sem', '-'))
         sub_sem_num = get_sem_num(sub_sem_str)
         
-        # 🟢 SMART DETECTION: If course semester is lower than student semester, it is an Arrear
         if sub_sem_num < stu_sem_num:
             s_type = "Arrear"
             arrear_count += 1
@@ -280,21 +281,27 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
             
         sub_rows.append([sub_sem_str, s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), s_type])
     
-    t2 = Table(sub_rows, colWidths=[40, 80, 335, 80])
+    # 🟢 DYNAMIC ROW HEIGHT ADJUSTMENT based on subject volume
+    row_h = 16 if len(subjects) > 10 else None
+    
+    t2 = Table(sub_rows, colWidths=[40, 80, 335, 80], rowHeights=row_h)
     t2.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
         ('BACKGROUND', (0,0), (3,0), colors.lightgrey),
         ('ALIGN', (0,0), (0,-1), 'CENTER'),
         ('ALIGN', (3,0), (3,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE')
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('FONTSIZE', (0,0), (-1,-1), 8 if len(subjects) > 10 else 9), # Shrink font slightly if list is huge
     ]))
-    t2.wrapOn(c, w, h); _, th = t2.wrap(w, h); t2.drawOn(c, 30, y - th); y -= (th + 30)
+    t2.wrapOn(c, w, h)
+    _, th2 = t2.wrap(w, h)
+    t2.drawOn(c, 30, y - th2)
+    y -= (th2 + 20) # Dynamic Spacing
 
-    # 🟢 DYNAMIC FEE CALCULATION
     c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Fee Details"); y -= 5
     
     base_exam_fee = float(fees.get('Exam', 2000))
-    fee_exam = base_exam_fee if regular_count > 0 else 0.0  # Only charge regular fee if regular subjects exist
+    fee_exam = base_exam_fee if regular_count > 0 else 0.0  
     
     fee_arrear_per_sub = float(fees.get('Arrear', 0))
     fee_arrear_total = fee_arrear_per_sub * arrear_count
@@ -312,30 +319,36 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
         ["Application & Marks Card Fees", f"{fee_misc:.2f}"],
         ["TOTAL AMOUNT", f"{total:.2f}"]
     ]
-    t3 = Table(f_rows, colWidths=[435, 100])
+    
+    t3 = Table(f_rows, colWidths=[435, 100], rowHeights=16 if len(subjects) > 10 else None)
     t3.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
         ('FONTNAME', (-1,-1), (-1,-1), 'Helvetica-Bold'),
-        ('ALIGN', (1,0), (1,-1), 'RIGHT')
+        ('ALIGN', (1,0), (1,-1), 'RIGHT'),
+        ('FONTSIZE', (0,0), (-1,-1), 8 if len(subjects) > 10 else 9)
     ]))
-    t3.wrapOn(c, w, h); t3.drawOn(c, 30, y - 110); y -= 135
+    t3.wrapOn(c, w, h)
+    _, th3 = t3.wrap(w, h)
+    t3.drawOn(c, 30, y - th3)
+    y -= (th3 + 25) # Dynamic Spacing
 
-    c.rect(30, y - 30, w - 60, 30)
-    c.setFont("Helvetica", 10)
-    c.drawString(40, y - 20, "Receipt No: ______________________")
-    c.drawString(350, y - 20, "Date: ______________________")
-    y -= 50
+    c.rect(30, y - 25, w - 60, 25)
+    c.setFont("Helvetica", 9)
+    c.drawString(40, y - 17, "Receipt No: ______________________")
+    c.drawString(350, y - 17, "Date: ______________________")
+    y -= 40
 
     c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Declaration:"); y -= 15
     decl = "The subjects listed in this application are the only subjects I wish to apply for this Examination. I understand this application overrides any previous submission."
     p = Paragraph(decl, getSampleStyleSheet()['Normal']); p.wrapOn(c, w - 60, 50); p.drawOn(c, 30, y - 25)
     
-    y -= 50
+    y -= 40
     c.setFont("Helvetica-Bold", 9); c.drawRightString(w - 30, y, "Signature of the Candidate")
     
     c.setFont("Helvetica", 8)
     c.drawRightString(w - 30, y - 12, "Contact No: ___________________________")
     c.drawRightString(w - 30, y - 24, "Email ID:   ___________________________")
+
 
 def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, assets, cycle_name, photo_bytes_io, timetable_map, eligibility_map, header_branch, branch_name_str):
     if assets.get("watermark"):
@@ -389,8 +402,10 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ('LEFTPADDING', (0,0), (-1,-1), 0),
         ('RIGHTPADDING', (0,0), (-1,-1), 0),
     ]))
-    t_master.wrapOn(c, w, 500); _, h_mast = t_master.wrap(w, 500); t_master.drawOn(c, 30, y - h_mast)
-    y -= (h_mast + 5)
+    t_master.wrapOn(c, w, 500)
+    _, h_mast = t_master.wrap(w, 500)
+    t_master.drawOn(c, 30, y - h_mast)
+    y -= (h_mast + 10) # Dynamic Spacing
 
     c.setFont("Helvetica-Bold", 9); c.drawString(30, y, "Exam Schedule:"); y -= 8
     
@@ -407,7 +422,10 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     if row_count < 4:
         for _ in range(4 - row_count): grid_data.append(["", "", "", "", ""])
 
-    tg = Table(grid_data, colWidths=[75, 120, 35, 85, 220], rowHeights=16)
+    # 🟢 Squeeze the table rows if there are too many subjects
+    row_h = 14 if len(subjects) > 10 else 16
+
+    tg = Table(grid_data, colWidths=[75, 120, 35, 85, 220], rowHeights=row_h)
     tg.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
         ('FONTSIZE', (0,0), (-1,-1), 8),
@@ -416,13 +434,15 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
     ]))
-    tg.wrapOn(c, w, 500); _, gh = tg.wrap(w, 500); tg.drawOn(c, 30, y - gh)
-    y -= (gh + 10)
+    tg.wrapOn(c, w, 500)
+    _, gh = tg.wrap(w, 500)
+    tg.drawOn(c, 30, y - gh)
+    y -= (gh + 15) # Dynamic Spacing
 
-    c.setFont("Helvetica", 8)
+    c.setFont("Helvetica", 7.5)
     c.drawString(30, y, "Candidate must read the instructions provided in the answer booklet, before the commencement of examination.")
     
-    y -= 30 
+    y -= 25 
     c.setLineWidth(0.5)
     c.setFont("Helvetica-Bold", 9)
     sig_w = 80
@@ -436,11 +456,11 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     c.line(w - 40 - sig_w, y + 10, w - 40, y + 10)
     c.drawCentredString(w - 40 - sig_w/2, y, "Principal")
     
-    y -= 25
-    c.setFont("Helvetica-Oblique", 8)
+    y -= 15
+    c.setFont("Helvetica-Oblique", 7.5)
     c.drawCentredString(w/2, y, "Note: Please verify the eligibility of candidate before issuing the admission ticket.")
     
-    return y - 15
+    return y - 10
 
 # ==========================================
 # 5. APP MAIN LOGIC
