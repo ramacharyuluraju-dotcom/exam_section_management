@@ -33,6 +33,8 @@ def clean_data_for_db(df, expected_cols, numeric_cols=None):
 
 # --- MULTI-CYCLE SWITCHBOARD LOGIC ---
 
+# --- MULTI-CYCLE SWITCHBOARD LOGIC ---
+
 def global_cycle_selector(supabase):
     """
     Displays a dropdown in the sidebar to pick the active context.
@@ -42,8 +44,13 @@ def global_cycle_selector(supabase):
     st.sidebar.subheader("🎯 Context Selector")
     
     try:
-        # Fetch only cycles marked as active
-        res = supabase.table("exam_cycles").select("cycle_id, cycle_name").eq("is_active", True).execute()
+        # 🟢 FIX: Added .order("created_at", desc=True) to guarantee the newest cycle is first
+        res = supabase.table("exam_cycles")\
+            .select("cycle_id, cycle_name")\
+            .eq("is_active", True)\
+            .order("created_at", desc=True)\
+            .execute()
+            
         cycles = res.data
         
         if not cycles:
@@ -56,7 +63,7 @@ def global_cycle_selector(supabase):
         options = {r['cycle_name']: r['cycle_id'] for r in cycles}
         cycle_labels = list(options.keys())
         
-        # Auto-Initialize if user just logged in
+        # 🟢 AUTO-INITIALIZE: Locks in the LATEST cycle (cycles[0]) if user just logged in
         if "active_cycle_id" not in st.session_state or not st.session_state.active_cycle_id:
             st.session_state.active_cycle_id = cycles[0]['cycle_id']
             st.session_state.active_cycle_name = cycles[0]['cycle_name']
