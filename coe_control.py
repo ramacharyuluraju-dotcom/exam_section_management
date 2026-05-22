@@ -255,7 +255,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     t1.wrapOn(c, w, h)
     _, th1 = t1.wrap(w, h)
     t1.drawOn(c, 30, y - th1)
-    y -= (th1 + 20) # Dynamic Spacing
+    y -= (th1 + 20)
     
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, f"Application ID: {app_id}")
@@ -264,24 +264,28 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
 
     c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Regular & Arrear Subjects"); y -= 10
     
-    sub_rows = [["Sem", "Course Code", "Course Title", "Type"]]
-    arrear_count = 0
-    regular_count = 0
-
+    # 🟢 NEW LOGIC: Sort Application form by Regulars First, Arrears Second
+    regular_subs = []
+    arrear_subs = []
+    
     for s in subjects:
         sub_sem_str = str(s.get('sem', '-'))
         sub_sem_num = get_sem_num(sub_sem_str)
-        
         if sub_sem_num < stu_sem_num:
-            s_type = "Arrear"
-            arrear_count += 1
+            arrear_subs.append(s)
         else:
-            s_type = "Regular"
-            regular_count += 1
+            regular_subs.append(s)
             
-        sub_rows.append([sub_sem_str, s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), s_type])
+    arrear_count = len(arrear_subs)
+    regular_count = len(regular_subs)
+
+    sub_rows = [["Sem", "Course Code", "Course Title", "Type"]]
     
-    # 🟢 DYNAMIC ROW HEIGHT ADJUSTMENT based on subject volume
+    for s in regular_subs:
+        sub_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Regular"])
+    for s in arrear_subs:
+        sub_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Arrear"])
+    
     row_h = 16 if len(subjects) > 10 else None
     
     t2 = Table(sub_rows, colWidths=[40, 80, 335, 80], rowHeights=row_h)
@@ -358,7 +362,6 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
         c.drawImage(ImageReader(assets["watermark"]), w/2 - 140, base_y + (HALF_HEIGHT/2) - 140, width=280, height=280, mask='auto', preserveAspectRatio=True)
         c.restoreState()
 
-    # 1. PIN THE HEADER TO THE TOP OF THE BOUNDING BOX
     y = draw_header(c, w, base_y + HALF_HEIGHT - 20, assets, is_hall_ticket=True)
     c.setFont("Helvetica-Bold", 11)
     c.drawCentredString(w/2, y + 5, f"Admission Ticket - {cycle_name}")
@@ -421,31 +424,95 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
     c.drawString(30, y, "Exam Schedule:")
     y -= 8 
     
-    grid_data = [["Date", "Session", "Sem", "Course Code", "Invigilator Sign"]]
+    # 🟢 FETCH ELIGIBLE SUBJECTS ONLY
+    valid_subs = [s for s in subjects if eligibility_map.get(s['code'], False)]
     
-    for s in subjects:
-        code = s['code']
-        if not eligibility_map.get(code, False): continue 
-        sch = timetable_map.get(code, {"date": "", "session": ""})
-        grid_data.append([sch['date'], sch['session'], str(s.get('sem', '-')), code, ""])
+    # 🟢 NEW LOGIC: Dynamic Split Table for > 12 Subjects
+    if len(valid_subs) > 12:
+        mid = (len(valid_subs) + 1) // 2
+        left_subs = valid_subs[:mid]
+        right_subs = valid_subs[mid:]
+        
+        left_data = [["Date", "Session", "Sem", "Course Code", "Sign"]]
+        for s in left_subs:
+            sch = timetable_map.get(s['code'], {"date": "", "session": ""})
+            left_data.append([sch['date'], sch['session'], str(s.get('sem', '-')), s['code'], ""])
+            
+        right_data = [["Date", "Session", "Sem", "Course Code", "Sign"]]
+        for s in right_subs:
+            sch = timetable_map.get(s['code'], {"date": "", "session": ""})
+            right_data.append([sch['date'], sch['session'], str(s.get('sem', '-')), s['code'], ""])
+            
+        # Pad right side to ensure tables align perfectly
+        while len(right_data) < len(left_data):
+            right_data.append(["", "", "", "", ""])
+            
+        split_style = TableStyle([
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('FONTSIZE', (0,0), (-1,-1), 7),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('TOPPADDING', (0,0), (-1,-1), 1),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 1),
+        ])
+        
+        t_left = Table(left_data, colWidths=[50, 80, 25, 55, 45], rowHeights=13)
+        t_left.setStyle(split_style)
+        
+        t_right = Table(right_data, colWidths=[50, 80, 25, 55, 45], rowHeights=13)
+        t_right.setStyle(split_style)
+        
+        tg = Table([[t_left, t_right]], colWidths=[260, 260])
+        tg.setStyle(TableStyle([
+            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+            ('LEFTPADDING', (0,0), (-1,-1), 0),
+            ('RIGHTPADDING', (0,0), (-1,-1), 0),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+            ('TOPPADDING', (0,0), (-1,-1), 0),
+        ]))
+        
+        tg.wrapOn(c, w, 500)
+        _, gh = tg.wrap(w, 500)
+        tg.drawOn(c, 30, y - gh)
 
-    # Allow the table to grow, but shrink the font if they have 9+ subjects so it fits the middle area
-    row_h = 12 if len(subjects) >= 9 else 15
+    else:
+        # 🟢 SINGLE TABLE LOGIC: Smart stretching for <= 12 subjects
+        grid_data = [["Date", "Session", "Sem", "Course Code", "Invigilator Sign"]]
+        
+        for s in valid_subs:
+            sch = timetable_map.get(s['code'], {"date": "", "session": ""})
+            grid_data.append([sch['date'], sch['session'], str(s.get('sem', '-')), s['code'], ""])
 
-    tg = Table(grid_data, colWidths=[75, 120, 35, 85, 220], rowHeights=row_h)
-    tg.setStyle(TableStyle([
-        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-        ('FONTSIZE', (0,0), (-1,-1), 7.5 if len(subjects) >= 9 else 8),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('TOPPADDING', (0,0), (-1,-1), 1),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 1),
-    ]))
-    tg.wrapOn(c, w, 500)
-    _, gh = tg.wrap(w, 500)
-    tg.drawOn(c, 30, y - gh)
+        # Enforce a minimum of 8 empty rows to fill the void
+        MIN_ROWS = 8
+        if (len(grid_data) - 1) < MIN_ROWS:
+            for _ in range(MIN_ROWS - (len(grid_data) - 1)):
+                grid_data.append(["", "", "", "", ""])
+
+        total_rows = len(grid_data)
+        if total_rows <= 9:
+            row_h = 18   # Super stretch for 8 subjects
+        elif total_rows <= 12:
+            row_h = 15   # Mid stretch for 9-11 subjects
+        else:
+            row_h = 13   # Fallback
+
+        tg = Table(grid_data, colWidths=[75, 120, 35, 85, 220], rowHeights=row_h)
+        tg.setStyle(TableStyle([
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('FONTSIZE', (0,0), (-1,-1), 8),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('TOPPADDING', (0,0), (-1,-1), 2),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+        ]))
+        tg.wrapOn(c, w, 500)
+        _, gh = tg.wrap(w, 500)
+        tg.drawOn(c, 30, y - gh)
     
     # 2. PIN THE SIGNATURES TO THE ABSOLUTE BOTTOM OF THE BOUNDING BOX
     footer_y = base_y + 20 
