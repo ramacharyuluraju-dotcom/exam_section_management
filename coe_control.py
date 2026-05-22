@@ -364,14 +364,13 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     c.setFont("Helvetica-Bold", 9)
     
     c.drawRightString(w - 40, y - 5, f"[{section}]")
-    y -= 15 # Tightened Gap
+    y -= 15 
 
-    # 🟢 Custom Compact Style to prevent long names from inflating the box height
     compact_style = getSampleStyleSheet()['Normal'].clone('Compact')
     compact_style.fontName = 'Helvetica-Bold'
     compact_style.fontSize = 7.5
     compact_style.leading = 8.5
-    compact_style.alignment = 0 # Left align
+    compact_style.alignment = 0 
 
     h_data = [
         ["USN:", student['usn'], "Name:", Paragraph(f"{student['full_name']}", compact_style)],
@@ -380,7 +379,6 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ["Center:", "AMC ENGINEERING COLLEGE", "", ""]
     ]
     
-    # 🟢 Hardcoded rowHeights to 14 to violently compress vertical space
     t_text = Table(h_data, colWidths=[50, 90, 55, 280], rowHeights=14)
     t_text.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
@@ -390,13 +388,12 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ('SPAN', (1,3), (3,3)), 
         ('ALIGN', (1,0), (1,-1), 'LEFT'),
         ('ALIGN', (3,0), (3,-1), 'LEFT'),
-        ('TOPPADDING', (0,0), (-1,-1), 1),    # Strip top padding
-        ('BOTTOMPADDING', (0,0), (-1,-1), 1), # Strip bottom padding
+        ('TOPPADDING', (0,0), (-1,-1), 1),    
+        ('BOTTOMPADDING', (0,0), (-1,-1), 1), 
     ]))
     
     if photo_bytes_io:
         photo_bytes_io.seek(0)
-        # 🟢 Reduced photo dimensions to match new box height
         p_img2 = RLImage(photo_bytes_io, width=48, height=54)
         p_img2.hAlign = 'CENTER'
         p_img2.vAlign = 'MIDDLE'
@@ -404,7 +401,6 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         p_img2 = Paragraph("<para align=center>PHOTO</para>", compact_style)
 
     master_data = [[t_text, p_img2]]
-    # 🟢 Squeezed the photo container width from 70 to 60
     t_master = Table(master_data, colWidths=[475, 60])
     t_master.setStyle(TableStyle([
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
@@ -419,9 +415,13 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     t_master.wrapOn(c, w, 500)
     _, h_mast = t_master.wrap(w, 500)
     t_master.drawOn(c, 30, y - h_mast)
-    y -= (h_mast + 5) # Tightened Gap
+    
+    # 🟢 FIX 1: Gave 15 pixels of breathing room so the text below doesn't draw up into the table
+    y -= (h_mast + 15) 
 
-    c.setFont("Helvetica-Bold", 9); c.drawString(30, y, "Exam Schedule:"); y -= 6 
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(30, y, "Exam Schedule:")
+    y -= 8 # Space between text and top of the grid
     
     grid_data = [["Date", "Session", "Sem", "Course Code", "Invigilator Sign"]]
     
@@ -433,8 +433,11 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         grid_data.append([sch['date'], sch['session'], str(s.get('sem', '-')), code, ""])
         row_count += 1
 
-    if row_count < 4:
-        for _ in range(4 - row_count): grid_data.append(["", "", "", "", ""])
+    # 🟢 FIX 2: Force a minimum of 7 rows. If they have fewer subjects, it prints blank grid lines to keep the box looking full!
+    MIN_ROWS = 7
+    if row_count < MIN_ROWS:
+        for _ in range(MIN_ROWS - row_count): 
+            grid_data.append(["", "", "", "", ""])
 
     row_h = 12 if len(subjects) >= 8 else 15
 
@@ -452,12 +455,14 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     tg.wrapOn(c, w, 500)
     _, gh = tg.wrap(w, 500)
     tg.drawOn(c, 30, y - gh)
-    y -= (gh + 8) # Tightened Gap
+    
+    # Gap before the instructions
+    y -= (gh + 12) 
 
     c.setFont("Helvetica", 7)
     c.drawString(30, y, "Candidate must read the instructions provided in the answer booklet, before the commencement of examination.")
     
-    y -= 18 
+    y -= 20 
     c.setLineWidth(0.5)
     c.setFont("Helvetica-Bold", 9)
     sig_w = 80
