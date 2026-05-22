@@ -291,12 +291,12 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
         ('ALIGN', (0,0), (0,-1), 'CENTER'),
         ('ALIGN', (3,0), (3,-1), 'CENTER'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('FONTSIZE', (0,0), (-1,-1), 8 if len(subjects) > 10 else 9), # Shrink font slightly if list is huge
+        ('FONTSIZE', (0,0), (-1,-1), 8 if len(subjects) > 10 else 9), 
     ]))
     t2.wrapOn(c, w, h)
     _, th2 = t2.wrap(w, h)
     t2.drawOn(c, 30, y - th2)
-    y -= (th2 + 20) # Dynamic Spacing
+    y -= (th2 + 20) 
 
     c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Fee Details"); y -= 5
     
@@ -330,7 +330,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     t3.wrapOn(c, w, h)
     _, th3 = t3.wrap(w, h)
     t3.drawOn(c, 30, y - th3)
-    y -= (th3 + 25) # Dynamic Spacing
+    y -= (th3 + 25) 
 
     c.rect(30, y - 25, w - 60, 25)
     c.setFont("Helvetica", 9)
@@ -350,19 +350,19 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     c.drawRightString(w - 30, y - 24, "Email ID:   ___________________________")
 
 
-def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, assets, cycle_name, photo_bytes_io, timetable_map, eligibility_map, header_branch, branch_name_str):
+def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, assets, cycle_name, photo_bytes_io, timetable_map, eligibility_map, header_branch, branch_name_str):
+    HALF_HEIGHT = 420.94 # Exact half of A4 height (841.89)
+    
     if assets.get("watermark"):
         c.saveState(); c.setFillAlpha(0.08)
-        mid_y = y_start - 180
-        c.drawImage(ImageReader(assets["watermark"]), w/2 - 140, mid_y - 140, width=280, height=280, mask='auto', preserveAspectRatio=True)
+        c.drawImage(ImageReader(assets["watermark"]), w/2 - 140, base_y + (HALF_HEIGHT/2) - 140, width=280, height=280, mask='auto', preserveAspectRatio=True)
         c.restoreState()
 
-    y = draw_header(c, w, y_start, assets, is_hall_ticket=True)
+    # 1. PIN THE HEADER TO THE TOP OF THE BOUNDING BOX
+    y = draw_header(c, w, base_y + HALF_HEIGHT - 20, assets, is_hall_ticket=True)
     c.setFont("Helvetica-Bold", 11)
-    
     c.drawCentredString(w/2, y + 5, f"Admission Ticket - {cycle_name}")
     c.setFont("Helvetica-Bold", 9)
-    
     c.drawRightString(w - 40, y - 5, f"[{section}]")
     y -= 15 
 
@@ -416,35 +416,26 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     _, h_mast = t_master.wrap(w, 500)
     t_master.drawOn(c, 30, y - h_mast)
     
-    # 🟢 FIX 1: Gave 15 pixels of breathing room so the text below doesn't draw up into the table
     y -= (h_mast + 15) 
-
     c.setFont("Helvetica-Bold", 9)
     c.drawString(30, y, "Exam Schedule:")
-    y -= 8 # Space between text and top of the grid
+    y -= 8 
     
     grid_data = [["Date", "Session", "Sem", "Course Code", "Invigilator Sign"]]
     
-    row_count = 0
     for s in subjects:
         code = s['code']
         if not eligibility_map.get(code, False): continue 
         sch = timetable_map.get(code, {"date": "", "session": ""})
         grid_data.append([sch['date'], sch['session'], str(s.get('sem', '-')), code, ""])
-        row_count += 1
 
-    # 🟢 FIX 2: Force a minimum of 7 rows. If they have fewer subjects, it prints blank grid lines to keep the box looking full!
-    MIN_ROWS = 7
-    if row_count < MIN_ROWS:
-        for _ in range(MIN_ROWS - row_count): 
-            grid_data.append(["", "", "", "", ""])
-
-    row_h = 12 if len(subjects) >= 8 else 15
+    # Allow the table to grow, but shrink the font if they have 9+ subjects so it fits the middle area
+    row_h = 12 if len(subjects) >= 9 else 15
 
     tg = Table(grid_data, colWidths=[75, 120, 35, 85, 220], rowHeights=row_h)
     tg.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-        ('FONTSIZE', (0,0), (-1,-1), 7.5 if len(subjects) >= 8 else 8),
+        ('FONTSIZE', (0,0), (-1,-1), 7.5 if len(subjects) >= 9 else 8),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
@@ -456,31 +447,29 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     _, gh = tg.wrap(w, 500)
     tg.drawOn(c, 30, y - gh)
     
-    # Gap before the instructions
-    y -= (gh + 12) 
-
-    c.setFont("Helvetica", 7)
-    c.drawString(30, y, "Candidate must read the instructions provided in the answer booklet, before the commencement of examination.")
+    # 2. PIN THE SIGNATURES TO THE ABSOLUTE BOTTOM OF THE BOUNDING BOX
+    footer_y = base_y + 20 
     
-    y -= 20 
+    c.setFont("Helvetica-Oblique", 7)
+    c.drawCentredString(w/2, footer_y, "Note: Please verify the eligibility of candidate before issuing the admission ticket.")
+    
     c.setLineWidth(0.5)
     c.setFont("Helvetica-Bold", 9)
     sig_w = 80
     
-    c.line(40, y + 10, 40 + sig_w, y + 10)
-    c.drawCentredString(40 + sig_w/2, y, "Candidate")
+    # Signatures
+    c.line(40, footer_y + 25, 40 + sig_w, footer_y + 25)
+    c.drawCentredString(40 + sig_w/2, footer_y + 15, "Candidate")
     
-    c.line(w/2 - sig_w/2, y + 10, w/2 + sig_w/2, y + 10)
-    c.drawCentredString(w/2, y, "CoE")
+    c.line(w/2 - sig_w/2, footer_y + 25, w/2 + sig_w/2, footer_y + 25)
+    c.drawCentredString(w/2, footer_y + 15, "CoE")
     
-    c.line(w - 40 - sig_w, y + 10, w - 40, y + 10)
-    c.drawCentredString(w - 40 - sig_w/2, y, "Principal")
+    c.line(w - 40 - sig_w, footer_y + 25, w - 40, footer_y + 25)
+    c.drawCentredString(w - 40 - sig_w/2, footer_y + 15, "Principal")
     
-    y -= 12
-    c.setFont("Helvetica-Oblique", 7)
-    c.drawCentredString(w/2, y, "Note: Please verify the eligibility of candidate before issuing the admission ticket.")
-    
-    return y - 10
+    # Instructions
+    c.setFont("Helvetica", 7)
+    c.drawString(30, footer_y + 35, "Candidate must read the instructions provided in the answer booklet, before the commencement of examination.")
 
 # ==========================================
 # 5. APP MAIN LOGIC
@@ -492,7 +481,7 @@ with tabs[0]:
     with st.form("fees"):
         c1, c2 = st.columns(2)
         e = c1.number_input("Regular Fee", 2000.0)
-        a = c2.number_input("Arrear Fee (Per Subject)", 0.0) # 🟢 Updated UI Hint
+        a = c2.number_input("Arrear Fee (Per Subject)", 0.0) 
         p = c1.number_input("Penalty", 0.0)
         m = c2.number_input("App & Marks Card Fee (Misc)", value=400.0)
         
@@ -584,9 +573,15 @@ with tabs[1]:
                     draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                     c.showPage()
                     
-                    ticket1_end_y = draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
-                    c.setDash(4, 4); c.line(20, ticket1_end_y, A4[0]-20, ticket1_end_y); c.setDash([])
-                    draw_hall_ticket_half(c, A4[0], ticket1_end_y - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                    # 🟢 Absolute Positioning for Bulk Tickets
+                    HALF_A4 = 841.89 / 2
+                    draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                    
+                    c.setDash(4, 4)
+                    c.line(20, HALF_A4, A4[0]-20, HALF_A4)
+                    c.setDash([])
+                    
+                    draw_hall_ticket_half(c, A4[0], 0, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     c.showPage()
                 
                 progress_bar.progress(min((i + BATCH_SIZE) / total, 1.0))
@@ -664,9 +659,16 @@ with tabs[2]:
                     draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                     c.showPage()
                     
-                    ticket1_end_y = draw_hall_ticket_half(c, A4[0], A4[1] - 30, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
-                    c.setDash(4, 4); c.line(20, ticket1_end_y, A4[0]-20, ticket1_end_y); c.setDash([])
-                    draw_hall_ticket_half(c, A4[0], ticket1_end_y - 15, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                    # 🟢 Absolute Positioning for Single Ticket
+                    HALF_A4 = 841.89 / 2
+                    
+                    draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                    
+                    c.setDash(4, 4)
+                    c.line(20, HALF_A4, A4[0]-20, HALF_A4)
+                    c.setDash([])
+                    
+                    draw_hall_ticket_half(c, A4[0], 0, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     c.showPage(); c.save()
                     
                     st.download_button(f"📥 Download Docs for {target_usn}", buf.getvalue(), f"{target_usn}_ExamDocs.pdf")
