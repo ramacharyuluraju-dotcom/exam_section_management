@@ -424,10 +424,8 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
     c.drawString(30, y, "Exam Schedule:")
     y -= 8 
     
-    # 🟢 FETCH ELIGIBLE SUBJECTS ONLY
     valid_subs = [s for s in subjects if eligibility_map.get(s['code'], False)]
     
-    # 🟢 NEW LOGIC: Dynamic Split Table for > 12 Subjects
     if len(valid_subs) > 12:
         mid = (len(valid_subs) + 1) // 2
         left_subs = valid_subs[:mid]
@@ -443,7 +441,6 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
             sch = timetable_map.get(s['code'], {"date": "", "session": ""})
             right_data.append([sch['date'], sch['session'], str(s.get('sem', '-')), s['code'], ""])
             
-        # Pad right side to ensure tables align perfectly
         while len(right_data) < len(left_data):
             right_data.append(["", "", "", "", ""])
             
@@ -478,14 +475,12 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
         tg.drawOn(c, 30, y - gh)
 
     else:
-        # 🟢 SINGLE TABLE LOGIC: Smart stretching for <= 12 subjects
         grid_data = [["Date", "Session", "Sem", "Course Code", "Invigilator Sign"]]
         
         for s in valid_subs:
             sch = timetable_map.get(s['code'], {"date": "", "session": ""})
             grid_data.append([sch['date'], sch['session'], str(s.get('sem', '-')), s['code'], ""])
 
-        # Enforce a minimum of 8 empty rows to fill the void
         MIN_ROWS = 8
         if (len(grid_data) - 1) < MIN_ROWS:
             for _ in range(MIN_ROWS - (len(grid_data) - 1)):
@@ -493,11 +488,11 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
 
         total_rows = len(grid_data)
         if total_rows <= 9:
-            row_h = 18   # Super stretch for 8 subjects
+            row_h = 18   
         elif total_rows <= 12:
-            row_h = 15   # Mid stretch for 9-11 subjects
+            row_h = 15   
         else:
-            row_h = 13   # Fallback
+            row_h = 13   
 
         tg = Table(grid_data, colWidths=[75, 120, 35, 85, 220], rowHeights=row_h)
         tg.setStyle(TableStyle([
@@ -517,14 +512,15 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
     # 2. PIN THE SIGNATURES TO THE ABSOLUTE BOTTOM OF THE BOUNDING BOX
     footer_y = base_y + 20 
     
-    c.setFont("Helvetica-Oblique", 7)
-    c.drawCentredString(w/2, footer_y, "Note: Please verify the eligibility of candidate before issuing the admission ticket.")
+    # 🟢 Instructions moved UP by 10 points to make room for signatures
+    c.setFont("Helvetica", 7)
+    c.drawString(30, footer_y + 45, "Candidate must read the instructions provided in the answer booklet, before the commencement of examination.")
     
     c.setLineWidth(0.5)
     c.setFont("Helvetica-Bold", 9)
     sig_w = 80
     
-    # Signatures
+    # Signatures lines and text
     c.line(40, footer_y + 25, 40 + sig_w, footer_y + 25)
     c.drawCentredString(40 + sig_w/2, footer_y + 15, "Candidate")
     
@@ -534,9 +530,9 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
     c.line(w - 40 - sig_w, footer_y + 25, w - 40, footer_y + 25)
     c.drawCentredString(w - 40 - sig_w/2, footer_y + 15, "Principal")
     
-    # Instructions
-    c.setFont("Helvetica", 7)
-    c.drawString(30, footer_y + 35, "Candidate must read the instructions provided in the answer booklet, before the commencement of examination.")
+    # Note at the very bottom
+    c.setFont("Helvetica-Oblique", 7)
+    c.drawCentredString(w/2, footer_y, "Note: Please verify the eligibility of candidate before issuing the admission ticket.")
 
 # ==========================================
 # 5. APP MAIN LOGIC
