@@ -1,81 +1,90 @@
 import streamlit as st
-from supabase import create_client, Client
+import pandas as pd
+import numpy as np
+from supabase import create_client
 
-# ==========================================
-# 1. DATABASE INITIALIZATION
-# ==========================================
 @st.cache_resource
-def init_db() -> Client:
-    """Initialize and cache the Supabase connection."""
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+def init_db():
+    """Initializes the Supabase client using secrets."""
+    return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
 
-# ==========================================
-# 2. GLOBAL CYCLE SELECTOR (BULLETPROOF)
-# ==========================================
+def clean_data_for_db(df, expected_cols, numeric_cols=None):
+    """
+    1. Filters CSV to only the columns your Supabase tables expect.
+    2. Converts 'PP', '-', or empty cells in numeric columns to 0.
+    3. Replaces NaNs with None for JSON compliance.
+    """
+    valid_cols = [c for c in expected_cols if c in df.columns]
+    df = df[valid_cols].copy()
+
+    if numeric_cols:
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = df[col].astype(str).replace('-', np.nan).replace(' ', np.nan)
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+    
+    df = df.replace([np.inf, -np.inf], np.nan).astype(object).where(pd.notnull(df), None)
+    
+    records = df.to_dict('records')
+    for r in records:
+        for k, v in r.items():
+            if pd.isna(v): r[k] = None
+    return records
+
+# --- MULTI-CYCLE SWITCHBOARD LOGIC ---
+
 def global_cycle_selector(supabase):
-    st.sidebar.markdown("### 🔄 Exam Context")
+    """
+    Displays a dropdown in the sidebar to pick the active context.
+    Uses strict callbacks to prevent Streamlit UI lag.
+    """
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🎯 Context Selector")
     
     try:
-        # Fetch all cycles, ordered by newest first (created_at desc)
-        cycles_res = supabase.table("exam_cycles").select("*").order("created_at", desc=True).execute()
-        cycles = cycles_res.data
+        # Fetch only cycles marked as active
+        res = supabase.table("exam_cycles").select("cycle_id, cycle_name").eq("is_active", True).execute()
+        cycles = res.data
         
         if not cycles:
-            st.sidebar.warning("No Exam Cycles found. Please create one in Setup.")
-            return
+            st.sidebar.warning("No active cycles available. Create one in Lifecycle Management.")
+            st.session_state.active_cycle_id = None
+            st.session_state.active_cycle_name = None
+            return None
 
-        # 🟢 SMART EXTRACTOR: Safely adapts to whatever your database columns are actually named
-        def get_cycle_name(c):
-            if c.get('cycle_name'): return c['cycle_name']
-            if c.get('name'): return c['name']
-            
-            # Fallback if you do happen to use month/year combinations
-            m = c.get('month', '')
-            y = c.get('year', '')
-            if m or y: return f"{m} {y}".strip()
-            
-            # Ultimate fallback if everything fails
-            return f"Exam Cycle {c['id']}"
-
-        # Build options dictionary safely
-        cycle_options = {f"{get_cycle_name(c)} (ID: {c['id']})": c for c in cycles}
-        cycle_labels = list(cycle_options.keys())
-
-        # 🟢 AUTO-INITIALIZE: Lock in the LATEST cycle if the user just logged in
-        if 'active_cycle_id' not in st.session_state:
-            latest_cycle = cycles[0] 
-            st.session_state['active_cycle_id'] = latest_cycle['id']
-            st.session_state['active_cycle_name'] = get_cycle_name(latest_cycle)
-            st.session_state['active_academic_year'] = latest_cycle.get('academic_year', '2025-26')
-
-        # Find the index of the currently active cycle so the dropdown visual matches the background state
-        current_index = 0
-        for i, label in enumerate(cycle_labels):
-            if cycle_options[label]['id'] == st.session_state['active_cycle_id']:
-                current_index = i
-                break
-
-        # 🟢 STRICT CALLBACK: Forces an instant state update when the dropdown is changed
-        def update_cycle():
-            selected_label = st.session_state['cycle_selector_widget']
-            selected_cycle = cycle_options[selected_label]
-            
-            st.session_state['active_cycle_id'] = selected_cycle['id']
-            st.session_state['active_cycle_name'] = get_cycle_name(selected_cycle)
-            st.session_state['active_academic_year'] = selected_cycle.get('academic_year', '2025-26')
-
-        # The Dropdown Widget
-        st.sidebar.selectbox(
-            "Active Exam Cycle", 
-            options=cycle_labels, 
-            index=current_index,
-            key='cycle_selector_widget', # Ties the visual widget to the session state
-            on_change=update_cycle       # Triggers the update function the millisecond it is clicked
-        )
+        # Prepare dictionary for selector
+        options = {r['cycle_name']: r['cycle_id'] for r in cycles}
+        cycle_labels = list(options.keys())
         
-        st.sidebar.success(f"✅ Active: {st.session_state['active_cycle_name']}")
+        # Auto-Initialize if user just logged in
+        if "active_cycle_id" not in st.session_state or not st.session_state.active_cycle_id:
+            st.session_state.active_cycle_id = cycles[0]['cycle_id']
+            st.session_state.active_cycle_name = cycles[0]['cycle_name']
+
+        # Determine current index for the visual widget
+        default_index = 0
+        if st.session_state.active_cycle_name in cycle_labels:
+            default_index = cycle_labels.index(st.session_state.active_cycle_name)
+
+        # STRICT CALLBACK: Forces instant state update
+        def update_cycle():
+            selected_name = st.session_state['cycle_selector_widget']
+            st.session_state.active_cycle_id = options[selected_name]
+            st.session_state.active_cycle_name = selected_name
+
+        # The Widget
+        st.sidebar.selectbox(
+            "Select Working Cycle:",
+            options=cycle_labels,
+            index=default_index,
+            key='cycle_selector_widget',
+            on_change=update_cycle,
+            help="All data on this page will filter based on this selection."
+        )
+
+        st.sidebar.success(f"Current: **{st.session_state.active_cycle_name}**")
+        return st.session_state.active_cycle_id
 
     except Exception as e:
-        st.sidebar.error(f"Error loading cycles: {e}")
+        st.sidebar.error(f"Cycle Fetch Error: {e}")
+        return None
