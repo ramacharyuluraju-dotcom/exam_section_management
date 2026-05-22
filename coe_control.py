@@ -426,7 +426,8 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
     
     valid_subs = [s for s in subjects if eligibility_map.get(s['code'], False)]
     
-    if len(valid_subs) > 12:
+    # 🟢 CHANGED THRESHOLD: 10 or more subjects now trigger the side-by-side layout
+    if len(valid_subs) >= 10:
         mid = (len(valid_subs) + 1) // 2
         left_subs = valid_subs[:mid]
         right_subs = valid_subs[mid:]
@@ -475,6 +476,7 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
         tg.drawOn(c, 30, y - gh)
 
     else:
+        # SINGLE TABLE LOGIC (1 to 9 subjects)
         grid_data = [["Date", "Session", "Sem", "Course Code", "Invigilator Sign"]]
         
         for s in valid_subs:
@@ -487,12 +489,11 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
                 grid_data.append(["", "", "", "", ""])
 
         total_rows = len(grid_data)
-        if total_rows <= 9:
+        # Optimized stretching for max 9 subjects
+        if total_rows <= 8:
             row_h = 18   
-        elif total_rows <= 12:
-            row_h = 15   
         else:
-            row_h = 13   
+            row_h = 15   
 
         tg = Table(grid_data, colWidths=[75, 120, 35, 85, 220], rowHeights=row_h)
         tg.setStyle(TableStyle([
@@ -512,7 +513,6 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
     # 2. PIN THE SIGNATURES TO THE ABSOLUTE BOTTOM OF THE BOUNDING BOX
     footer_y = base_y + 20 
     
-    # 🟢 Instructions moved UP by 10 points to make room for signatures
     c.setFont("Helvetica", 7)
     c.drawString(30, footer_y + 45, "Candidate must read the instructions provided in the answer booklet, before the commencement of examination.")
     
@@ -533,7 +533,8 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
     # Note at the very bottom
     c.setFont("Helvetica-Oblique", 7)
     c.drawCentredString(w/2, footer_y, "Note: Please verify the eligibility of candidate before issuing the admission ticket.")
-
+    
+    return y - 10
 # ==========================================
 # 5. APP MAIN LOGIC
 # ==========================================
