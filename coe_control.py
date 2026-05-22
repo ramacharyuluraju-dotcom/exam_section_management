@@ -363,53 +363,65 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     c.drawCentredString(w/2, y + 5, f"Admission Ticket - {cycle_name}")
     c.setFont("Helvetica-Bold", 9)
     
-    # Pulled the section tag up slightly
     c.drawRightString(w - 40, y - 5, f"[{section}]")
-    y -= 20 # 🟢 Tightened Gap
+    y -= 15 # Tightened Gap
+
+    # 🟢 Custom Compact Style to prevent long names from inflating the box height
+    compact_style = getSampleStyleSheet()['Normal'].clone('Compact')
+    compact_style.fontName = 'Helvetica-Bold'
+    compact_style.fontSize = 7.5
+    compact_style.leading = 8.5
+    compact_style.alignment = 0 # Left align
 
     h_data = [
-        ["USN:", student['usn'], "Name:", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal'])],
+        ["USN:", student['usn'], "Name:", Paragraph(f"{student['full_name']}", compact_style)],
         ["App ID:", app_id, "Date:", datetime.date.today().strftime('%d-%m-%Y')],
-        ["Semester:", str(student.get('current_sem', '1')), "Programme:", Paragraph(f"<b>{branch_name_str}</b>", getSampleStyleSheet()['Normal'])],
+        ["Semester:", str(student.get('current_sem', '1')), "Programme:", Paragraph(f"{branch_name_str}", compact_style)],
         ["Center:", "AMC ENGINEERING COLLEGE", "", ""]
     ]
     
-    t_text = Table(h_data, colWidths=[55, 95, 65, 250], rowHeights=None)
+    # 🟢 Hardcoded rowHeights to 14 to violently compress vertical space
+    t_text = Table(h_data, colWidths=[50, 90, 55, 280], rowHeights=14)
     t_text.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-        ('FONTSIZE', (0,0), (-1,-1), 8), # 🟢 Shrunk master font
+        ('FONTSIZE', (0,0), (-1,-1), 8),
         ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
-        ('FONTNAME', (2,0), (2,-1), 'Helvetica-Bold'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('SPAN', (1,3), (3,3)), 
         ('ALIGN', (1,0), (1,-1), 'LEFT'),
         ('ALIGN', (3,0), (3,-1), 'LEFT'),
+        ('TOPPADDING', (0,0), (-1,-1), 1),    # Strip top padding
+        ('BOTTOMPADDING', (0,0), (-1,-1), 1), # Strip bottom padding
     ]))
     
     if photo_bytes_io:
         photo_bytes_io.seek(0)
-        # 🟢 Shrunk photo slightly to save row height
-        p_img2 = RLImage(photo_bytes_io, width=54, height=68)
+        # 🟢 Reduced photo dimensions to match new box height
+        p_img2 = RLImage(photo_bytes_io, width=48, height=54)
         p_img2.hAlign = 'CENTER'
         p_img2.vAlign = 'MIDDLE'
     else:
-        p_img2 = Paragraph("<para align=center>PHOTO</para>", getSampleStyleSheet()['Normal'])
+        p_img2 = Paragraph("<para align=center>PHOTO</para>", compact_style)
 
     master_data = [[t_text, p_img2]]
-    t_master = Table(master_data, colWidths=[465, 70])
+    # 🟢 Squeezed the photo container width from 70 to 60
+    t_master = Table(master_data, colWidths=[475, 60])
     t_master.setStyle(TableStyle([
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('ALIGN', (1,0), (1,0), 'CENTER'),
         ('GRID', (1,0), (1,0), 0.5, colors.black),
         ('LEFTPADDING', (0,0), (-1,-1), 0),
         ('RIGHTPADDING', (0,0), (-1,-1), 0),
+        ('TOPPADDING', (0,0), (-1,-1), 0),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 0),
     ]))
+    
     t_master.wrapOn(c, w, 500)
     _, h_mast = t_master.wrap(w, 500)
     t_master.drawOn(c, 30, y - h_mast)
-    y -= (h_mast + 5) # 🟢 Tightened Gap
+    y -= (h_mast + 5) # Tightened Gap
 
-    c.setFont("Helvetica-Bold", 9); c.drawString(30, y, "Exam Schedule:"); y -= 6 # 🟢 Tightened Gap
+    c.setFont("Helvetica-Bold", 9); c.drawString(30, y, "Exam Schedule:"); y -= 6 
     
     grid_data = [["Date", "Session", "Sem", "Course Code", "Invigilator Sign"]]
     
@@ -424,7 +436,6 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     if row_count < 4:
         for _ in range(4 - row_count): grid_data.append(["", "", "", "", ""])
 
-    # 🟢 AGGRESSIVE SQUEEZE: Triggers if student has 8 or more subjects
     row_h = 12 if len(subjects) >= 8 else 15
 
     tg = Table(grid_data, colWidths=[75, 120, 35, 85, 220], rowHeights=row_h)
@@ -435,16 +446,18 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('TOPPADDING', (0,0), (-1,-1), 1),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 1),
     ]))
     tg.wrapOn(c, w, 500)
     _, gh = tg.wrap(w, 500)
     tg.drawOn(c, 30, y - gh)
-    y -= (gh + 10) # 🟢 Tightened Gap
+    y -= (gh + 8) # Tightened Gap
 
     c.setFont("Helvetica", 7)
     c.drawString(30, y, "Candidate must read the instructions provided in the answer booklet, before the commencement of examination.")
     
-    y -= 20 # 🟢 Tightened Gap to Signatures
+    y -= 18 
     c.setLineWidth(0.5)
     c.setFont("Helvetica-Bold", 9)
     sig_w = 80
@@ -458,7 +471,7 @@ def draw_hall_ticket_half(c, w, y_start, student, subjects, section, app_id, ass
     c.line(w - 40 - sig_w, y + 10, w - 40, y + 10)
     c.drawCentredString(w - 40 - sig_w/2, y, "Principal")
     
-    y -= 15
+    y -= 12
     c.setFont("Helvetica-Oblique", 7)
     c.drawCentredString(w/2, y, "Note: Please verify the eligibility of candidate before issuing the admission ticket.")
     
