@@ -139,8 +139,9 @@ def run_allocation(df_students, df_rooms):
     # 1. Sort strictly to guarantee baseline order (Subject -> Branch -> USN)
     df_students = df_students.sort_values(['Subject Code', 'Branch', 'USN'])
     
-    # 🟢 RULE: OMR Subjects MUST NOT BE SHUFFLED OR ZIG-ZAGGED
-    OMR_SUBJECTS = ['1BKSK209', '1BENG206', '1BKBK209']
+    # 🟢 RULE 1: OMR Subjects MUST NOT BE SHUFFLED OR ZIG-ZAGGED
+    OMR_SUBJECTS = ['1BKSK209', '1BENG206', '1BKBK209', 
+        '1BKSK109', '1BENG106', '1BKBK109']
     
     allotment_rows = []
     room_idx = 0
@@ -179,16 +180,12 @@ def run_allocation(df_students, df_rooms):
                         
                     seats_remaining = current_capacity - current_seat + 1
                     
-                    # 🟢 THE B-FORM ANTI-ALIENATION RULE
-                    MIN_FRAGMENT = 6
-                    if len(students) > seats_remaining:
-                        frag_this = seats_remaining
-                        frag_next = len(students) - seats_remaining
-                        if frag_this < MIN_FRAGMENT or frag_next < MIN_FRAGMENT:
-                            # Skip to next room to keep this branch contiguous!
+                    # 🟢 Anti-Alienation for OMR: Don't split small branches if it means leaving 1-6 seats empty
+                    if len(students) > seats_remaining and len(students) <= 40:
+                        if seats_remaining <= 6: # Max 6 seats left empty to save the branch
                             current_room_no, current_capacity = get_next_room()
                             current_seat = 1
-                            continue # Retry with the new room
+                            continue # Try again with the fresh room
                             
                     take_count = min(seats_remaining, len(students))
                     taken = students[:take_count]
@@ -206,79 +203,99 @@ def run_allocation(df_students, df_rooms):
         # Advance to a fresh room before starting regular subjects
         current_room_no, current_capacity = get_next_room()
 
-    # --- PHASE 2: REGULAR SUBJECTS (Interleaved / Homogeneous) ---
+    # --- PHASE 2: REGULAR SUBJECTS (Linear Zig-Zag) ---
     df_reg = df_students[~df_students['Subject Code'].isin(OMR_SUBJECTS)]
     if not df_reg.empty:
-        reg_blocks = {}
+        # Build two massive, balanced queues to ensure perfect linear flow
+        queue_A = []
+        queue_B = []
+        
+        subj_groups = []
         for subj, subj_df in df_reg.groupby('Subject Code', sort=False):
-            reg_blocks[subj] = []
-            for branch, branch_df in subj_df.groupby('Branch', sort=False):
-                reg_blocks[subj].append({
-                    'branch': branch,
-                    'students': branch_df.to_dict('records')
-                })
-                
-        while reg_blocks and current_room_no:
-            reg_blocks = {k: v for k, v in reg_blocks.items() if v}
-            if not reg_blocks: break
-            
-            # Sort subjects by total remaining students to pair the biggest ones
-            sorted_subjs = sorted(reg_blocks.keys(), key=lambda k: sum(len(b['students']) for b in reg_blocks[k]), reverse=True)
-            
-            subj_A = sorted_subjs[0]
-            subj_B = sorted_subjs[1] if len(sorted_subjs) > 1 else None
-            
-            odd_seats = list(range(1, current_capacity + 1, 2))
-            even_seats = list(range(2, current_capacity + 1, 2))
-            
-            room_allocations = []
-            
-            def fill_seats(seat_list, subj):
-                if not subj: return
-                for seat in seat_list:
-                    if not reg_blocks.get(subj): break 
-                    
-                    current_block = reg_blocks[subj][0]
-                    students = current_block['students']
-                    
-                    seats_remaining = sum(1 for s in seat_list if s >= seat)
-                    
-                    # 🟢 THE B-FORM ANTI-ALIENATION RULE
-                    MIN_FRAGMENT = 6
-                    if len(students) > seats_remaining:
-                        frag_this = seats_remaining
-                        frag_next = len(students) - seats_remaining
-                        if frag_this < MIN_FRAGMENT or frag_next < MIN_FRAGMENT:
-                            # Break out of filling this subject in this room. Leave the seats empty!
-                            break
-                            
-                    student = students.pop(0)
-                    room_allocations.append({'seat': seat, 'student': student})
-                    
-                    if not students:
-                        reg_blocks[subj].pop(0)
-                        
-            if subj_B:
-                # Heterogeneous Zig-Zag
-                fill_seats(odd_seats, subj_A)
-                fill_seats(even_seats, subj_B)
+            subj_groups.append({
+                'code': subj,
+                'students': subj_df.to_dict('records'),
+                'size': len(subj_df)
+            })
+        
+        # Sort subjects largest to smallest
+        subj_groups.sort(key=lambda x: x['size'], reverse=True)
+        
+        # Distribute subjects to perfectly balance the zig-zag
+        for sg in subj_groups:
+            if len(queue_A) <= len(queue_B):
+                queue_A.extend(sg['students'])
             else:
-                # Homogeneous Sequential Fill (Like Math Day)
-                all_seats = list(range(1, current_capacity + 1))
-                fill_seats(all_seats, subj_A)
+                queue_B.extend(sg['students'])
                 
-            room_allocations.sort(key=lambda x: x['seat'])
-            for alloc in room_allocations:
-                s = alloc['student']
+        def grab_chunk(queue, max_count):
+            if not queue: return []
+            if len(queue) <= max_count:
+                chunk = queue[:]
+                queue.clear()
+                return chunk
+                
+            boundary_idx = max_count - 1
+            boundary_student = queue[boundary_idx]
+            next_student = queue[max_count]
+            
+            # If the cut aligns perfectly with a branch change, just take it
+            if boundary_student['Branch'] != next_student['Branch'] or boundary_student['Subject Code'] != next_student['Subject Code']:
+                chunk = queue[:max_count]
+                del queue[:max_count]
+                return chunk
+                
+            # 🟢 RULE 3: A branch is about to be split!
+            branch = boundary_student['Branch']
+            subject = boundary_student['Subject Code']
+            branch_total = sum(1 for s in queue if s['Branch'] == branch and s['Subject Code'] == subject)
+            
+            # If it's a small branch (fits within a room naturally), try to save it
+            if branch_total <= 40:
+                start_idx = 0
+                for i in range(max_count):
+                    if queue[i]['Branch'] == branch and queue[i]['Subject Code'] == subject:
+                        start_idx = i
+                        break
+                
+                empty_seats = max_count - start_idx
+                # If saving it only wastes 1 to 6 seats in this track, save it!
+                if empty_seats <= 6 and start_idx > 0:
+                    chunk = queue[:start_idx]
+                    del queue[:start_idx]
+                    return chunk
+                    
+            # Otherwise (it's a massive branch like CS), force the split.
+            chunk = queue[:max_count]
+            del queue[:max_count]
+            return chunk
+
+        # Now fill rooms
+        while (queue_A or queue_B) and current_room_no:
+            import math
+            cap_A = math.ceil(current_capacity / 2)
+            cap_B = current_capacity // 2
+            
+            chunk_A = grab_chunk(queue_A, cap_A)
+            chunk_B = grab_chunk(queue_B, cap_B)
+            
+            # Interleave A and B securely (A, B, A, B...)
+            room_students = []
+            max_len = max(len(chunk_A), len(chunk_B))
+            for i in range(max_len):
+                if i < len(chunk_A): room_students.append(chunk_A[i])
+                if i < len(chunk_B): room_students.append(chunk_B[i])
+                
+            for idx, s in enumerate(room_students):
                 allotment_rows.append({
-                    'RoomNo': current_room_no, 'SeatNo': alloc['seat'],
+                    'RoomNo': current_room_no, 'SeatNo': idx + 1,
                     'USN': s['USN'], 'Student Name': s['Student Name'],
                     'Branch': s['Branch'], 'Subject Code': s['Subject Code'],
                     'Subject Name': s['Subject Name']
                 })
                 
             current_room_no, current_capacity = get_next_room()
-            
+
     return pd.DataFrame(allotment_rows)
     
 # ==========================================
