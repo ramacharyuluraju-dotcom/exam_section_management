@@ -136,14 +136,13 @@ def fetch_rooms():
 # ==========================================
 
 def run_allocation(df_students, df_rooms):
-    # Sort students strictly by Subject Code and USN to guarantee baseline order
+    # Sort students initially by Subject Code and USN to guarantee baseline order
     df_students = df_students.sort_values(['Subject Code', 'USN'])
     
-    # 🟢 NEW RULE: Un-shuffled Subject List
-    # These subjects require strict linear seating so version codes (A,B,C,D) match perfectly
+    # 🟢 RULE: Strict Linear Subjects (OMR)
+    # These subjects disable the zip to ensure Version Codes (A,B,C,D) deal perfectly
     OMR_SUBJECTS = ['1BKSK209', '1BENG206', '1BKBK209']
     
-    # We maintain a dictionary of queues per branch
     branches = df_students['Branch'].unique()
     queues = {}
     for branch in branches:
@@ -151,88 +150,76 @@ def run_allocation(df_students, df_rooms):
         
     allotment_rows = []
     
-    def get_candidate(exclude_branches, needed_space, target_diff_code=None, fallback_diff_branch=None):
-        """
-        Hierarchical Selection:
-        1. Diff branch, Diff sub (Tier 1)
-        2. Same sub, Diff branch (Tier 2)
-        3. Same sub, Same branch (Tier 3 - Fallback)
-        """
-        cands = [b for b in queues if len(queues[b]) > 0 and b not in exclude_branches]
-        if not cands: return None
-        
-        # Tier 1: Try to find a branch with a DIFFERENT subject
-        if target_diff_code:
-            tier1_cands = [b for b in cands if queues[b][0]['Subject Code'] != target_diff_code]
-            if tier1_cands:
-                return max(tier1_cands, key=lambda x: len(queues[x]))
-        
-        # Tier 2: Try to find a DIFFERENT branch (even if it's the same subject)
-        if fallback_diff_branch:
-            tier2_cands = [b for b in cands if b != fallback_diff_branch]
-            if tier2_cands:
-                return max(tier2_cands, key=lambda x: len(queues[x]))
-                
-        # Tier 3: Just take the biggest remaining branch (No student left behind)
-        return max(cands, key=lambda x: len(queues[x]))
-
     for _, room in df_rooms.iterrows():
         room_no = room['room_no']
         capacity = int(room['capacity'])
-        half_cap = capacity // 2
         
         if all(len(q) == 0 for q in queues.values()): break
 
-        remaining_branches = [b for b in queues if len(queues[b]) > 0]
+        room_students = []
         
-        remaining_subjects = set()
-        for b in remaining_branches:
-            if queues[b]: remaining_subjects.add(queues[b][0]['Subject Code'])
+        # 🟢 RULE: The 3-Tier Smart Selection with "Perfect Fit" Prioritization
+        def get_candidate(target_diff_code=None, fallback_diff_branch=None):
+            cands = [b for b in queues if len(queues[b]) > 0]
+            if not cands: return None
+            
+            remaining_seats = capacity - len(room_students)
+            
+            # Check if a branch can fit entirely in the room's remaining alternating seats
+            def is_perfect_fit(b):
+                return len(queues[b]) <= (remaining_seats + 1) // 2
+                
+            def select_best(valid_branches):
+                perfect_fits = [b for b in valid_branches if is_perfect_fit(b)]
+                if perfect_fits:
+                    # If small branches can fit entirely, pack them in now to prevent alienation!
+                    return max(perfect_fits, key=lambda x: len(queues[x]))
+                # If no branch fits entirely, chip away at the largest branch
+                return max(valid_branches, key=lambda x: len(queues[x]))
+
+            # Tier 1: Different Subject
+            if target_diff_code:
+                tier1 = [b for b in cands if queues[b][0]['Subject Code'] != target_diff_code]
+                if tier1: return select_best(tier1)
+            
+            # Tier 2: Different Branch (Same Subject)
+            if fallback_diff_branch:
+                tier2 = [b for b in cands if b != fallback_diff_branch]
+                if tier2: return select_best(tier2)
+                
+            # Tier 3: Same Branch, Same Subject (Safety Net)
+            return select_best(cands)
+
+        remaining_branches = [b for b in queues if len(queues[b]) > 0]
+        remaining_subjects = set(queues[b][0]['Subject Code'] for b in remaining_branches)
             
         is_homogenous = len(remaining_subjects) == 1
         requires_strict_order = any(sub in OMR_SUBJECTS for sub in remaining_subjects)
         
-        room_students = []
-        
         if is_homogenous or requires_strict_order:
-            # 🟢 OMR RULE & HOMOGENOUS RULE: 
-            # If a subject is OMR, we MUST NOT zig-zag. We fill the room strictly 1 to N.
+            # 🟢 OMR / HOMOGENOUS: STRICT USN ORDER (No zig-zag)
             while len(room_students) < capacity:
                 remaining = [b for b in queues if len(queues[b]) > 0]
                 if not remaining: break
                 
-                biggest = max(remaining, key=lambda x: len(queues[x]))
-                take = min(capacity - len(room_students), len(queues[biggest]))
-                room_students.extend(queues[biggest][:take])
-                del queues[biggest][:take]
+                # Pick the absolute lowest USN across all branches so ABCD matches perfectly
+                best_b = min(remaining, key=lambda b: queues[b][0]['USN'])
+                room_students.append(queues[best_b].pop(0))
                 
         else:
-            # 🟢 NORMAL ZIG-ZAG (For regular subjects using 3-Tier logic)
-            pile_1 = []
-            while len(pile_1) < half_cap:
-                needed = half_cap - len(pile_1)
-                curr_left = get_candidate(exclude_branches=[], needed_space=needed)
-                if not curr_left: break 
-                take = min(needed, len(queues[curr_left]))
-                pile_1.extend(queues[curr_left][:take])
-                del queues[curr_left][:take]
-
-            pile_2 = []
-            left_code = pile_1[0]['Subject Code'] if pile_1 else None
-            left_branch = pile_1[0]['Branch'] if pile_1 else None
+            # 🟢 DYNAMIC SEAT-BY-SEAT ZIG-ZAG
+            last_code = None
+            last_branch = None
             
-            while len(pile_2) < (capacity - len(pile_1)):
-                needed = (capacity - len(pile_1)) - len(pile_2)
-                curr_right = get_candidate(exclude_branches=[], needed_space=needed, target_diff_code=left_code, fallback_diff_branch=left_branch)
-                if not curr_right: break 
-                take = min(needed, len(queues[curr_right]))
-                pile_2.extend(queues[curr_right][:take])
-                del queues[curr_right][:take]
-
-            from itertools import zip_longest
-            for s1, s2 in zip_longest(pile_1, pile_2):
-                if s1: room_students.append(s1)
-                if s2: room_students.append(s2)
+            while len(room_students) < capacity:
+                curr_cand = get_candidate(target_diff_code=last_code, fallback_diff_branch=last_branch)
+                if not curr_cand: break 
+                
+                student = queues[curr_cand].pop(0)
+                room_students.append(student)
+                
+                last_code = student['Subject Code']
+                last_branch = student['Branch']
 
         for idx, s in enumerate(room_students):
             allotment_rows.append({
