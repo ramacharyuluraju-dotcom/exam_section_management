@@ -390,7 +390,8 @@ def gen_form_a(df, date, session, assets, cycle_name):
             [Paragraph(f"<b>Date:</b>", meta_style), Paragraph(f"{date}", meta_style), Paragraph(f"<b>Time:</b>", meta_style), Paragraph(f"{session}", meta_style)]
         ]
         
-        m_table = Table(m_data, colWidths=[1.5*inch, 3.2*inch, 1.2*inch, 1.5*inch])
+        # Shrink columns slightly to ensure they fit inside margins safely
+        m_table = Table(m_data, colWidths=[1.3*inch, 3.2*inch, 1.2*inch, 1.3*inch])
         m_table.setStyle(TableStyle([
             ('ALIGN', (0,0), (-1,-1), 'LEFT'),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
@@ -403,28 +404,42 @@ def gen_form_a(df, date, session, assets, cycle_name):
         absent_usns = group[group['Status'] == 'ABSENT']['USN'].sort_values().tolist()
         malpractice_usns = group[group['Status'] == 'MALPRACTICE']['USN'].sort_values().tolist()
         
-        def format_usn_list(usn_list):
-            return ", ".join(usn_list) if usn_list else "Nil"
-            
-        t_data = [
-            [Paragraph("<b>SEAT NUMBERS OF CANDIDATES PRESENT</b>", th_style), Paragraph("<b>COUNT</b>", th_style)],
-            [Paragraph(format_usn_list(present_usns), td_style_l), Paragraph(str(len(present_usns)), td_style_c)],
-            [Paragraph("<b>SEAT NUMBERS OF CANDIDATES ABSENT</b>", th_style), Paragraph("<b>COUNT</b>", th_style)],
-            [Paragraph(format_usn_list(absent_usns), td_style_l), Paragraph(str(len(absent_usns)), td_style_c)],
-            [Paragraph("<b>SEAT NUMBERS OF CANDIDATES BOOKED UNDER MALPRACTICE</b>", th_style), Paragraph("<b>COUNT</b>", th_style)],
-            [Paragraph(format_usn_list(malpractice_usns), td_style_l), Paragraph(str(len(malpractice_usns)), td_style_c)]
-        ]
-        
-        t = Table(t_data, colWidths=[6.2*inch, 1.0*inch])
-        t.setStyle(TableStyle([
+        # 🟢 DYNAMIC CHUNKING LOGIC
+        t_data = []
+        t_styles = [
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
-            ('BACKGROUND', (0,2), (-1,2), colors.lightgrey),
-            ('BACKGROUND', (0,4), (-1,4), colors.lightgrey),
             ('TOPPADDING', (0,0), (-1,-1), 6),
             ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-        ]))
+        ]
+        
+        current_row = 0
+        
+        def add_section(title, usn_list, total_count):
+            nonlocal current_row
+            # 1. Add Header
+            t_data.append([Paragraph(f"<b>{title}</b>", th_style), Paragraph("<b>COUNT</b>", th_style)])
+            t_styles.append(('BACKGROUND', (0, current_row), (-1, current_row), colors.lightgrey))
+            current_row += 1
+            
+            # 2. Add Content (Chunked to prevent LayoutError)
+            if not usn_list:
+                t_data.append([Paragraph("Nil", td_style_l), Paragraph("0", td_style_c)])
+                current_row += 1
+            else:
+                chunk_size = 60 # Safe amount of USNs per row
+                for i in range(0, len(usn_list), chunk_size):
+                    chunk = usn_list[i:i+chunk_size]
+                    count_text = str(total_count) if i == 0 else "" # Only show the total count on the first chunk
+                    t_data.append([Paragraph(", ".join(chunk), td_style_l), Paragraph(count_text, td_style_c)])
+                    current_row += 1
+
+        add_section("SEAT NUMBERS OF CANDIDATES PRESENT", present_usns, len(present_usns))
+        add_section("SEAT NUMBERS OF CANDIDATES ABSENT", absent_usns, len(absent_usns))
+        add_section("SEAT NUMBERS OF CANDIDATES BOOKED UNDER MALPRACTICE", malpractice_usns, len(malpractice_usns))
+        
+        t = Table(t_data, colWidths=[6.2*inch, 1.0*inch])
+        t.setStyle(TableStyle(t_styles))
         elements.append(t)
         elements.append(Spacer(1, 30))
         
@@ -434,7 +449,7 @@ def gen_form_a(df, date, session, assets, cycle_name):
         sig_data = [
             ["Deputy Chief Superintendent", "Chief Superintendent"]
         ]
-        sig_table = Table(sig_data, colWidths=[3.6*inch, 3.6*inch])
+        sig_table = Table(sig_data, colWidths=[3.5*inch, 3.5*inch])
         sig_table.setStyle(TableStyle([
             ('ALIGN', (0,0), (-1,-1), 'CENTER'),
             ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold')
