@@ -148,9 +148,9 @@ def run_allocation(df_students, df_rooms):
     df_students['BranchSize'] = df_students.apply(lambda x: branch_counts[(x['AllocCode'], x['Branch'])], axis=1)
     
     # Sort: Subject -> BranchSize (Largest to Smallest) -> Branch -> USN
+    # This naturally protects small branches by placing them at the very end.
     df_students = df_students.sort_values(['AllocCode', 'BranchSize', 'Branch', 'USN'], ascending=[True, False, True, True])
 
-    # OMR Subjects list (Only need the 209/206 codes since 109/106 are aliased)
     OMR_SUBJECTS = ['1BKSK209', '1BKBK209', '1BENG206']
 
     allotment_rows = []
@@ -172,15 +172,17 @@ def run_allocation(df_students, df_rooms):
     # ==========================================
     df_omr = df_students[df_students['AllocCode'].isin(OMR_SUBJECTS)]
     if not df_omr.empty:
-        for code, code_df in df_omr.groupby('AllocCode', sort=False):
+        # Loop alphabetically to ensure 1BKBK finishes entirely before 1BKSK starts
+        for code in sorted(df_omr['AllocCode'].unique()):
+            code_df = df_omr[df_omr['AllocCode'] == code]
             current_seat = 1
             
-            # Start fresh room for a new OMR Subject
             if (allotment_rows and allotment_rows[-1]['RoomNo'] == current_room_no) or current_seat > 1:
                 current_room_no, current_capacity = get_next_room()
                 current_seat = 1
 
-            for branch, branch_df in code_df.groupby('Branch', sort=False):
+            for branch in code_df['Branch'].unique():
+                branch_df = code_df[code_df['Branch'] == branch]
                 students = branch_df.to_dict('records')
 
                 while students:
@@ -192,12 +194,7 @@ def run_allocation(df_students, df_rooms):
 
                     seats_remaining = current_capacity - current_seat + 1
 
-                    # 🟢 OMR ANTI-ALIENATION: Only skip if <5 seats left and it splits a branch
-                    if seats_remaining < 5 and len(students) > seats_remaining:
-                        current_room_no, current_capacity = get_next_room()
-                        current_seat = 1
-                        continue # Move to next room, leaving <5 seats empty
-
+                    # 🟢 100% FILL RULE: No skipping seats. Just take as many as fit.
                     take_count = min(seats_remaining, len(students))
                     taken = students[:take_count]
                     students = students[take_count:]
@@ -212,7 +209,8 @@ def run_allocation(df_students, df_rooms):
                         current_seat += 1
 
         # Advance to a fresh room before Regular subjects start
-        current_room_no, current_capacity = get_next_room()
+        if current_seat > 1:
+            current_room_no, current_capacity = get_next_room()
 
 
     # ==========================================
@@ -220,22 +218,21 @@ def run_allocation(df_students, df_rooms):
     # ==========================================
     df_reg = df_students[~df_students['AllocCode'].isin(OMR_SUBJECTS)]
     if not df_reg.empty:
-        # Build tracking dictionary
         reg_blocks = {}
-        for code, code_df in df_reg.groupby('AllocCode', sort=False):
+        for code in df_reg['AllocCode'].unique():
+            code_df = df_reg[df_reg['AllocCode'] == code]
             reg_blocks[code] = []
-            for branch, branch_df in code_df.groupby('Branch', sort=False):
+            for branch in code_df['Branch'].unique():
+                branch_df = code_df[code_df['Branch'] == branch]
                 reg_blocks[code].append({
                     'branch': branch,
                     'students': branch_df.to_dict('records')
                 })
 
         while reg_blocks and current_room_no:
-            # Clean empty subjects
             reg_blocks = {k: v for k, v in reg_blocks.items() if v}
             if not reg_blocks: break
 
-            # Sort available subjects by total remaining students
             sorted_subjs = sorted(reg_blocks.keys(), key=lambda k: sum(len(b['students']) for b in reg_blocks[k]), reverse=True)
 
             subj_A = sorted_subjs[0]
@@ -249,40 +246,31 @@ def run_allocation(df_students, df_rooms):
                 if not active_subj: return
                 
                 for seat in seat_list:
-                    # If this subject runs out mid-room, grab the next largest!
                     if not reg_blocks.get(active_subj):
                         available = {k: v for k, v in reg_blocks.items() if v and k != blocked_subj}
                         if not available:
-                            # Total fallback: if only the blocked subject is left, fill 100% with it
                             available = {k: v for k, v in reg_blocks.items() if v}
                             if not available: return 
                         
-                        # Grab new biggest subject
                         active_subj = sorted(available.keys(), key=lambda k: sum(len(b['students']) for b in available[k]), reverse=True)[0]
 
                     current_block = reg_blocks[active_subj][0]
                     students = current_block['students']
-                    seats_remaining = sum(1 for s in seat_list if s >= seat)
 
-                    # 🟢 REGULAR ANTI-ALIENATION: Only skip if <5 seats left on this track and it splits a branch
-                    if seats_remaining < 5 and len(students) > seats_remaining:
-                        break # Stop filling this track, leave the <5 seats empty
-
+                    # 🟢 100% FILL RULE: We no longer break or skip seats. Every seat gets a student.
                     student = students.pop(0)
                     room_allocations.append({'seat': seat, 'student': student})
 
                     if not students:
-                        reg_blocks[active_subj].pop(0) # Branch finished, remove it
+                        reg_blocks[active_subj].pop(0) 
 
             if subj_B:
                 fill_track(odd_seats, subj_A, subj_B)
                 fill_track(even_seats, subj_B, subj_A)
             else:
-                # 🟢 100% FILL RULE: If only 1 subject left in the college, fill every seat
                 all_seats = list(range(1, current_capacity + 1))
                 fill_track(all_seats, subj_A)
 
-            # Sort seats numerically for final output
             room_allocations.sort(key=lambda x: x['seat'])
             for alloc in room_allocations:
                 s = alloc['student']
