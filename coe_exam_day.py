@@ -521,7 +521,7 @@ def gen_smart_excel(df, date, session):
         summary.to_excel(writer, sheet_name='Room_Summary', index=False)
     return buf.getvalue()
 
-def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, total_bundles, cycle_name, assets):
+def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, total_bundles, cycle_name, assets):
     out = io.BytesIO()
     is_mba = 'MBA' in course_code.upper()
     num_q = 8 if is_mba else 10
@@ -539,6 +539,7 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         fmt_edit = wb.add_format({'locked': False, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#FFFFCC'})
         fmt_abs = wb.add_format({'locked': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'bold': True})
         fmt_footer = wb.add_format({'bold': True, 'font_size': 11, 'valign': 'vcenter'})
+        fmt_footer_val = wb.add_format({'bold': True, 'font_size': 11, 'valign': 'vcenter', 'align': 'left', 'font_color': '#0000FF'})
         
         # Determine Exact Column Bounds
         end_col_idx = 2 + (num_q * 4) 
@@ -609,6 +610,12 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
 
             row_idx += 1
             
+        # 🟢 NEW: Add Evaluator Name Input to Marks Entry
+        eval_row = row_idx + 2
+        ws_marks.merge_range(eval_row, 0, eval_row, 1, "Evaluator Name:", fmt_head)
+        ws_marks.merge_range(eval_row, 2, eval_row, 5, "", fmt_edit) # Unlocked yellow box
+        eval_input_cell = xl_rowcol_to_cell(eval_row, 2)
+            
         ws_marks.set_column('A:A', 8)
         ws_marks.set_column('B:B', 12)
         ws_marks.set_column(f'C:{last_q_col}', 5)
@@ -645,17 +652,14 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
                 final_marks_cell = xl_rowcol_to_cell(9 + idx, end_col_idx+3) 
                 ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
                 
-                # 🟢 BULLETPROOF EXCEL FORMULA 🟢
-                # Using CHOOSE and standard concatenation instead of SWITCH/TEXTJOIN 
-                # strictly prevents the #NAME? error in ANY version of Excel.
+                # BULLETPROOF EXCEL FORMULA for Words
                 c_cell = xl_rowcol_to_cell(row_idx, 2) 
-                
                 ch = 'CHOOSE(MID({},{},1)+1, "Zero","One","Two","Three","Four","Five","Six","Seven","Eight","Nine")'
                 p1 = f'IF(LEN({c_cell})>=1, {ch.format(c_cell, 1)}, "")'
                 p2 = f'IF(LEN({c_cell})>=2, " " & {ch.format(c_cell, 2)}, "")'
                 p3 = f'IF(LEN({c_cell})>=3, " " & {ch.format(c_cell, 3)}, "")'
-                
                 words_formula = f'=IF({c_cell}="","",TRIM({p1} & {p2} & {p3}))'
+                
                 ws_print.write_formula(row_idx, 3, words_formula, fmt_locked)
                 
             row_idx += 1
@@ -665,9 +669,14 @@ def create_locked_bundle(df, course_code, course_name, room_no, bundle_seq, tota
         ws_print.set_column('C:C', 25)
         ws_print.set_column('D:D', 35)
 
+        # 🟢 NEW: Auto-populate Evaluator Name in Print Sheet
         row_idx += 3
-        ws_print.write(row_idx, 1, "Evaluator Name: _________________________", fmt_footer)
-        ws_print.write(row_idx, 3, "Evaluator Signature with date: _________________________", fmt_footer)
+        ws_print.write(row_idx, 1, "Evaluator Name:", fmt_footer)
+        
+        # Link to the Marks Entry sheet (with an IF statement so it doesn't show "0" if empty)
+        ws_print.write_formula(row_idx, 2, f'=IF(\'Marks Entry\'!{eval_input_cell}="","",\'Marks Entry\'!{eval_input_cell})', fmt_footer_val)
+        
+        ws_print.write(row_idx, 3, "Signature with Date: _________________________", fmt_footer)
 
     return out.getvalue()
 
