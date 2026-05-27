@@ -148,12 +148,13 @@ def run_allocation(df_students, df_rooms):
     df_students['BranchSize'] = df_students.apply(lambda x: branch_counts[(x['AllocCode'], x['Branch'])], axis=1)
     
     # Sort: Subject -> BranchSize (Largest to Smallest) -> Branch -> USN
-    # This naturally protects small branches by placing them at the very end.
     df_students = df_students.sort_values(['AllocCode', 'BranchSize', 'Branch', 'USN'], ascending=[True, False, True, True])
 
     OMR_SUBJECTS = ['1BKSK209', '1BKBK209', '1BENG206']
-
     allotment_rows = []
+    
+    # 🟢 3. STRICT ROOM SORTING 
+    df_rooms = df_rooms.sort_values('room_no')
     rooms_list = df_rooms.to_dict('records')
     room_idx = 0
 
@@ -172,7 +173,6 @@ def run_allocation(df_students, df_rooms):
     # ==========================================
     df_omr = df_students[df_students['AllocCode'].isin(OMR_SUBJECTS)]
     if not df_omr.empty:
-        # Loop alphabetically to ensure 1BKBK finishes entirely before 1BKSK starts
         for code in sorted(df_omr['AllocCode'].unique()):
             code_df = df_omr[df_omr['AllocCode'] == code]
             current_seat = 1
@@ -181,105 +181,75 @@ def run_allocation(df_students, df_rooms):
                 current_room_no, current_capacity = get_next_room()
                 current_seat = 1
 
-            for branch in code_df['Branch'].unique():
-                branch_df = code_df[code_df['Branch'] == branch]
-                students = branch_df.to_dict('records')
-
-                while students:
+            students = code_df.to_dict('records')
+            while students:
+                if not current_room_no: break
+                if current_seat > current_capacity:
+                    current_room_no, current_capacity = get_next_room()
+                    current_seat = 1
                     if not current_room_no: break
-                    if current_seat > current_capacity:
-                        current_room_no, current_capacity = get_next_room()
-                        current_seat = 1
-                        if not current_room_no: break
 
-                    seats_remaining = current_capacity - current_seat + 1
-
-                    # 🟢 100% FILL RULE: No skipping seats. Just take as many as fit.
-                    take_count = min(seats_remaining, len(students))
-                    taken = students[:take_count]
-                    students = students[take_count:]
-
-                    for s in taken:
-                        allotment_rows.append({
-                            'RoomNo': current_room_no, 'SeatNo': current_seat,
-                            'USN': s['USN'], 'Student Name': s['Student Name'],
-                            'Branch': s['Branch'], 'Subject Code': s['Subject Code'],
-                            'Subject Name': s['Subject Name']
-                        })
-                        current_seat += 1
-
-        # Advance to a fresh room before Regular subjects start
-        if current_seat > 1:
-            current_room_no, current_capacity = get_next_room()
-
-
-    # ==========================================
-    # PHASE 2: REGULAR SUBJECTS (Dynamic Zig-Zag)
-    # ==========================================
-    df_reg = df_students[~df_students['AllocCode'].isin(OMR_SUBJECTS)]
-    if not df_reg.empty:
-        reg_blocks = {}
-        for code in df_reg['AllocCode'].unique():
-            code_df = df_reg[df_reg['AllocCode'] == code]
-            reg_blocks[code] = []
-            for branch in code_df['Branch'].unique():
-                branch_df = code_df[code_df['Branch'] == branch]
-                reg_blocks[code].append({
-                    'branch': branch,
-                    'students': branch_df.to_dict('records')
-                })
-
-        while reg_blocks and current_room_no:
-            reg_blocks = {k: v for k, v in reg_blocks.items() if v}
-            if not reg_blocks: break
-
-            sorted_subjs = sorted(reg_blocks.keys(), key=lambda k: sum(len(b['students']) for b in reg_blocks[k]), reverse=True)
-
-            subj_A = sorted_subjs[0]
-            subj_B = sorted_subjs[1] if len(sorted_subjs) > 1 else None
-
-            odd_seats = list(range(1, current_capacity + 1, 2))
-            even_seats = list(range(2, current_capacity + 1, 2))
-            room_allocations = []
-
-            def fill_track(seat_list, active_subj, blocked_subj=None):
-                if not active_subj: return
-                
-                for seat in seat_list:
-                    if not reg_blocks.get(active_subj):
-                        available = {k: v for k, v in reg_blocks.items() if v and k != blocked_subj}
-                        if not available:
-                            available = {k: v for k, v in reg_blocks.items() if v}
-                            if not available: return 
-                        
-                        active_subj = sorted(available.keys(), key=lambda k: sum(len(b['students']) for b in available[k]), reverse=True)[0]
-
-                    current_block = reg_blocks[active_subj][0]
-                    students = current_block['students']
-
-                    # 🟢 100% FILL RULE: We no longer break or skip seats. Every seat gets a student.
-                    student = students.pop(0)
-                    room_allocations.append({'seat': seat, 'student': student})
-
-                    if not students:
-                        reg_blocks[active_subj].pop(0) 
-
-            if subj_B:
-                fill_track(odd_seats, subj_A, subj_B)
-                fill_track(even_seats, subj_B, subj_A)
-            else:
-                all_seats = list(range(1, current_capacity + 1))
-                fill_track(all_seats, subj_A)
-
-            room_allocations.sort(key=lambda x: x['seat'])
-            for alloc in room_allocations:
-                s = alloc['student']
+                s = students.pop(0)
                 allotment_rows.append({
-                    'RoomNo': current_room_no, 'SeatNo': alloc['seat'],
+                    'RoomNo': current_room_no, 'SeatNo': current_seat,
                     'USN': s['USN'], 'Student Name': s['Student Name'],
                     'Branch': s['Branch'], 'Subject Code': s['Subject Code'],
                     'Subject Name': s['Subject Name']
                 })
+                current_seat += 1
+
+        if current_seat > 1:
+            current_room_no, current_capacity = get_next_room()
+
+    # ==========================================
+    # PHASE 2: REGULAR SUBJECTS (Rock-Solid Zig-Zag)
+    # ==========================================
+    df_reg = df_students[~df_students['AllocCode'].isin(OMR_SUBJECTS)]
+    if not df_reg.empty:
+        # Load subjects into simple queues
+        subj_queues = {}
+        for code in df_reg['AllocCode'].unique():
+            subj_queues[code] = df_reg[df_reg['AllocCode'] == code].to_dict('records')
+
+        # Get initial subject list sorted by size
+        active_subjs = sorted(subj_queues.keys(), key=lambda k: len(subj_queues[k]), reverse=True)
+
+        while active_subjs and current_room_no:
+            subj_A = active_subjs[0]
+            subj_B = active_subjs[1] if len(active_subjs) > 1 else None
+
+            # Fill room seat by seat
+            for seat in range(1, current_capacity + 1):
+                # Odd seats = A, Even seats = B
+                target_subj = subj_A if seat % 2 != 0 else (subj_B or subj_A)
+
+                # Fallbacks if a queue is unexpectedly empty
+                if target_subj and not subj_queues[target_subj]:
+                    target_subj = subj_B if target_subj == subj_A else subj_A
+
+                if target_subj is None or not subj_queues[target_subj]:
+                    active_subjs = [s for s in active_subjs if subj_queues[s]]
+                    if not active_subjs: break
+                    subj_A = active_subjs[0]
+                    subj_B = active_subjs[1] if len(active_subjs) > 1 else None
+                    target_subj = subj_A 
+
+                # Allocate
+                student = subj_queues[target_subj].pop(0)
+                allotment_rows.append({
+                    'RoomNo': current_room_no, 'SeatNo': seat,
+                    'USN': student['USN'], 'Student Name': student['Student Name'],
+                    'Branch': student['Branch'], 'Subject Code': student['Subject Code'],
+                    'Subject Name': student['Subject Name']
+                })
+
+                # If we just emptied a subject, refresh the list immediately 
+                # so the rest of the room picks up the next subject seamlessly
+                if not subj_queues[target_subj]:
+                    active_subjs = [s for s in active_subjs if subj_queues[s]]
+                    if active_subjs:
+                        subj_A = active_subjs[0]
+                        subj_B = active_subjs[1] if len(active_subjs) > 1 else None
 
             current_room_no, current_capacity = get_next_room()
 
