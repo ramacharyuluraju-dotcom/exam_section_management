@@ -687,27 +687,58 @@ def gen_marks_bundles(df, assets, cycle_name):
     zip_buf = io.BytesIO()
     key_log = []
     
+    # 🟢 STRICT COURSE & BRANCH GROUPING (Ignores Rooms)
+    def get_bundle_group(row):
+        usn = str(row['USN']).strip().upper()
+        branch = str(row['Branch']).strip().upper()
+        
+        # Split CS branch by college code series
+        if branch == 'CS' or 'CS' in usn:
+            if usn.startswith('1AX'):
+                return 'CS_1AX'
+            else:
+                return 'CS_1AM'
+        
+        # Return standard branch for CI, CV, ME, EE, EC, AE, AI
+        return branch 
+
+    # Apply the grouping logic to the dataframe
+    df_bundles = df.copy()
+    df_bundles['BundleGroup'] = df_bundles.apply(get_bundle_group, axis=1)
+    
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for (room, cc), group in df.groupby(['RoomNo', 'Subject Code']):
-            group = group.sort_values('SeatNo').reset_index(drop=True)
+        
+        # 🟢 GROUP BY SUBJECT AND BRANCH (Rooms are totally bypassed)
+        for (cc, b_group), group in df_bundles.groupby(['Subject Code', 'BundleGroup']):
+            
+            # Sort strictly by USN so evaluators get a perfect sequential stack
+            group = group.sort_values('USN').reset_index(drop=True)
             n_chunks = math.ceil(len(group) / 20)
             
             for i in range(n_chunks):
                 chunk = group.iloc[i*20 : (i+1)*20].copy()
                 chunk['Dummy_ID'] = generate_dummy_ids(len(chunk))
                 
-                b_id = f"{room}_{cc}_{str(i+1).zfill(2)}"
+                # 🟢 NEW BUNDLE ID: Branch-CourseCode-Sequence (e.g., CS_1AM-1BMATS201-01)
+                b_id = f"{b_group}-{cc}-{str(i+1).zfill(2)}"
                 course_name = chunk['Subject Name'].iloc[0] if 'Subject Name' in chunk.columns else cc
                 
                 for _, s in chunk.iterrows():
                     key_log.append({
-                        'Bundle_ID': b_id, 'Room': room, 'USN': s['USN'], 
-                        'Subject': cc, 'Dummy_ID': s['Dummy_ID'], 'Status': s['Status']
+                        'Bundle_ID': b_id, 
+                        'Original_Room': s.get('RoomNo', 'N/A'), # Kept ONLY in the secret key for tracing
+                        'USN': s['USN'], 
+                        'Subject': cc, 
+                        'Branch_Group': b_group,
+                        'Dummy_ID': s['Dummy_ID'], 
+                        'Status': s['Status']
                     })
                 
-                excel_bytes = create_locked_bundle(chunk, cc, course_name, room, i+1, n_chunks, cycle_name, assets)
+                # Generate the locked Excel file
+                excel_bytes = create_locked_bundle(chunk, cc, course_name, b_group, i+1, n_chunks, cycle_name, assets)
                 zf.writestr(f"Bundles/{b_id}.xlsx", excel_bytes)
                 
+        # Generate Master Secret Key
         kdf = pd.DataFrame(key_log)
         out_k = io.BytesIO()
         kdf.to_excel(out_k, index=False)
