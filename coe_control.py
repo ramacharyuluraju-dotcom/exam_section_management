@@ -222,6 +222,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     
     # 🟢 Custom style to fix the massive font issue in Paragraphs
     from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_LEFT
     bold_9pt_style = ParagraphStyle('Bold9', fontName='Helvetica-Bold', fontSize=9, alignment=TA_LEFT)
 
     if photo_bytes_io:
