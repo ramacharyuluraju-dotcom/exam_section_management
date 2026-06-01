@@ -214,12 +214,16 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     c.setFont("Helvetica-Bold", 11)
     
     c.drawCentredString(w/2, y, f"Examination Application Form - {cycle_name}")
-    y -= 25
+    y -= 20
 
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, "Student Details")
     y -= 5
     
+    # 🟢 Custom style to fix the massive font issue in Paragraphs
+    from reportlab.lib.styles import ParagraphStyle
+    bold_9pt_style = ParagraphStyle('Bold9', fontName='Helvetica-Bold', fontSize=9, alignment=TA_LEFT)
+
     if photo_bytes_io:
         photo_bytes_io.seek(0)
         p_img = RLImage(photo_bytes_io, width=65, height=75)
@@ -232,12 +236,12 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     stu_sem_num = get_sem_num(stu_sem_str)
 
     s_data = [
-        ["USN", student['usn'], "Student Name", Paragraph(f"<b>{student['full_name']}</b>", getSampleStyleSheet()['Normal']), p_img],
+        ["USN", student['usn'], "Student Name", Paragraph(student['full_name'], bold_9pt_style), p_img],
         ["Semester", stu_sem_str, "Student Type", prog_type, ""],
-        ["Branch Code", db_branch_code, "Programme", Paragraph(f"<b>{branch_name_str}</b>", getSampleStyleSheet()['Normal']), ""]
+        ["Branch Code", db_branch_code, "Programme", Paragraph(branch_name_str, bold_9pt_style), ""]
     ]
     
-    t1 = Table(s_data, colWidths=[85, 85, 80, 205, 80], rowHeights=28)
+    t1 = Table(s_data, colWidths=[85, 85, 80, 205, 80], rowHeights=25)
     t1.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
         ('FONTSIZE', (0,0), (-1,-1), 9),
@@ -255,14 +259,13 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     t1.wrapOn(c, w, h)
     _, th1 = t1.wrap(w, h)
     t1.drawOn(c, 30, y - th1)
-    y -= (th1 + 20)
+    y -= (th1 + 15)
     
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, f"Application ID: {app_id}")
     c.drawRightString(w - 30, y, f"Application Date: {datetime.date.today().strftime('%d-%m-%Y')}")
-    y -= 20
+    y -= 15
 
-    # 🟢 NEW LOGIC: Separate Regular & Arrear into Two Tables (Keeping the 'Type' column)
     regular_subs = []
     arrear_subs = []
     
@@ -298,7 +301,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
         t_reg.wrapOn(c, w, h)
         _, th_reg = t_reg.wrap(w, h)
         t_reg.drawOn(c, 30, y - th_reg)
-        y -= (th_reg + 15)
+        y -= (th_reg + 10)
 
     if arrear_count > 0:
         c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Arrear Courses"); y -= 5
@@ -318,7 +321,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
         t_arr.wrapOn(c, w, h)
         _, th_arr = t_arr.wrap(w, h)
         t_arr.drawOn(c, 30, y - th_arr)
-        y -= (th_arr + 15)
+        y -= (th_arr + 10)
 
     c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Fee Details"); y -= 5
     
@@ -352,7 +355,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     t3.wrapOn(c, w, h)
     _, th3 = t3.wrap(w, h)
     t3.drawOn(c, 30, y - th3)
-    y -= (th3 + 25) 
+    y -= (th3 + 15) 
 
     c.rect(30, y - 25, w - 60, 25)
     c.setFont("Helvetica", 9)
@@ -360,11 +363,11 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     c.drawString(350, y - 17, "Date: ______________________")
     y -= 40
 
-    c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Declaration:"); y -= 15
+    c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Declaration:"); y -= 12
     decl = "The subjects listed in this application are the only subjects I wish to apply for this Examination. I understand this application overrides any previous submission."
-    p = Paragraph(decl, getSampleStyleSheet()['Normal']); p.wrapOn(c, w - 60, 50); p.drawOn(c, 30, y - 25)
+    p = Paragraph(decl, getSampleStyleSheet()['Normal']); p.wrapOn(c, w - 60, 50); p.drawOn(c, 30, y - 20)
     
-    y -= 40
+    y -= 45
     c.setFont("Helvetica-Bold", 9); c.drawRightString(w - 30, y, "Signature of the Candidate")
     
     c.setFont("Helvetica", 8)
