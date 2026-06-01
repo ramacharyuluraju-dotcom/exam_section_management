@@ -260,11 +260,9 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, f"Application ID: {app_id}")
     c.drawRightString(w - 30, y, f"Application Date: {datetime.date.today().strftime('%d-%m-%Y')}")
-    y -= 25
+    y -= 20
 
-    c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Regular & Arrear Subjects"); y -= 10
-    
-    # 🟢 NEW LOGIC: Sort Application form by Regulars First, Arrears Second
+    # 🟢 NEW LOGIC: Separate Regular & Arrear into Two Tables (Keeping the 'Type' column)
     regular_subs = []
     arrear_subs = []
     
@@ -278,29 +276,49 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
             
     arrear_count = len(arrear_subs)
     regular_count = len(regular_subs)
-
-    sub_rows = [["Sem", "Course Code", "Course Title", "Type"]]
-    
-    for s in regular_subs:
-        sub_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Regular"])
-    for s in arrear_subs:
-        sub_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Arrear"])
     
     row_h = 16 if len(subjects) > 10 else None
-    
-    t2 = Table(sub_rows, colWidths=[40, 80, 335, 80], rowHeights=row_h)
-    t2.setStyle(TableStyle([
-        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-        ('BACKGROUND', (0,0), (3,0), colors.lightgrey),
-        ('ALIGN', (0,0), (0,-1), 'CENTER'),
-        ('ALIGN', (3,0), (3,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('FONTSIZE', (0,0), (-1,-1), 8 if len(subjects) > 10 else 9), 
-    ]))
-    t2.wrapOn(c, w, h)
-    _, th2 = t2.wrap(w, h)
-    t2.drawOn(c, 30, y - th2)
-    y -= (th2 + 20) 
+    fontsize = 8 if len(subjects) > 10 else 9
+
+    if regular_count > 0:
+        c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Regular Courses"); y -= 5
+        reg_rows = [["Sem", "Course Code", "Course Title", "Type"]]
+        for s in regular_subs:
+            reg_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Regular"])
+            
+        t_reg = Table(reg_rows, colWidths=[40, 80, 335, 80], rowHeights=row_h)
+        t_reg.setStyle(TableStyle([
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('ALIGN', (0,0), (0,-1), 'CENTER'),
+            ('ALIGN', (3,0), (3,-1), 'CENTER'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('FONTSIZE', (0,0), (-1,-1), fontsize), 
+        ]))
+        t_reg.wrapOn(c, w, h)
+        _, th_reg = t_reg.wrap(w, h)
+        t_reg.drawOn(c, 30, y - th_reg)
+        y -= (th_reg + 15)
+
+    if arrear_count > 0:
+        c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Arrear Courses"); y -= 5
+        arr_rows = [["Sem", "Course Code", "Course Title", "Type"]]
+        for s in arrear_subs:
+            arr_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Arrear"])
+            
+        t_arr = Table(arr_rows, colWidths=[40, 80, 335, 80], rowHeights=row_h)
+        t_arr.setStyle(TableStyle([
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('ALIGN', (0,0), (0,-1), 'CENTER'),
+            ('ALIGN', (3,0), (3,-1), 'CENTER'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('FONTSIZE', (0,0), (-1,-1), fontsize), 
+        ]))
+        t_arr.wrapOn(c, w, h)
+        _, th_arr = t_arr.wrap(w, h)
+        t_arr.drawOn(c, 30, y - th_arr)
+        y -= (th_arr + 15)
 
     c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Fee Details"); y -= 5
     
