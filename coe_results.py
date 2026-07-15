@@ -416,7 +416,6 @@ elif exam_type in ['Make-up', 'Supplementary', 'Supplementary (Arrear Only)', 'S
         
     show_makeup, show_see, show_grading, show_ledgers, show_dashboard = True, True, True, True, True
 
-
 # ----------------------------------------------------
 # TAB BLOCK: CIE ENTRY 
 # ----------------------------------------------------
@@ -455,6 +454,44 @@ if show_cie:
                             st.success(f"✅ Successfully uploaded {len(records)} CIE records.")
                             if ignored_count > 0:
                                 st.warning(f"⚠️ Blocked {ignored_count} records (Not registered).")
+
+            # --- NEW AUTO-SYNC SECTION FOR ARREARS ---
+            st.divider()
+            st.subheader("🔄 Auto-Sync Arrear CIEs from Parent Cycle")
+            if parent_id:
+                st.write(f"**Linked Parent Cycle ID:** {parent_id}")
+                if st.button("📥 Sync Arrear CIEs", type="primary"):
+                    with st.spinner("Fetching arrear registrations and syncing historical CIE marks..."):
+                        try:
+                            curr_regs = fetch_all_records("course_registrations", "usn, course_code", filters={"cycle_id": selected_cycle_id})
+                            parent_results = fetch_all_records("student_results", "usn, course_code, cie_marks", filters={"cycle_id": parent_id})
+                            
+                            parent_map = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): safe_float(r.get('cie_marks'), 0.0) for r in parent_results}
+                            
+                            sync_count, missing_count = 0, 0
+                            payload = []
+                            
+                            for reg in curr_regs:
+                                u, c = str(reg['usn']).strip().upper(), str(reg['course_code']).strip().upper()
+                                if (u, c) in parent_map:
+                                    payload.append({
+                                        "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
+                                        "cie_marks": parent_map[(u, c)], "exam_status": "PENDING", "grade": "PND"
+                                    })
+                                    sync_count += 1
+                                else:
+                                    missing_count += 1
+                                    
+                            if payload:
+                                for i in range(0, len(payload), 500):
+                                    supabase.table("student_results").upsert(payload[i:i+500]).execute()
+                                st.success(f"✅ Successfully synced {sync_count} arrear CIE records from Cycle {parent_id}!")
+                            else:
+                                st.error("No matching arrear CIE records found in the Parent Cycle.")
+                        except Exception as e:
+                            st.error(f"Sync failed: {e}")
+            else:
+                st.info("No Parent Cycle linked. Cannot auto-sync arrear marks.")
 
         with col_c2:
             with st.form("manual_cie"):
