@@ -1172,7 +1172,6 @@ if show_mod:
                         except Exception as e:
                             st.error(f"Processing Error: {e}")
 
-
 # ----------------------------------------------------
 # TAB BLOCK: LEDGERS (Used in ALL Contexts)
 # ----------------------------------------------------
@@ -1184,7 +1183,7 @@ if show_ledgers:
         if st.button("🖨️ Generate Master Ledgers & PDFs"):
             with st.spinner("Compiling institutional ledgers..."):
                 try:
-                    regs_data = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
+                    #                    regs_data = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
                     if not regs_data:
                         st.error("No course registrations found for this cycle.")
                         st.stop()
@@ -1196,31 +1195,57 @@ if show_ledgers:
                             stu_courses[u] = []
                         stu_courses[u].append(c)
 
-                    res_data = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
+                    #                    res_data = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
                     res_map = {(clean_str(r['usn']), clean_str(r['course_code'])): r for r in res_data}
                     
-                    # FETCH current_semester from master_students
-                    stu_res = fetch_all_records("master_students", "usn, full_name, branch_code, current_semester")
+                    #                    # Fetch '*' to prevent Column Name mismatches
+                    stu_res = fetch_all_records("master_students", "*")
+                    
+                    # Auto-detect student column names
+                    student_sem_col = 'semester'
+                    student_name_col = 'full_name'
+                    if stu_res:
+                        available_keys = stu_res[0].keys()
+                        # Detect Semester Column
+                        for k in ['semester', 'current_sem', 'sem', 'current_semester', 'curr_sem', 'student_semester']:
+                            if k in available_keys:
+                                student_sem_col = k
+                                break
+                        # Detect Student Name Column
+                        for k in ['full_name', 'name', 'student_name']:
+                            if k in available_keys:
+                                student_name_col = k
+                                break
+                    
                     student_info_map = {
                         clean_str(r['usn']): {
-                            'name': r.get('full_name', "Unknown"),
+                            'name': r.get(student_name_col, "Unknown"),
                             'branch': r.get('branch_code', "UNKNOWN"),
-                            'cur_sem': safe_float(r.get('current_semester'), 1)
+                            'cur_sem': safe_float(r.get(student_sem_col), 1)
                         } for r in stu_res
                     }
                     
                     branch_data = fetch_all_records("master_branches", "branch_code, branch_name")
                     branch_name_map = {r['branch_code']: r.get('branch_name', r['branch_code']) for r in branch_data}
 
-                    # FETCH semester from master_courses
-                    crs_data = fetch_all_records("master_courses", "course_code, title, credits, max_see, total_marks, semester")
+                    #                    crs_data = fetch_all_records("master_courses", "*")
+                    
+                    # Auto-detect course column names
+                    course_sem_col = 'semester'
+                    if crs_data:
+                        available_course_keys = crs_data[0].keys()
+                        for k in ['semester', 'sem', 'course_sem', 'current_sem']:
+                            if k in available_course_keys:
+                                course_sem_col = k
+                                break
+
                     crs_map = {clean_str(c['course_code']): c for c in crs_data}
                     
                     ledger_rows = []
                     pdf_zip_buffer = io.BytesIO()
                     branch_sem_courses_map = {} # Tracks unique courses per (Branch, Sem, Type)
                     
-                    with zipfile.ZipFile(pdf_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    #                    with zipfile.ZipFile(pdf_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                         for usn, courses in stu_courses.items():
                             s_info = student_info_map.get(usn, {})
                             name = s_info.get('name', 'Unknown')
@@ -1230,14 +1255,13 @@ if show_ledgers:
                             # --- 1. BUCKET COURSES BY SEMESTER ---
                             sem_buckets = {}
                             for cc in courses:
-                                c_sem = safe_float(crs_map.get(cc, {}).get('semester', 1), 1)
+                                c_sem = safe_float(crs_map.get(cc, {}).get(course_sem_col, 1), 1)
                                 if c_sem not in sem_buckets:
                                     sem_buckets[c_sem] = []
                                 sem_buckets[c_sem].append(cc)
                             
                             # --- 2. PROCESS EACH SEMESTER BUCKET ---
                             for c_sem, bucket_courses in sem_buckets.items():
-                                # Evaluate if this bucket is Regular or Arrear
                                 is_regular_cycle = exam_type in ['Regular', 'Regular + Arrear (Concurrent)']
                                 is_regular = is_regular_cycle and (c_sem == student_cur_sem)
                                 
@@ -1326,8 +1350,7 @@ if show_ledgers:
                                 file_suffix = "Regular" if is_regular else "Supplementary"
                                 zf.writestr(f"{folder_name}/Sem_{int(c_sem)}/{usn}_{file_suffix}.pdf", pdf_buf.getvalue())
 
-                    # --- 3. GENERATE EXCEL LEDGERS (SPLIT BY BRANCH, SEMESTER, AND TYPE) ---
-                    ledger_zip = io.BytesIO()
+                    #                    ledger_zip = io.BytesIO()
                     with zipfile.ZipFile(ledger_zip, "w") as branch_zf:
                         if ledger_rows:
                             df_all = pd.DataFrame(ledger_rows)
@@ -1338,7 +1361,7 @@ if show_ledgers:
                                 file_name = f"Ledger_{str(b_name)}_Sem{int(c_sem)}_{reg_type}.xlsx"
                                 branch_zf.writestr(file_name, excel_bytes)
                     
-                    st.success(f"✅ Generated PDFs and Ledgers across {len(sem_buckets)} distinct semester groupings.")
+                    st.success(f"✅ Generated PDFs and Ledgers successfully across all semester groupings.")
                     c1, c2 = st.columns(2)
                     with c1:
                         st.download_button("📊 Print-Ready Ledgers (ZIP)", ledger_zip.getvalue(), f"A3_Ledgers_Split_{active_cycle_name}.zip")
