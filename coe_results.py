@@ -1179,7 +1179,9 @@ if show_mod:
 if show_ledgers:
     with t6:
         st.subheader("Generate Ledgers & Marks Cards")
-        if st.button("🖨️ Generate Master Ledger & PDFs"):
+        st.info("VTU Compliance Mode Active: Subjects are dynamically bucketed by Semester. Regular and Supplementary Marks Cards/Ledgers are generated separately.")
+        
+        if st.button("🖨️ Generate Master Ledgers & PDFs"):
             with st.spinner("Compiling institutional ledgers..."):
                 try:
                     regs_data = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
@@ -1197,140 +1199,151 @@ if show_ledgers:
                     res_data = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
                     res_map = {(clean_str(r['usn']), clean_str(r['course_code'])): r for r in res_data}
                     
-                    stu_res = fetch_all_records("master_students", "usn, full_name, branch_code")
-                    name_map = {clean_str(r['usn']): r.get('full_name', "Unknown") for r in stu_res}
-                    branch_map = {clean_str(r['usn']): r.get('branch_code', "UNKNOWN") for r in stu_res}
+                    # FETCH current_semester from master_students
+                    stu_res = fetch_all_records("master_students", "usn, full_name, branch_code, current_semester")
+                    student_info_map = {
+                        clean_str(r['usn']): {
+                            'name': r.get('full_name', "Unknown"),
+                            'branch': r.get('branch_code', "UNKNOWN"),
+                            'cur_sem': safe_float(r.get('current_semester'), 1)
+                        } for r in stu_res
+                    }
                     
                     branch_data = fetch_all_records("master_branches", "branch_code, branch_name")
                     branch_name_map = {r['branch_code']: r.get('branch_name', r['branch_code']) for r in branch_data}
 
-                    crs_data = fetch_all_records("master_courses", "course_code, title, credits, max_see, total_marks")
+                    # FETCH semester from master_courses
+                    crs_data = fetch_all_records("master_courses", "course_code, title, credits, max_see, total_marks, semester")
                     crs_map = {clean_str(c['course_code']): c for c in crs_data}
                     
                     ledger_rows = []
                     pdf_zip_buffer = io.BytesIO()
-                    branch_courses_map = {}
+                    branch_sem_courses_map = {} # Tracks unique courses per (Branch, Sem, Type)
                     
                     with zipfile.ZipFile(pdf_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                         for usn, courses in stu_courses.items():
-                            name = name_map.get(usn, "Unknown")
-                            branch = branch_map.get(usn, "UNKNOWN")
+                            s_info = student_info_map.get(usn, {})
+                            name = s_info.get('name', 'Unknown')
+                            branch = s_info.get('branch', 'UNKNOWN')
+                            student_cur_sem = s_info.get('cur_sem', 1)
                             
-                            if branch not in branch_courses_map:
-                                branch_courses_map[branch] = set()
-                            branch_courses_map[branch].update(courses)
-                            
-                            total_cr_attempted, total_gp_earned = 0.0, 0.0
-                            results_list = []
-                            ledger_dict = {'USN': usn, 'Name': name, 'Branch': branch}
-                            pass_flag, has_pending = True, False
-                            grand_tot, max_tot, total_cred = 0.0, 0.0, 0.0
-                            
+                            # --- 1. BUCKET COURSES BY SEMESTER ---
+                            sem_buckets = {}
                             for cc in courses:
-                                mc = crs_map.get(cc, {})
-                                cr = safe_float(mc.get('credits'), 0.0)
-                                c_max = safe_float(mc.get('total_marks'), 100.0)
-                                is_internal_only = (safe_float(mc.get('max_see'), 50.0) == 0.0)
-                                r = res_map.get((usn, cc))
+                                c_sem = safe_float(crs_map.get(cc, {}).get('semester', 1), 1)
+                                if c_sem not in sem_buckets:
+                                    sem_buckets[c_sem] = []
+                                sem_buckets[c_sem].append(cc)
+                            
+                            # --- 2. PROCESS EACH SEMESTER BUCKET ---
+                            for c_sem, bucket_courses in sem_buckets.items():
+                                # Evaluate if this bucket is Regular or Arrear
+                                is_regular_cycle = exam_type in ['Regular', 'Regular + Arrear (Concurrent)']
+                                is_regular = is_regular_cycle and (c_sem == student_cur_sem)
                                 
-                                if not is_internal_only:
-                                    see_missing = not r or pd.isna(r.get('see_raw')) or r.get('see_raw') is None
-                                else:
-                                    see_missing = False
+                                reg_type_str = "REGULAR" if is_regular else "ARREAR"
                                 
-                                if see_missing or not r or r.get('grade') in ['PND', 'PENDING'] or r.get('exam_status') in ['PND', 'PENDING']:
-                                    has_pending = True
-                                    cie_disp = str(r['cie_marks']) if (r and pd.notna(r.get('cie_marks'))) else "PND"
-                                    see_disp = "-" if is_internal_only else "PND"
-                                    results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': cie_disp, 'see': see_disp, 'tot': "-", 'grade': "PND", 'gp': "-", 'pass': False})
-                                    ledger_dict[f"{cc}_CIE"] = cie_disp
-                                    ledger_dict[f"{cc}_SEE"] = see_disp
-                                    ledger_dict[f"{cc}_Tot"] = "PND"
-                                    ledger_dict[f"{cc}_Grd"] = "PND"
-                                else:
-                                    cie_val = r.get('cie_marks', 0)
-                                    see_val = r.get('see_scaled', 0)
-                                    tot_val = r.get('total_marks', 0)
-                                    grd_val = r.get('grade', 'F')
-                                    results_list.append({
-                                        'code': cc,
-                                        'title': mc.get('title', cc),
-                                        'cr': cr,
-                                        'cie': str(cie_val),
-                                        'see': str(see_val) if not is_internal_only else "-",
-                                        'tot': str(tot_val),
-                                        'grade': str(grd_val),
-                                        'gp': str(r.get('grade_points', 0)),
-                                        'pass': r.get('is_pass', False)
-                                    })
-                                    ledger_dict[f"{cc}_CIE"] = cie_val
-                                    ledger_dict[f"{cc}_SEE"] = "-" if is_internal_only else see_val
-                                    ledger_dict[f"{cc}_Tot"] = tot_val
-                                    ledger_dict[f"{cc}_Grd"] = grd_val
+                                # Track courses for the Excel Ledger headers
+                                grouping_key = (branch, c_sem, reg_type_str)
+                                if grouping_key not in branch_sem_courses_map:
+                                    branch_sem_courses_map[grouping_key] = set()
+                                branch_sem_courses_map[grouping_key].update(bucket_courses)
+                                
+                                total_cr_attempted, total_gp_earned = 0.0, 0.0
+                                results_list = []
+                                ledger_dict = {'USN': usn, 'Name': name, 'Branch': branch, 'Semester': c_sem, 'Type': reg_type_str}
+                                pass_flag, has_pending = True, False
+                                grand_tot, max_tot, total_cred_earned = 0.0, 0.0, 0.0
+                                
+                                for cc in bucket_courses:
+                                    mc = crs_map.get(cc, {})
+                                    cr = safe_float(mc.get('credits'), 0.0)
+                                    c_max = safe_float(mc.get('total_marks'), 100.0)
+                                    is_internal_only = (safe_float(mc.get('max_see'), 50.0) == 0.0)
+                                    r = res_map.get((usn, cc))
                                     
-                                    total_cr_attempted += cr
-                                    total_gp_earned += (r.get('grade_points', 0) * cr)
-                                    grand_tot += safe_float(tot_val, 0)
-                                    max_tot += c_max
+                                    see_missing = not r or pd.isna(r.get('see_raw')) or r.get('see_raw') is None if not is_internal_only else False
                                     
-                                    if r.get('is_pass', False):
-                                        total_cred += cr
+                                    if see_missing or not r or r.get('grade') in ['PND', 'PENDING'] or r.get('exam_status') in ['PND', 'PENDING']:
+                                        has_pending = True
+                                        cie_disp = str(r['cie_marks']) if (r and pd.notna(r.get('cie_marks'))) else "PND"
+                                        see_disp = "-" if is_internal_only else "PND"
+                                        results_list.append({'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': cie_disp, 'see': see_disp, 'tot': "-", 'grade': "PND", 'gp': "-", 'pass': False})
+                                        ledger_dict.update({f"{cc}_CIE": cie_disp, f"{cc}_SEE": see_disp, f"{cc}_Tot": "PND", f"{cc}_Grd": "PND"})
                                     else:
-                                        pass_flag = False
-                            
-                            sgpa = (total_gp_earned / total_cr_attempted) if total_cr_attempted > 0 else 0.0
-                            pct = (grand_tot / max_tot * 100) if max_tot > 0 else 0.0
-                            
-                            ledger_dict['SGPA'] = round(sgpa, 2) if not has_pending else "---"
-                            ledger_dict['Result'] = "PENDING" if has_pending else ("PASS" if pass_flag else "FAIL")
-                            ledger_dict['Grand_Tot'] = grand_tot if not has_pending else "---"
-                            ledger_dict['Percentage'] = round(pct, 2) if not has_pending else "---"
-                            ledger_dict['Total_Credits'] = total_cred if not has_pending else "---"
-                            
-                            if has_pending:
-                                ov_grd = "---"
-                            elif pass_flag:
-                                if sgpa >= 9.0:
-                                    ov_grd = 'O'
-                                elif sgpa >= 8.0:
-                                    ov_grd = 'A+'
-                                elif sgpa >= 7.0:
-                                    ov_grd = 'A'
-                                elif sgpa >= 6.0:
-                                    ov_grd = 'B+'
-                                elif sgpa >= 5.5:
-                                    ov_grd = 'B'
-                                elif sgpa >= 5.0:
-                                    ov_grd = 'C'
-                                elif sgpa >= 4.0:
-                                    ov_grd = 'P'
+                                        cie_val = r.get('cie_marks', 0)
+                                        see_val = r.get('see_scaled', 0)
+                                        tot_val = r.get('total_marks', 0)
+                                        grd_val = r.get('grade', 'F')
+                                        results_list.append({
+                                            'code': cc, 'title': mc.get('title', cc), 'cr': cr, 'cie': str(cie_val), 
+                                            'see': str(see_val) if not is_internal_only else "-", 'tot': str(tot_val), 
+                                            'grade': str(grd_val), 'gp': str(r.get('grade_points', 0)), 'pass': r.get('is_pass', False)
+                                        })
+                                        ledger_dict.update({f"{cc}_CIE": cie_val, f"{cc}_SEE": "-" if is_internal_only else see_val, f"{cc}_Tot": tot_val, f"{cc}_Grd": grd_val})
+                                        
+                                        total_cr_attempted += cr
+                                        total_gp_earned += (r.get('grade_points', 0) * cr)
+                                        grand_tot += safe_float(tot_val, 0)
+                                        max_tot += c_max
+                                        
+                                        if r.get('is_pass', False): total_cred_earned += cr
+                                        else: pass_flag = False
+                                
+                                # Calculations based on Regular vs Arrear
+                                sgpa = (total_gp_earned / total_cr_attempted) if total_cr_attempted > 0 else 0.0
+                                pct = (grand_tot / max_tot * 100) if max_tot > 0 else 0.0
+                                
+                                if is_regular:
+                                    ledger_dict.update({
+                                        'SGPA': round(sgpa, 2) if not has_pending else "---",
+                                        'Result': "PENDING" if has_pending else ("PASS" if pass_flag else "FAIL"),
+                                        'Grand_Tot': grand_tot if not has_pending else "---",
+                                        'Percentage': round(pct, 2) if not has_pending else "---",
+                                        'Total_Credits': total_cred_earned if not has_pending else "---",
+                                        'Overall_Grade': 'F' if has_pending or not pass_flag else ('O' if sgpa >= 9 else 'A+' if sgpa >= 8 else 'A' if sgpa >= 7 else 'B+' if sgpa >= 6 else 'B' if sgpa >= 5.5 else 'C' if sgpa >= 5 else 'P' if sgpa >= 4 else 'F')
+                                    })
                                 else:
-                                    ov_grd = 'F'
-                            else:
-                                ov_grd = 'F'
-                            
-                            ledger_dict['Overall_Grade'] = ov_grd
-                            
-                            ledger_rows.append(ledger_dict)
-                            pdf_buf = io.BytesIO()
-                            generate_marks_card_pdf(pdf_buf, usn, name, results_list, sgpa, has_pending)
-                            zf.writestr(f"Marks_Cards/{usn}.pdf", pdf_buf.getvalue())
-                            
-                    df_ledger = pd.DataFrame(ledger_rows)
-                    
+                                    # For Arrears, no SGPA calculation is shown on the supplementary marks card
+                                    ledger_dict.update({
+                                        'SGPA': "N/A",
+                                        'Result': "PENDING" if has_pending else ("PASS" if pass_flag else "FAIL"),
+                                        'Grand_Tot': "---",
+                                        'Percentage': "---",
+                                        'Total_Credits': total_cred_earned if not has_pending else "---",
+                                        'Overall_Grade': '---'
+                                    })
+                                
+                                ledger_rows.append(ledger_dict)
+                                
+                                # Generate individual PDF
+                                pdf_buf = io.BytesIO()
+                                pdf_sgpa_param = sgpa if is_regular else 0.0
+                                generate_marks_card_pdf(pdf_buf, usn, name, results_list, pdf_sgpa_param, has_pending)
+                                
+                                # Save into neatly organized folders in the ZIP
+                                folder_name = "Regular_Marks_Cards" if is_regular else "Supplementary_Marks_Cards"
+                                file_suffix = "Regular" if is_regular else "Supplementary"
+                                zf.writestr(f"{folder_name}/Sem_{int(c_sem)}/{usn}_{file_suffix}.pdf", pdf_buf.getvalue())
+
+                    # --- 3. GENERATE EXCEL LEDGERS (SPLIT BY BRANCH, SEMESTER, AND TYPE) ---
                     ledger_zip = io.BytesIO()
                     with zipfile.ZipFile(ledger_zip, "w") as branch_zf:
-                        for b_name, b_df in df_ledger.groupby('Branch'):
-                            b_course_list = sorted(list(branch_courses_map.get(b_name, [])))
-                            excel_bytes = generate_a3_excel_ledger(b_name, b_df, b_course_list, branch_name_map, active_cycle_name)
-                            branch_zf.writestr(f"Ledger_{str(b_name)}_{active_cycle_name}.xlsx", excel_bytes)
+                        if ledger_rows:
+                            df_all = pd.DataFrame(ledger_rows)
+                            for (b_name, c_sem, reg_type), b_df in df_all.groupby(['Branch', 'Semester', 'Type']):
+                                b_course_list = sorted(list(branch_sem_courses_map.get((b_name, c_sem, reg_type), [])))
+                                sheet_title = f"{active_cycle_name} - SEM {int(c_sem)} ({reg_type})"
+                                excel_bytes = generate_a3_excel_ledger(b_name, b_df, b_course_list, branch_name_map, sheet_title)
+                                file_name = f"Ledger_{str(b_name)}_Sem{int(c_sem)}_{reg_type}.xlsx"
+                                branch_zf.writestr(file_name, excel_bytes)
                     
-                    st.success(f"✅ Successfully compiled {len(ledger_rows)} records into ZIP!")
+                    st.success(f"✅ Generated PDFs and Ledgers across {len(sem_buckets)} distinct semester groupings.")
                     c1, c2 = st.columns(2)
                     with c1:
-                        st.download_button("📊 Print-Ready Branch Ledgers (ZIP)", ledger_zip.getvalue(), f"A3_Ledgers_{active_cycle_name}.zip")
+                        st.download_button("📊 Print-Ready Ledgers (ZIP)", ledger_zip.getvalue(), f"A3_Ledgers_Split_{active_cycle_name}.zip")
                     with c2:
-                        st.download_button("📄 Marks Cards (ZIP)", pdf_zip_buffer.getvalue(), f"Marks_Cards_{active_cycle_name}.zip")
+                        st.download_button("📄 Marks Cards (ZIP)", pdf_zip_buffer.getvalue(), f"Marks_Cards_Split_{active_cycle_name}.zip")
                 except Exception as e:
                     st.error(f"Generation Error: {e}")
 
