@@ -1207,7 +1207,7 @@ if show_ledgers:
                     if stu_res:
                         available_keys = stu_res[0].keys()
                         # Detect Semester Column
-                        for k in ['semester', 'current_sem', 'sem', 'current_semester', 'curr_sem', 'student_semester']:
+                        for k in ['semester', 'current_sem', 'sem', 'current_semester', 'curr_sem', 'student_semester', 'semester_id']:
                             if k in available_keys:
                                 student_sem_col = k
                                 break
@@ -1221,7 +1221,7 @@ if show_ledgers:
                         clean_str(r['usn']): {
                             'name': r.get(student_name_col, "Unknown"),
                             'branch': r.get('branch_code', "UNKNOWN"),
-                            'cur_sem': safe_float(r.get(student_sem_col), 1)
+                            'cur_sem': safe_float(r.get(student_sem_col), 0)
                         } for r in stu_res
                     }
                     
@@ -1234,7 +1234,7 @@ if show_ledgers:
                     course_sem_col = 'semester'
                     if crs_data:
                         available_course_keys = crs_data[0].keys()
-                        for k in ['semester', 'sem', 'course_sem', 'current_sem']:
+                        for k in ['semester', 'sem', 'course_sem', 'current_sem', 'semester_id']:
                             if k in available_course_keys:
                                 course_sem_col = k
                                 break
@@ -1245,20 +1245,41 @@ if show_ledgers:
                     pdf_zip_buffer = io.BytesIO()
                     branch_sem_courses_map = {} # Tracks unique courses per (Branch, Sem, Type)
                     
+                    import re
+                    
                     with zipfile.ZipFile(pdf_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                         for usn, courses in stu_courses.items():
                             s_info = student_info_map.get(usn, {})
                             name = s_info.get('name', 'Unknown')
                             branch = s_info.get('branch', 'UNKNOWN')
-                            student_cur_sem = s_info.get('cur_sem', 1)
+                            student_cur_sem = safe_float(s_info.get('cur_sem'), 0)
                             
                             # --- 1. BUCKET COURSES BY SEMESTER ---
                             sem_buckets = {}
+                            course_sems = []
+                            
                             for cc in courses:
-                                c_sem = safe_float(crs_map.get(cc, {}).get(course_sem_col, 1), 1)
+                                # Try DB first using the detected column (like semester_id)
+                                db_sem = crs_map.get(cc, {}).get(course_sem_col)
+                                c_sem = 0
+                                if pd.notna(db_sem) and str(db_sem).strip() != "":
+                                    try: c_sem = int(float(db_sem))
+                                    except: pass
+                                
+                                # Fallback to Smart Regex Extraction (e.g., 1BMATC201 -> 2)
+                                if c_sem <= 0:
+                                    match = re.search(r'(\d)\d{1,2}[A-Za-z]*$', str(cc).strip())
+                                    c_sem = int(match.group(1)) if match else 1
+                                    
+                                course_sems.append(c_sem)
+                                
                                 if c_sem not in sem_buckets:
                                     sem_buckets[c_sem] = []
                                 sem_buckets[c_sem].append(cc)
+                            
+                            # Ensure we have a valid current semester for the student
+                            if student_cur_sem <= 0:
+                                student_cur_sem = max(course_sems) if course_sems else 1
                             
                             # --- 2. PROCESS EACH SEMESTER BUCKET ---
                             for c_sem, bucket_courses in sem_buckets.items():
