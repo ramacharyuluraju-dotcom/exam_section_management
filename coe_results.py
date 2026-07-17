@@ -1183,7 +1183,7 @@ if show_ledgers:
         if st.button("🖨️ Generate Master Ledgers & PDFs"):
             with st.spinner("Compiling institutional ledgers..."):
                 try:
-                    #                    regs_data = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
+                    regs_data = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
                     if not regs_data:
                         st.error("No course registrations found for this cycle.")
                         st.stop()
@@ -1195,10 +1195,10 @@ if show_ledgers:
                             stu_courses[u] = []
                         stu_courses[u].append(c)
 
-                    #                    res_data = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
+                    res_data = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
                     res_map = {(clean_str(r['usn']), clean_str(r['course_code'])): r for r in res_data}
                     
-                    #                    # Fetch '*' to prevent Column Name mismatches
+                    # Fetch '*' to prevent Column Name mismatches
                     stu_res = fetch_all_records("master_students", "*")
                     
                     # Auto-detect student column names
@@ -1228,7 +1228,7 @@ if show_ledgers:
                     branch_data = fetch_all_records("master_branches", "branch_code, branch_name")
                     branch_name_map = {r['branch_code']: r.get('branch_name', r['branch_code']) for r in branch_data}
 
-                    #                    crs_data = fetch_all_records("master_courses", "*")
+                    crs_data = fetch_all_records("master_courses", "*")
                     
                     # Auto-detect course column names
                     course_sem_col = 'semester'
@@ -1245,7 +1245,7 @@ if show_ledgers:
                     pdf_zip_buffer = io.BytesIO()
                     branch_sem_courses_map = {} # Tracks unique courses per (Branch, Sem, Type)
                     
-                    #                    with zipfile.ZipFile(pdf_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    with zipfile.ZipFile(pdf_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                         for usn, courses in stu_courses.items():
                             s_info = student_info_map.get(usn, {})
                             name = s_info.get('name', 'Unknown')
@@ -1350,7 +1350,7 @@ if show_ledgers:
                                 file_suffix = "Regular" if is_regular else "Supplementary"
                                 zf.writestr(f"{folder_name}/Sem_{int(c_sem)}/{usn}_{file_suffix}.pdf", pdf_buf.getvalue())
 
-                    #                    ledger_zip = io.BytesIO()
+                    ledger_zip = io.BytesIO()
                     with zipfile.ZipFile(ledger_zip, "w") as branch_zf:
                         if ledger_rows:
                             df_all = pd.DataFrame(ledger_rows)
@@ -1369,7 +1369,6 @@ if show_ledgers:
                         st.download_button("📄 Marks Cards (ZIP)", pdf_zip_buffer.getvalue(), f"Marks_Cards_Split_{active_cycle_name}.zip")
                 except Exception as e:
                     st.error(f"Generation Error: {e}")
-
 
 # ----------------------------------------------------
 # TAB BLOCK: DASHBOARD (Used in ALL Contexts)
