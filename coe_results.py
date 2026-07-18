@@ -34,7 +34,6 @@ def find_column(df, candidates):
             return df.columns[cols.index(candidate.upper())]
     return None
 
-
 def safe_float(val, default):
     if val is None:
         return float(default)
@@ -142,37 +141,22 @@ def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=5
     pct = total / total_max
     
     if is_pg:
-        if pct >= 0.90:
-            return see_scaled, total, 'O', 10, True, status
-        elif pct >= 0.80:
-            return see_scaled, total, 'A+', 9, True, status
-        elif pct >= 0.70:
-            return see_scaled, total, 'A', 8, True, status
-        elif pct >= 0.60:
-            return see_scaled, total, 'B+', 7, True, status
-        elif pct >= 0.55:
-            return see_scaled, total, 'B', 6, True, status
-        elif pct >= 0.50:
-            return see_scaled, total, 'C', 5, True, status
-        else:
-            return see_scaled, total, 'F', 0, False, status
+        if pct >= 0.90: return see_scaled, total, 'O', 10, True, status
+        elif pct >= 0.80: return see_scaled, total, 'A+', 9, True, status
+        elif pct >= 0.70: return see_scaled, total, 'A', 8, True, status
+        elif pct >= 0.60: return see_scaled, total, 'B+', 7, True, status
+        elif pct >= 0.55: return see_scaled, total, 'B', 6, True, status
+        elif pct >= 0.50: return see_scaled, total, 'C', 5, True, status
+        else: return see_scaled, total, 'F', 0, False, status
     else:
-        if pct >= 0.90:
-            return see_scaled, total, 'O', 10, True, status
-        elif pct >= 0.80:
-            return see_scaled, total, 'A+', 9, True, status
-        elif pct >= 0.70:
-            return see_scaled, total, 'A', 8, True, status
-        elif pct >= 0.60:
-            return see_scaled, total, 'B+', 7, True, status
-        elif pct >= 0.50:
-            return see_scaled, total, 'B', 6, True, status
-        elif pct >= 0.45:
-            return see_scaled, total, 'C', 5, True, status
-        elif pct >= 0.40:
-            return see_scaled, total, 'P', 4, True, status
-        else:
-            return see_scaled, total, 'F', 0, False, status
+        if pct >= 0.90: return see_scaled, total, 'O', 10, True, status
+        elif pct >= 0.80: return see_scaled, total, 'A+', 9, True, status
+        elif pct >= 0.70: return see_scaled, total, 'A', 8, True, status
+        elif pct >= 0.60: return see_scaled, total, 'B+', 7, True, status
+        elif pct >= 0.50: return see_scaled, total, 'B', 6, True, status
+        elif pct >= 0.45: return see_scaled, total, 'C', 5, True, status
+        elif pct >= 0.40: return see_scaled, total, 'P', 4, True, status
+        else: return see_scaled, total, 'F', 0, False, status
 
 
 # 🟢 MULTI-VALUATION ALGORITHMS 🟢
@@ -287,7 +271,6 @@ def generate_marks_card_pdf(buffer, usn, name, results_list, sgpa, has_pending=F
     
     doc.build(elements)
 
-
 def generate_a3_excel_ledger(b_name, b_df, course_list, branch_name_map, active_cycle_name):
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {'in_memory': True})
@@ -376,7 +359,6 @@ def generate_a3_excel_ledger(b_name, b_df, course_list, branch_name_map, active_
 
     workbook.close()
     return output.getvalue()
-
 
 # ==========================================
 # 4. MAIN UI FLOW & CONTEXT AWARENESS
@@ -651,7 +633,6 @@ if show_decoder:
                     except Exception as e:
                         st.error(f"Error: {e}")
 
-
 # ----------------------------------------------------
 # TAB BLOCK: SEE CONSOLIDATION (Used in Reg & Make-up)
 # ----------------------------------------------------
@@ -722,7 +703,6 @@ if show_see:
                         supabase.table("student_results").upsert({"cycle_id": selected_cycle_id, "usn": s_usn, "course_code": s_cc, "see_raw": s_marks, "exam_status": s_stat}).execute()
                         st.success("✅ Saved to Database.")
 
-
 # ----------------------------------------------------
 # TAB BLOCK: GRADING ENGINE (Used in Reg & Make-up)
 # ----------------------------------------------------
@@ -779,7 +759,6 @@ if show_grading:
                     st.success(f"✅ Grading calculated for {len(updates)} records successfully!")
                 except Exception as e:
                     st.error(f"Error: {e}")
-
 
 # ----------------------------------------------------
 # TAB BLOCK: MODERATION & THIRD VALUATION
@@ -1225,7 +1204,7 @@ if show_ledgers:
                         clean_str(r['usn']): {
                             'name': r.get(student_name_col, "Unknown"),
                             'branch': r.get('branch_code', "UNKNOWN"),
-                            'cur_sem': safe_float(r.get(student_sem_col), 1)
+                            'cur_sem': safe_float(r.get(student_sem_col), 0)
                         } for r in stu_res
                     }
                     
@@ -1248,8 +1227,6 @@ if show_ledgers:
                     ledger_rows = []
                     pdf_zip_buffer = io.BytesIO()
                     branch_sem_courses_map = {} # Tracks unique courses per (Branch, Sem, Type)
-                    
-                    import re
                     
                     with zipfile.ZipFile(pdf_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                         for usn, courses in stu_courses.items():
@@ -1696,6 +1673,3 @@ if show_reval:
 
                             except Exception as e:
                                 st.error(f"Database Error: {e}")
-```eof
-
-Once you save this file, open your app, navigate to **Tab 4 (Grading Engine)**, and run the Master Grading Algorithm one more time to flush out those incorrect zeros from the database and properly fix your dashboard metrics!
