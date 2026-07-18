@@ -287,18 +287,32 @@ with t3:
                     df_res['Credits'] = df_res['course_code'].map(lambda x: safe_float(courses_map.get(x, {}).get('credits', 0)))
                     df_res['Course Sem'] = df_res['course_code'].map(lambda x: safe_float(courses_map.get(x, {}).get(course_sem_col, 1)))
                     
-                    # Calculate Max Sem per Cycle to detect Arrears written during Regular cycles
-                    cycle_max_sems = df_res.groupby('cycle_id')['Course Sem'].max().to_dict()
+                    # 🟢 THE FIX: Determine attempt based on chronological history
+                    # Sort chronologically by cycle to count attempts accurately
+                    df_res = df_res.sort_values(by='cycle_id')
+                    
+                    # Count how many times the student has attempted this specific course
+                    df_res['Attempt_Count'] = df_res.groupby('course_code').cumcount() + 1
                     
                     def determine_attempt_type(row):
                         c_type = str(row['Cycle Type']).upper()
                         cc = row['course_code']
+                        attempt = row['Attempt_Count']
                         
-                        if 'MAKE-UP' in c_type: base = 'Make-up'
-                        elif 'SUPPLEMENTARY' in c_type or 'ARREAR' in c_type: base = 'Arrear'
-                        elif row['Course Sem'] < cycle_max_sems.get(row['cycle_id'], 1): base = 'Arrear'
-                        else: base = 'Regular'
+                        # 1. Check for Make-up exams
+                        if 'MAKE-UP' in c_type: 
+                            base = 'Make-up'
+                        # 2. If it's their 2nd (or 3rd+) time taking the exact same subject, it is an Arrear
+                        elif attempt > 1: 
+                            base = 'Arrear'
+                        # 3. Catch strictly supplementary cycles just in case
+                        elif c_type in ['SUPPLEMENTARY', 'SUPPLEMENTARY (ARREAR ONLY)']: 
+                            base = 'Arrear'
+                        # 4. Otherwise, it is their first, regular attempt
+                        else: 
+                            base = 'Regular'
                         
+                        # Add Revaluation or Grace tags
                         if cc in reval_courses: base += ' + Reval'
                         elif cc in grace_courses: base += ' + Graced'
                             
