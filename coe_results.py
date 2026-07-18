@@ -1449,9 +1449,28 @@ if show_dashboard:
                         st.markdown("---")
                         st.subheader("⚠️ Actionable Alerts")
                         pending_df = df[df['grade'].isin(['PND', 'PENDING'])]
+                        
                         if not pending_df.empty:
                             for course, count in pending_df['course_code'].value_counts().items():
                                 st.error(f"Missing SEE Marks for **{count}** students in subject **{course}**.")
+                                
+                            st.markdown("##### 📥 Export Pending Data")
+                            st.write("Download the exact list of USNs and subjects that are missing marks.")
+                            
+                            # Clean up the dataframe for export
+                            export_df = pending_df[['usn', 'course_code']].copy()
+                            export_df.columns = ['USN', 'Course Code']
+                            
+                            csv_buffer = io.StringIO()
+                            export_df.to_csv(csv_buffer, index=False)
+                            
+                            st.download_button(
+                                label="⬇️ Download Pending List (CSV)",
+                                data=csv_buffer.getvalue(),
+                                file_name=f"Pending_Marks_{active_cycle_name}.csv",
+                                mime="text/csv",
+                                type="primary"
+                            )
                         else:
                             st.success("🎉 All clear! All evaluated subjects have full marks uploaded.")
                 except Exception as e:
