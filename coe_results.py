@@ -660,21 +660,29 @@ if show_see:
                         for _, r in df_see.iterrows():
                             usn, cc = clean_str(r[usn_col]), clean_str(r[cc_col])
                             if (usn, cc) in valid_pairs:
-                                stat = clean_str(r[stat_col]) if stat_col else "PRESENT"
+                                stat = clean_str(r[stat_col]) if stat_col else ""
                                 m_val = str(r[m_col]).strip().upper()
                                 raw_see = None
                                 
                                 if m_val in ['AB', 'ABSENT']:
                                     stat = 'ABSENT'
+                                    raw_see = 0.0
                                 elif m_val in ['MP', 'MAL']:
                                     stat = 'MALPRACTICE'
+                                    raw_see = 0.0
                                 elif m_val in ['WH']:
                                     stat = 'WITHHELD'
+                                    raw_see = 0.0
                                 elif pd.notna(r[m_col]) and m_val != 'NAN' and m_val != '':
                                     try:
                                         raw_see = float(m_val)
+                                        if stat == "": stat = "PRESENT"
                                     except:
                                         raw_see = None
+                                        if stat == "": stat = "PENDING"
+                                else:
+                                    raw_see = None
+                                    if stat == "": stat = "PENDING"
 
                                 records.append({"cycle_id": selected_cycle_id, "usn": usn, "course_code": cc, "see_raw": raw_see, "exam_status": stat})
                             else:
@@ -694,7 +702,7 @@ if show_see:
                 s_usn = st.text_input("USN").strip().upper()
                 s_cc = st.text_input("Course Code").strip().upper()
                 s_marks = st.number_input("SEE Marks (Raw Paper Score)", min_value=0.0, max_value=100.0, value=0.0)
-                s_stat = st.selectbox("Status", ["PRESENT", "ABSENT", "MALPRACTICE", "WITHHELD"])
+                s_stat = st.selectbox("Status", ["PRESENT", "ABSENT", "MALPRACTICE", "WITHHELD", "PENDING"])
                 if st.form_submit_button("Save SEE Mark"):
                     regs = supabase.table("course_registrations").select("*").eq("cycle_id", selected_cycle_id).eq("usn", s_usn).eq("course_code", s_cc).execute().data
                     if not regs:
@@ -703,62 +711,75 @@ if show_see:
                         supabase.table("student_results").upsert({"cycle_id": selected_cycle_id, "usn": s_usn, "course_code": s_cc, "see_raw": s_marks, "exam_status": s_stat}).execute()
                         st.success("✅ Saved to Database.")
 
+
 # ----------------------------------------------------
 # TAB BLOCK: GRADING ENGINE (Used in Reg & Make-up)
 # ----------------------------------------------------
 if show_grading:
     with t4:
         st.subheader("Result & Grading Processor")
-        if st.button("⚙️ Execute Master Grading Algorithm", type="primary"):
-            with st.spinner("Processing ALL records (bypassing 1000 row limit)..."):
-                try:
-                    raw_res = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
-                    if not raw_res:
-                        st.error("No marks found for this cycle.")
-                        st.stop()
-                        
-                    stu_res = fetch_all_records("master_students", "usn, branch_code")
-                    branch_map = {str(r['usn']).strip().upper(): r['branch_code'] for r in stu_res}
-                    
-                    branch_res = supabase.table("master_branches").select("branch_code, program_type").execute()
-                    pg_branches = [r['branch_code'] for r in branch_res.data if str(r['program_type']).upper() == 'PG']
+        
+        col_g1, col_g2 = st.columns([3, 1])
+        with col_g2:
+            if st.button("🧹 Fix Blank SEE Data", help="If blank SEE marks were accidentally treated as 0s, click this to revert them to PENDING."):
+                with st.spinner("Reverting empty 0.0 marks to PENDING..."):
+                    try:
+                        res = supabase.table("student_results").update({"exam_status": "PENDING", "grade": "PND"}).eq("cycle_id", selected_cycle_id).eq("exam_status", "PRESENT").eq("see_raw", 0).execute()
+                        st.success(f"Fixed {len(res.data)} corrupted marks! Now Execute Grading.")
+                    except Exception as e:
+                        st.error(f"Fix failed: {e}")
 
-                    crs_res = fetch_all_records("master_courses", "course_code, credits, max_see, max_cie, total_marks")
-                    credit_map = {r['course_code']: safe_float(r.get('credits'), 4.0) for r in crs_res}
-                    max_see_map = {r['course_code']: safe_float(r.get('max_see'), 50.0) for r in crs_res}
-                    max_cie_map = {r['course_code']: safe_float(r.get('max_cie'), 50.0) for r in crs_res}
-                    paper_max_map = {r['course_code']: safe_float(r.get('total_marks'), 100.0) for r in crs_res}
-                    
-                    updates = []
-                    for row in raw_res:
-                        usn, cc = str(row['usn']).strip().upper(), row['course_code']
-                        cred = credit_map.get(cc, 4.0)
-                        m_see, m_cie, conducted_for = max_see_map.get(cc, 50.0), max_cie_map.get(cc, 50.0), paper_max_map.get(cc, 100.0)
+        with col_g1:
+            if st.button("⚙️ Execute Master Grading Algorithm", type="primary", use_container_width=True):
+                with st.spinner("Processing ALL records (bypassing 1000 row limit)..."):
+                    try:
+                        raw_res = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
+                        if not raw_res:
+                            st.error("No marks found for this cycle.")
+                            st.stop()
+                            
+                        stu_res = fetch_all_records("master_students", "usn, branch_code")
+                        branch_map = {str(r['usn']).strip().upper(): r['branch_code'] for r in stu_res}
                         
-                        is_pg = branch_map.get(usn, "") in pg_branches
-                        status = row.get('exam_status')
+                        branch_res = supabase.table("master_branches").select("branch_code, program_type").execute()
+                        pg_branches = [r['branch_code'] for r in branch_res.data if str(r['program_type']).upper() == 'PG']
+
+                        crs_res = fetch_all_records("master_courses", "course_code, credits, max_see, max_cie, total_marks")
+                        credit_map = {r['course_code']: safe_float(r.get('credits'), 4.0) for r in crs_res}
+                        max_see_map = {r['course_code']: safe_float(r.get('max_see'), 50.0) for r in crs_res}
+                        max_cie_map = {r['course_code']: safe_float(r.get('max_cie'), 50.0) for r in crs_res}
+                        paper_max_map = {r['course_code']: safe_float(r.get('total_marks'), 100.0) for r in crs_res}
                         
-                        scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(row['cie_marks'], row['see_raw'], status, cred, m_cie, m_see, conducted_for, is_pg)
-                        
-                        updates.append({
-                            "cycle_id": selected_cycle_id,
-                            "usn": usn,
-                            "course_code": cc,
-                            "see_scaled": scaled_see,
-                            "total_marks": tot,
-                            "grade": grd,
-                            "grade_points": gp,
-                            "credits_earned": cred if is_pass else 0.0,
-                            "is_pass": is_pass,
-                            "exam_status": healed_status
-                        })
-                        
-                    for i in range(0, len(updates), 500):
-                        supabase.table("student_results").upsert(updates[i:i + 500]).execute()
-                        
-                    st.success(f"✅ Grading calculated for {len(updates)} records successfully!")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                        updates = []
+                        for row in raw_res:
+                            usn, cc = str(row['usn']).strip().upper(), row['course_code']
+                            cred = credit_map.get(cc, 4.0)
+                            m_see, m_cie, conducted_for = max_see_map.get(cc, 50.0), max_cie_map.get(cc, 50.0), paper_max_map.get(cc, 100.0)
+                            
+                            is_pg = branch_map.get(usn, "") in pg_branches
+                            status = row.get('exam_status')
+                            
+                            scaled_see, tot, grd, gp, is_pass, healed_status = apply_grading_rules(row['cie_marks'], row['see_raw'], status, cred, m_cie, m_see, conducted_for, is_pg)
+                            
+                            updates.append({
+                                "cycle_id": selected_cycle_id,
+                                "usn": usn,
+                                "course_code": cc,
+                                "see_scaled": scaled_see,
+                                "total_marks": tot,
+                                "grade": grd,
+                                "grade_points": gp,
+                                "credits_earned": cred if is_pass else 0.0,
+                                "is_pass": is_pass,
+                                "exam_status": healed_status
+                            })
+                            
+                        for i in range(0, len(updates), 500):
+                            supabase.table("student_results").upsert(updates[i:i + 500]).execute()
+                            
+                        st.success(f"✅ Grading calculated for {len(updates)} records successfully!")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
 # ----------------------------------------------------
 # TAB BLOCK: MODERATION & THIRD VALUATION
