@@ -4,6 +4,7 @@ import io
 import math
 import zipfile
 import xlsxwriter
+import re
 from utils import init_db
 
 # --- REPORTLAB IMPORTS FOR PDF GENERATION ---
@@ -79,18 +80,16 @@ def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=5
 
     # 2. Auto-Heal Status (Only if marks > 0. A 0 could be a DB default for missing)
     if not is_internal_only:
-        if pd.notna(see_raw) and see_raw is not None and str(see_raw).strip() != "":
-            if float(see_raw) > 0 and status in ['PENDING', 'PND']:
-                status = 'PRESENT'
+        if safe_float(see_raw, -1.0) > 0 and status in ['PENDING', 'PND']:
+            status = 'PRESENT'
     else:
-        if pd.notna(cie_raw) and cie_raw is not None and str(cie_raw).strip() != "":
-            if float(cie_raw) > 0 and status in ['PENDING', 'PND']:
-                status = 'PRESENT'
+        if safe_float(cie_raw, -1.0) > 0 and status in ['PENDING', 'PND']:
+            status = 'PRESENT'
 
     # 3. Handle Pending / Missing Marks gracefully
     if not is_internal_only:
         if status in ['PENDING', 'PND'] or pd.isna(see_raw) or see_raw is None or str(see_raw).strip() == "":
-            return 0, cie_raw if pd.notna(cie_raw) else 0, 'PND', 0, False, 'PENDING'
+            return 0, safe_float(cie_raw, 0.0), 'PND', 0, False, 'PENDING'
     else:
         if status in ['PENDING', 'PND'] or pd.isna(cie_raw) or cie_raw is None or str(cie_raw).strip() == "":
             return 0, 0, 'PND', 0, False, 'PENDING'
@@ -102,14 +101,14 @@ def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=5
     if status in ['WITHHELD', 'WH']:
         return 0, 0, 'WH', 0, False, 'WITHHELD'
 
-    cie = math.ceil(float(cie_raw)) if pd.notna(cie_raw) else 0.0
-    see_raw = float(see_raw) if pd.notna(see_raw) else 0.0
+    cie = math.ceil(safe_float(cie_raw, 0.0))
+    see_raw_val = safe_float(see_raw, 0.0)
     
     if is_internal_only:
         see_scaled = 0
     else:
         scale_factor = max_see / exam_conducted_for if exam_conducted_for > 0 else 1
-        see_scaled = math.ceil(see_raw * scale_factor)
+        see_scaled = math.ceil(see_raw_val * scale_factor)
 
     total = cie + see_scaled
     is_pass = True
@@ -127,7 +126,7 @@ def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=5
         if cie < min_cie_req:
             is_pass = False
     else:
-        if cie < min_cie_req or see_raw < min_see_raw_req or total < min_total_req:
+        if cie < min_cie_req or see_raw_val < min_see_raw_req or total < min_total_req:
             is_pass = False
 
     if credits == 0:
@@ -270,7 +269,7 @@ def generate_marks_card_pdf(buffer, usn, name, results_list, sgpa, has_pending=F
         pf_color = colors.darkorange
     else:
         pass_fail = "PASS" if all(r['pass'] for r in results_list) else "FAIL"
-        sgpa_str = f"{sgpa:.2f}"
+        sgpa_str = f"{sgpa:.2f}" if sgpa > 0 else "N/A"
         pf_color = colors.red if pass_fail == "FAIL" else colors.green
         
     t_total = Table([[f"SGPA: {sgpa_str}", f"Result: {pass_fail}"]], colWidths=[250, 250])
@@ -461,7 +460,6 @@ if show_cie:
                             if ignored_count > 0:
                                 st.warning(f"⚠️ Blocked {ignored_count} records (Not registered).")
 
-            # --- NEW AUTO-SYNC SECTION FOR ARREARS ---
             st.divider()
             st.subheader("🔄 Auto-Sync Arrear CIEs from Parent Cycle")
             if parent_id:
@@ -1227,7 +1225,7 @@ if show_ledgers:
                         clean_str(r['usn']): {
                             'name': r.get(student_name_col, "Unknown"),
                             'branch': r.get('branch_code', "UNKNOWN"),
-                            'cur_sem': safe_float(r.get(student_sem_col), 0)
+                            'cur_sem': safe_float(r.get(student_sem_col), 1)
                         } for r in stu_res
                     }
                     
@@ -1698,3 +1696,6 @@ if show_reval:
 
                             except Exception as e:
                                 st.error(f"Database Error: {e}")
+```eof
+
+Once you save this file, open your app, navigate to **Tab 4 (Grading Engine)**, and run the Master Grading Algorithm one more time to flush out those incorrect zeros from the database and properly fix your dashboard metrics!
