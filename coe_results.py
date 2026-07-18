@@ -65,28 +65,35 @@ def fetch_all_records(table_name, select_query="*", filters=None):
         start += step
     return all_data
 
-
 # ==========================================
 # 2. UNIVERSAL GRADING ALGORITHM
 # ==========================================
 def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=50, exam_conducted_for=100, is_pg=False):
     is_internal_only = (max_see == 0)
     
+    # 1. Normalize Status (Default to PENDING if empty)
+    if not status or pd.isna(status) or str(status).strip() == "":
+        status = 'PENDING'
+    else:
+        status = str(status).strip().upper()
+
+    # 2. Auto-Heal Status (Only if marks > 0. A 0 could be a DB default for missing)
     if not is_internal_only:
         if pd.notna(see_raw) and see_raw is not None and str(see_raw).strip() != "":
-            if not status or status in ['PENDING', 'PND']:
+            if float(see_raw) > 0 and status in ['PENDING', 'PND']:
                 status = 'PRESENT'
     else:
         if pd.notna(cie_raw) and cie_raw is not None and str(cie_raw).strip() != "":
-            if not status or status in ['PENDING', 'PND']:
+            if float(cie_raw) > 0 and status in ['PENDING', 'PND']:
                 status = 'PRESENT'
 
+    # 3. Handle Pending / Missing Marks gracefully
     if not is_internal_only:
-        if status in ['PENDING', 'PND'] or not status or pd.isna(see_raw) or see_raw is None:
-            return 0, cie_raw, 'PND', 0, False, status
+        if status in ['PENDING', 'PND'] or pd.isna(see_raw) or see_raw is None or str(see_raw).strip() == "":
+            return 0, cie_raw if pd.notna(cie_raw) else 0, 'PND', 0, False, 'PENDING'
     else:
-        if status in ['PENDING', 'PND'] or not status or pd.isna(cie_raw) or cie_raw is None:
-            return 0, cie_raw, 'PND', 0, False, status
+        if status in ['PENDING', 'PND'] or pd.isna(cie_raw) or cie_raw is None or str(cie_raw).strip() == "":
+            return 0, 0, 'PND', 0, False, 'PENDING'
             
     if status in ['ABSENT', 'AB']:
         return 0, 0, 'AB', 0, False, 'ABSENT'
@@ -211,7 +218,6 @@ def vtu_third_val_logic(m1, m2, m3):
         candidates.append(max(m1, m3))
 
     return max(candidates)
-
 
 # ==========================================
 # 3. PDF MARKS CARD & A3 LEDGER GENERATORS
