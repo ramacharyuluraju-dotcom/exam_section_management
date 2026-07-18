@@ -182,18 +182,17 @@ with t2:
 # ----------------------------------------------------
 with t3:
     st.subheader("👤 Student 360° Profile")
-    st.info("Search for a student to view their cumulative performance. Student MUST be registered in the Master list.")
+    st.info("Search for a student to view their cumulative performance presented semester-wise.")
     
     search_usn = st.text_input("🔍 Enter Student USN:").strip().upper()
     
     if search_usn and st.button("Search Student"):
-        with st.spinner("Verifying Master Profile and retrieving dossier..."):
+        with st.spinner("Verifying Master Profile and compiling semester-wise dossier..."):
             
             stu_profile = supabase.table("master_students").select("*").eq("usn", search_usn).execute().data
             
             if not stu_profile:
                 st.error(f"❌ USN '{search_usn}' not found in Master Database.")
-                st.warning("This is a 'Ghost Record'. Please register the student in the Master Setup before viewing analytics.")
             else:
                 profile = stu_profile[0]
                 branch_code = profile.get('branch_code', 'N/A')
@@ -204,13 +203,24 @@ with t3:
                 
                 results_history = supabase.table("student_results").select("*").eq("usn", search_usn).execute().data
                 
-                cycles_map = {c['cycle_id']: c['cycle_name'] for c in fetch_all_records("exam_cycles", "cycle_id, cycle_name")}
-                courses_map = {c['course_code']: c for c in fetch_all_records("master_courses", "course_code, title, credits")}
+                # Fetch Maps
+                cycles_map = {c['cycle_id']: c for c in fetch_all_records("exam_cycles", "cycle_id, cycle_name, exam_type")}
+                audit_history = fetch_all_records("marks_audit_log", "course_code, change_type", filters={"usn": search_usn})
                 
-                # 🟢 THE GLOBAL LATEST ATTEMPT RESOLVER 🟢
-                # Sort strictly by cycle_id to establish the true chronological timeline
+                reval_courses = set([r['course_code'] for r in audit_history if 'REVALUATION' in str(r.get('change_type', '')).upper()])
+                grace_courses = set([r['course_code'] for r in audit_history if 'GRACE' in str(r.get('change_type', '')).upper()])
+                
+                crs_data = fetch_all_records("master_courses", "*")
+                course_sem_col = 'semester'
+                if crs_data:
+                    for k in ['semester', 'sem', 'course_sem', 'current_sem', 'semester_id']:
+                        if k in crs_data[0].keys():
+                            course_sem_col = k
+                            break
+                courses_map = {c['course_code']: c for c in crs_data}
+                
+                # 🟢 CALCULATE CGPA (Using Latest Attempts) 🟢
                 sorted_history = sorted(results_history, key=lambda x: int(x.get('cycle_id', 0)))
-                
                 latest_attempts = {}
                 for r in sorted_history:
                     if r.get('grade') not in ['PND', 'PENDING', None]:
@@ -223,18 +233,15 @@ with t3:
                 for c_code, r in latest_attempts.items():
                     cred = safe_float(courses_map.get(c_code, {}).get('credits', 0))
                     gp = safe_float(r.get('grade_points', 0))
-                    
                     total_credits_attempted += cred
                     total_grade_points_earned += (gp * cred)
-                    
                     if not r.get('is_pass', False):
                         active_backlogs += 1
 
                 cgpa = (total_grade_points_earned / total_credits_attempted) if total_credits_attempted > 0 else 0.0
                 
-                # --- RENDER PROFILE UI ---
+                # --- RENDER PROFILE HEADER ---
                 st.markdown("---")
-                
                 col_img, col_det, col_met = st.columns([1, 2, 1.5])
                 
                 with col_img:
@@ -249,14 +256,13 @@ with t3:
                     st.markdown(f"**USN:** `{search_usn}`")
                     st.markdown(f"**Program:** {prog_type.upper()} | **Branch:** {branch_name}")
                     
-                    # 🟢 THE FIX: Smart USN Parsing & DB Column matching
                     usn_str = profile.get('usn', search_usn)
                     if len(usn_str) >= 5 and usn_str[3:5].isdigit():
                         adm_year = f"20{usn_str[3:5]}" 
                     else:
                         adm_year = "N/A"
                         
-                    curr_sem = profile.get('current_sem', 'N/A')
+                    curr_sem = profile.get('current_semester') or profile.get('semester') or profile.get('sem') or 'N/A'
                     st.markdown(f"**Admission Year:** {adm_year} | **Current Sem:** {curr_sem}")
                     
                     email = profile.get('email')
@@ -268,29 +274,55 @@ with t3:
                     st.metric("Total Credits Attempted", f"{total_credits_attempted}")
                     st.metric("Active Backlogs", f"{active_backlogs}", delta_color="inverse")
 
-                # --- RENDER ACADEMIC HISTORY ---
-                st.markdown("### 📚 Academic History (Cycle-wise Transcript)")
+                # --- RENDER SEMESTER-WISE HISTORY ---
+                st.markdown("### 📚 Semester-wise Academic Transcript")
                 
                 if not results_history:
                     st.info("No exam records found for this student.")
                 else:
                     df_res = pd.DataFrame(results_history)
-                    df_res['Cycle Name'] = df_res['cycle_id'].map(lambda x: cycles_map.get(x, f"Cycle ID: {x}"))
+                    df_res['Cycle Name'] = df_res['cycle_id'].map(lambda x: cycles_map.get(x, {}).get('cycle_name', f"Cycle: {x}"))
+                    df_res['Cycle Type'] = df_res['cycle_id'].map(lambda x: cycles_map.get(x, {}).get('exam_type', 'Regular'))
                     df_res['Subject Title'] = df_res['course_code'].map(lambda x: courses_map.get(x, {}).get('title', 'Unknown Title'))
                     df_res['Credits'] = df_res['course_code'].map(lambda x: safe_float(courses_map.get(x, {}).get('credits', 0)))
+                    df_res['Course Sem'] = df_res['course_code'].map(lambda x: safe_float(courses_map.get(x, {}).get(course_sem_col, 1)))
                     
-                    for cycle_name, group in df_res.groupby('Cycle Name'):
-                        with st.expander(f"📖 {cycle_name} (Evaluated Subjects: {len(group)})"):
+                    # Calculate Max Sem per Cycle to detect Arrears written during Regular cycles
+                    cycle_max_sems = df_res.groupby('cycle_id')['Course Sem'].max().to_dict()
+                    
+                    def determine_attempt_type(row):
+                        c_type = str(row['Cycle Type']).upper()
+                        cc = row['course_code']
+                        
+                        if 'MAKE-UP' in c_type: base = 'Make-up'
+                        elif 'SUPPLEMENTARY' in c_type or 'ARREAR' in c_type: base = 'Arrear'
+                        elif row['Course Sem'] < cycle_max_sems.get(row['cycle_id'], 1): base = 'Arrear'
+                        else: base = 'Regular'
+                        
+                        if cc in reval_courses: base += ' + Reval'
+                        elif cc in grace_courses: base += ' + Graced'
                             
-                            cyc_cr = group['Credits'].sum()
-                            cyc_gp = (group['grade_points'] * group['Credits']).sum()
-                            sgpa = (cyc_gp / cyc_cr) if cyc_cr > 0 else 0.0
+                        return base
+                        
+                    df_res['Attempt Type'] = df_res.apply(determine_attempt_type, axis=1)
+                    
+                    # Group strictly by Course Semester
+                    for sem, group in sorted(df_res.groupby('Course Sem')):
+                        with st.expander(f"🎓 Semester {int(sem)} History", expanded=True):
+                            group = group.sort_values(by='cycle_id')
                             
-                            st.markdown(f"**Cycle SGPA: {sgpa:.2f}**")
+                            # SGPA based on latest cleared attempts for this specific semester
+                            latest_sem_attempts = group.drop_duplicates(subset=['course_code'], keep='last')
+                            sem_cr = latest_sem_attempts['Credits'].sum()
+                            sem_gp = (latest_sem_attempts['grade_points'] * latest_sem_attempts['Credits']).sum()
+                            sem_sgpa = (sem_gp / sem_cr) if sem_cr > 0 else 0.0
                             
-                            display_cols = ['course_code', 'Subject Title', 'Credits', 'cie_marks', 'see_scaled', 'total_marks', 'grade', 'exam_status']
+                            st.markdown(f"**Final Semester SGPA: {sem_sgpa:.2f}** *(Based on latest attempts)*")
+                            
+                            display_cols = ['Cycle Name', 'Attempt Type', 'course_code', 'Subject Title', 'Credits', 'cie_marks', 'see_scaled', 'total_marks', 'grade', 'exam_status']
                             clean_df = group[display_cols].rename(columns={
-                                'course_code': 'Course', 'cie_marks': 'CIE', 'see_scaled': 'SEE', 
+                                'Cycle Name': 'Exam Cycle', 'Attempt Type': 'Attempt', 'course_code': 'Course', 
+                                'Subject Title': 'Title', 'cie_marks': 'CIE', 'see_scaled': 'SEE', 
                                 'total_marks': 'Total', 'grade': 'Grade', 'exam_status': 'Status'
                             })
                             
