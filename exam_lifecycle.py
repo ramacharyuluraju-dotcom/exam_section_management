@@ -111,7 +111,7 @@ with tabs[0]:
                         except Exception as e:
                             st.error(f"Upload failed: {e}")
 
-            # 🟢 THE FIX IS HERE: Changed from < 10 to < 12
+            # Changed from < 10 to < 12
             elif current_status < 12:
                 st.markdown(f"### ✅ Current Phase: {phase_info['name']}")
                 st.info(f"Context: {phase_info['desc']}")
@@ -125,7 +125,7 @@ with tabs[0]:
                         st.rerun()
                 
                 with col_reset:
-                    # 🟢 Undo Button is back and fully functional
+                    # Undo Button is back and fully functional
                     if st.button("⏪ Undo (Back to Previous Step)"):
                         if current_status > 1:
                             supabase.table("exam_cycles").update({"status_code": current_status - 1}).eq("cycle_id", active_cycle_id).execute()
@@ -341,7 +341,7 @@ with tabs[3]:
         ])
         threshold = c_col2.number_input("Set Threshold (e.g., Max Backlogs or Min Credits):", value=4)
 
-        if st.button("🔍 Analyze Eligibility & Promote", type="primary"):
+        if st.button("🔍 Analyze Eligibility (Preview Only)", type="primary"):
             if not target_branches_even:
                 st.error("Please select at least one branch.")
             else:
@@ -353,6 +353,7 @@ with tabs[3]:
                     
                     if not students:
                         st.warning(f"No active {target_prog_even} students found in Semester {current_even_sem} for the selected branches.")
+                        if 'promo_preview' in st.session_state: del st.session_state['promo_preview']
                     else:
                         all_results = fetch_all_records("student_results", "usn, course_code, is_pass, credits_earned, cycle_id")
                         all_results.sort(key=lambda x: int(x.get('cycle_id', 0)))
@@ -390,23 +391,59 @@ with tabs[3]:
                             if is_eligible:
                                 eligible_students.append({**s, "current_sem": current_even_sem + 1})
                             else:
-                                detained_students.append({"USN": usn, "Active Backlogs": active_backlogs, "Credits Earned": total_credits})
+                                detained_students.append({
+                                    "USN": usn, 
+                                    "Name": s.get('full_name', 'Unknown'),
+                                    "Branch": s.get('branch_code', ''),
+                                    "Active Backlogs": active_backlogs, 
+                                    "Credits Earned": total_credits
+                                })
 
-                        if eligible_students:
-                            for i in range(0, len(eligible_students), 1000):
-                                supabase.table("master_students").upsert(eligible_students[i:i+1000]).execute()
-                            st.success(f"✅ {len(eligible_students)} {target_prog_even} students met the criteria and were promoted to Semester {current_even_sem + 1}!")
-                        else:
-                            st.warning("No students met the progression criteria.")
-                            
-                        if detained_students:
-                            st.error(f"🚫 {len(detained_students)} {target_prog_even} students failed to meet the vertical progression criteria and have been detained.")
-                            df_detained = pd.DataFrame(detained_students)
-                            st.dataframe(df_detained, use_container_width=True)
-                            
-                            st.download_button(
-                                label="📥 Download Detained Students CSV",
-                                data=df_detained.to_csv(index=False).encode('utf-8'),
-                                file_name=f"Detained_{target_prog_even}_Students_Sem_{current_even_sem}.csv",
-                                mime="text/csv"
-                            )
+                        # Save results to session state to preview before executing
+                        st.session_state['promo_preview'] = {
+                            "eligible": eligible_students,
+                            "detained": detained_students,
+                            "target_sem": current_even_sem + 1,
+                            "prog": target_prog_even
+                        }
+
+        # --- PREVIEW & CONFIRMATION SECTION ---
+        if 'promo_preview' in st.session_state:
+            preview_data = st.session_state['promo_preview']
+            eligible = preview_data['eligible']
+            detained = preview_data['detained']
+            t_sem = preview_data['target_sem']
+            prog_type = preview_data['prog']
+            
+            st.markdown("---")
+            st.markdown("### 📊 Promotion Eligibility Report")
+            
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("Total Evaluated", len(eligible) + len(detained))
+            mc2.metric("Eligible for Promotion", len(eligible), delta="Cleared", delta_color="normal")
+            mc3.metric("Detained Students", len(detained), delta="Action Required", delta_color="inverse")
+            
+            if detained:
+                st.error(f"🚫 {len(detained)} {prog_type} students failed to meet the vertical progression criteria.")
+                df_detained = pd.DataFrame(detained)
+                st.dataframe(df_detained, use_container_width=True)
+                
+                st.download_button(
+                    label="📥 Download Detained Students CSV",
+                    data=df_detained.to_csv(index=False).encode('utf-8'),
+                    file_name=f"Detained_{prog_type}_Students_Moving_To_Sem_{t_sem}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.success("🎉 All students met the criteria! No one is detained.")
+                
+            if eligible:
+                st.warning("⚠️ Warning: Confirming this action will update the Master Student Database.")
+                if st.button("✅ Confirm & Promote Eligible Students", type="primary"):
+                    with st.spinner("Updating student records..."):
+                        for i in range(0, len(eligible), 1000):
+                            supabase.table("master_students").upsert(eligible[i:i+1000]).execute()
+                        st.success(f"✅ {len(eligible)} {prog_type} students successfully promoted to Semester {t_sem}!")
+                        del st.session_state['promo_preview'] # Clear preview after success
+                        st.rerun()
+```eof
