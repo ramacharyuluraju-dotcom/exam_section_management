@@ -490,23 +490,35 @@ with reg_tabs[1]:
             
             if data:
                 with st.spinner("Processing registrations and validating subjects..."):
-                    # 🟢 FIX 1: Forcibly scrub hidden spaces and make uppercase
+                    valid_courses_db = fetch_all_records("master_courses", "course_code")
+                    
+                    # 🟢 THE SILVER BULLET FIX 🟢
+                    # Creates a dictionary mapping the "Cleaned Code" to the "Exact Messy Database Code"
+                    # If your database accidentally stored "25MMDE206 " (with a space) or "25mmde206" (lowercase), 
+                    # this auto-mapper finds it and translates your CSV silently so the DB accepts it!
+                    db_mapping = {str(c['course_code']).strip().upper(): str(c['course_code']) for c in valid_courses_db}
+                    
+                    uploaded_courses = set()
                     for row in data:
-                        row['course_code'] = str(row['course_code']).strip().upper()
+                        clean_code = str(row['course_code']).strip().upper()
+                        
+                        # Auto-map to the EXACT string the DB is expecting
+                        if clean_code in db_mapping:
+                            row['course_code'] = db_mapping[clean_code]
+                        else:
+                            row['course_code'] = clean_code
+                            
                         row['usn'] = str(row['usn']).strip().upper()
                         row['cycle_id'] = selected_cycle_id
+                        uploaded_courses.add(row['course_code'])
                         
-                    # 🟢 FIX 2: SMART VALIDATION 
-                    # Check if all courses in the CSV actually exist in Master Courses
-                    uploaded_courses = {row['course_code'] for row in data}
-                    valid_courses_db = fetch_all_records("master_courses", "course_code")
-                    valid_courses = {str(c['course_code']).strip().upper() for c in valid_courses_db}
-                    
-                    invalid_courses = uploaded_courses - valid_courses
+                    # 🟢 SMART VALIDATION (Strict Match Mode)
+                    valid_courses_strict = {str(c['course_code']) for c in valid_courses_db}
+                    invalid_courses = uploaded_courses - valid_courses_strict
                     
                     if invalid_courses:
                         st.error("❌ **Upload Failed: Invalid Course Codes Detected!**")
-                        st.warning(f"The following course codes from your CSV are missing from the Master Courses database:\n\n**{', '.join(invalid_courses)}**")
+                        st.warning(f"The following course codes from your CSV are entirely missing from the Master Courses database:\n\n**{', '.join(invalid_courses)}**")
                         st.info("Please fix these typos in your Excel file or add the missing subjects in the Course Master before continuing.")
                     else:
                         try:
@@ -518,7 +530,7 @@ with reg_tabs[1]:
                             for i in range(0, len(data), 500):
                                 supabase.table("course_registrations").insert(data[i:i+500]).execute()
                                 
-                            st.success(f"✅ Successfully registered {len(data)} student-course mappings!")
+                            st.success(f"✅ Successfully registered {len(data)} student-course mappings! Invisible DB spaces were safely bypassed.")
                         except Exception as e: 
                             st.error(f"Registration failed: {e}")
 
