@@ -94,24 +94,42 @@ with tabs[0]:
                 
                 if f_tt:
                     df_tt = pd.read_csv(f_tt)
+                    
+                    # 🟢 FIX: Automatically convert DD/MM/YYYY into YYYY-MM-DD for the database
+                    if 'exam_date' in df_tt.columns:
+                        df_tt['exam_date'] = pd.to_datetime(df_tt['exam_date'], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+                        
                     st.dataframe(df_tt.head(), use_container_width=True)
                     
                     if st.button("🚀 Process & Advance to Step 2"):
                         expected = ['course_code', 'exam_date', 'session']
                         data = clean_data_for_db(df_tt, expected)
                         
-                        for row in data:
-                            row['cycle_id'] = active_cycle_id
+                        # 🟢 FIX: SMART VALIDATION: Check if courses exist in Master
+                        uploaded_courses = {str(row['course_code']).strip().upper() for row in data}
+                        valid_courses_db = fetch_all_records("master_courses", "course_code")
+                        valid_courses = {str(c['course_code']).strip().upper() for c in valid_courses_db}
                         
-                        try:
-                            supabase.table("exam_timetable").upsert(data).execute()
-                            supabase.table("exam_cycles").update({"status_code": 2}).eq("cycle_id", active_cycle_id).execute()
-                            st.success("Timetable Processed! Lifecycle advanced.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Upload failed: {e}")
+                        invalid_courses = uploaded_courses - valid_courses
+                        
+                        if invalid_courses:
+                            st.error("❌ **Upload Failed: Invalid Course Codes Detected!**")
+                            st.warning(f"The following course codes from your CSV are missing from the Master Courses database:\n\n**{', '.join(invalid_courses)}**")
+                            st.info("Please either correct typos in your CSV, or add these missing subjects in the Master Setup module before uploading the timetable.")
+                        else:
+                            for row in data:
+                                row['cycle_id'] = active_cycle_id
+                                # 🟢 FIX: Forcibly remove all hidden spaces before sending to the database!
+                                row['course_code'] = str(row['course_code']).strip().upper()
+                            
+                            try:
+                                supabase.table("exam_timetable").upsert(data).execute()
+                                supabase.table("exam_cycles").update({"status_code": 2}).eq("cycle_id", active_cycle_id).execute()
+                                st.success("Timetable Processed! Lifecycle advanced.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Upload failed: {e}")
 
-            # Changed from < 10 to < 12
             elif current_status < 12:
                 st.markdown(f"### ✅ Current Phase: {phase_info['name']}")
                 st.info(f"Context: {phase_info['desc']}")
@@ -125,7 +143,6 @@ with tabs[0]:
                         st.rerun()
                 
                 with col_reset:
-                    # Undo Button is back and fully functional
                     if st.button("⏪ Undo (Back to Previous Step)"):
                         if current_status > 1:
                             supabase.table("exam_cycles").update({"status_code": current_status - 1}).eq("cycle_id", active_cycle_id).execute()
@@ -136,7 +153,6 @@ with tabs[0]:
                 st.markdown("### 🏁 Lifecycle Completed")
                 st.success("All examinations, result processing, and revaluations for this cycle are concluded.")
                 
-                # Allow Undo even from the final completed state just in case
                 if st.button("⏪ Undo (Re-open Phase 11 Revaluation)"):
                     supabase.table("exam_cycles").update({"status_code": 11}).eq("cycle_id", active_cycle_id).execute()
                     st.rerun()
