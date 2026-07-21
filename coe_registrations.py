@@ -282,7 +282,6 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, form_tit
     _, sig_h = t_sig.wrap(content_w, 50)
     t_sig.drawOn(c, margin, y - sig_h)
 
-
 # --- GLOBAL CONTEXT ---
 selected_cycle_id = st.session_state.get('active_cycle_id')
 if not selected_cycle_id:
@@ -490,18 +489,38 @@ with reg_tabs[1]:
             data = clean_data_for_db(df, ['usn', 'course_code', 'academic_year', 'semester_type', 'semester'])
             
             if data:
-                with st.spinner("Processing registrations..."):
-                    try:
-                        uploaded_usns = list(set([r['usn'] for r in data]))
-                        for i in range(0, len(uploaded_usns), 100):
-                            supabase.table("course_registrations").delete().eq("cycle_id", selected_cycle_id).in_("usn", uploaded_usns[i:i+100]).execute()
+                with st.spinner("Processing registrations and validating subjects..."):
+                    # 🟢 FIX 1: Forcibly scrub hidden spaces and make uppercase
+                    for row in data:
+                        row['course_code'] = str(row['course_code']).strip().upper()
+                        row['usn'] = str(row['usn']).strip().upper()
+                        row['cycle_id'] = selected_cycle_id
                         
-                        for row in data: row['cycle_id'] = selected_cycle_id
-                        for i in range(0, len(data), 500):
-                            supabase.table("course_registrations").insert(data[i:i+500]).execute()
+                    # 🟢 FIX 2: SMART VALIDATION 
+                    # Check if all courses in the CSV actually exist in Master Courses
+                    uploaded_courses = {row['course_code'] for row in data}
+                    valid_courses_db = fetch_all_records("master_courses", "course_code")
+                    valid_courses = {str(c['course_code']).strip().upper() for c in valid_courses_db}
+                    
+                    invalid_courses = uploaded_courses - valid_courses
+                    
+                    if invalid_courses:
+                        st.error("❌ **Upload Failed: Invalid Course Codes Detected!**")
+                        st.warning(f"The following course codes from your CSV are missing from the Master Courses database:\n\n**{', '.join(invalid_courses)}**")
+                        st.info("Please fix these typos in your Excel file or add the missing subjects in the Course Master before continuing.")
+                    else:
+                        try:
+                            # 🟢 Only execute database insertion if validation completely passes
+                            uploaded_usns = list(set([r['usn'] for r in data]))
+                            for i in range(0, len(uploaded_usns), 100):
+                                supabase.table("course_registrations").delete().eq("cycle_id", selected_cycle_id).in_("usn", uploaded_usns[i:i+100]).execute()
                             
-                        st.success(f"✅ Successfully registered {len(data)} student-course mappings!")
-                    except Exception as e: st.error(f"Registration failed: {e}")
+                            for i in range(0, len(data), 500):
+                                supabase.table("course_registrations").insert(data[i:i+500]).execute()
+                                
+                            st.success(f"✅ Successfully registered {len(data)} student-course mappings!")
+                        except Exception as e: 
+                            st.error(f"Registration failed: {e}")
 
 # ==========================================
 # 3. INTERACTIVE INDIVIDUAL MAPPING
