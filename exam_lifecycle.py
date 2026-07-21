@@ -446,4 +446,3 @@ with tabs[3]:
                         st.success(f"✅ {len(eligible)} {prog_type} students successfully promoted to Semester {t_sem}!")
                         del st.session_state['promo_preview'] # Clear preview after success
                         st.rerun()
-```eof
