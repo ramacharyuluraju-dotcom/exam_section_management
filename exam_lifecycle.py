@@ -103,12 +103,24 @@ with tabs[0]:
                     # 🟢 FIX 2: Drop sneaky blank rows created by Excel
                     if 'course_code' in df_tt.columns and 'exam_date' in df_tt.columns:
                         df_tt = df_tt.dropna(subset=['course_code', 'exam_date'])
+                        # 🟢 FIX 3: Drop accidental duplicate subjects in the Excel file itself
+                        df_tt = df_tt.drop_duplicates(subset=['course_code'], keep='first')
                     
-                    # 🟢 FIX 3: Automatically convert DD/MM/YYYY into YYYY-MM-DD for the database
+                    # 🟢 FIX 4: SMART BULLETPROOF DATE PARSING (No more silent drops!)
                     if 'exam_date' in df_tt.columns:
-                        df_tt['exam_date'] = pd.to_datetime(df_tt['exam_date'], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
-                        # Drop any dates that failed to convert to prevent the "null" DB error
-                        df_tt = df_tt.dropna(subset=['exam_date'])
+                        # Parse dates, coercing errors to NaT without forcing an incorrect dayfirst assumption
+                        df_tt['exam_date'] = pd.to_datetime(df_tt['exam_date'], errors='coerce')
+                        
+                        # If parsing failed, STOP and tell the user exactly which ones failed!
+                        failed_mask = df_tt['exam_date'].isna()
+                        if failed_mask.any():
+                            failed_courses = df_tt.loc[failed_mask, 'course_code'].astype(str).tolist()
+                            st.error("❌ **Upload Failed: Unreadable Date Formats!**")
+                            st.warning(f"Excel messed up the date format for these subjects: **{', '.join(failed_courses)}**")
+                            st.info("Please open your CSV in Excel, highlight the Exam Date column, and change the format to standard **YYYY-MM-DD** (e.g., 2026-08-14). Save and re-upload!")
+                            st.stop()
+                            
+                        df_tt['exam_date'] = df_tt['exam_date'].dt.strftime('%Y-%m-%d')
                         
                     st.dataframe(df_tt.head(), use_container_width=True)
                     
@@ -137,14 +149,18 @@ with tabs[0]:
                                     row['course_code'] = str(row['course_code']).strip().upper()
                                 
                                 try:
-                                    supabase.table("exam_timetable").upsert(data).execute()
+                                    # 🟢 THE FIX: Explicitly delete the old timetable for this cycle before saving the new one!
+                                    supabase.table("exam_timetable").delete().eq("cycle_id", active_cycle_id).execute()
+                                    
+                                    # Insert the fresh, clean data
+                                    supabase.table("exam_timetable").insert(data).execute()
+                                    
                                     supabase.table("exam_cycles").update({"status_code": 2}).eq("cycle_id", active_cycle_id).execute()
                                     st.success("Timetable Processed! Lifecycle advanced.")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Upload failed: {e}")
 
-            # Changed from < 10 to < 12
             elif current_status < 12:
                 st.markdown(f"### ✅ Current Phase: {phase_info['name']}")
                 st.info(f"Context: {phase_info['desc']}")
