@@ -577,8 +577,8 @@ def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, tota
         ws_marks.merge_range(7, end_col_idx+3, 8, end_col_idx+3, 'Final SEE Marks (100)', fmt_head)
         
         row_idx = 9
-        for i, s in df.iterrows():
-            ws_marks.write(row_idx, 0, i+1, fmt_locked)
+        for local_idx, (_, s) in enumerate(df.iterrows()):
+            ws_marks.write(row_idx, 0, local_idx+1, fmt_locked)
             ws_marks.write(row_idx, 1, s['Dummy_ID'], fmt_locked) 
             
             if s['Status'] != "PRESENT":
@@ -641,15 +641,15 @@ def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, tota
             ws_print.write(4, c, h, fmt_head)
             
         row_idx = 5
-        for idx, s in df.iterrows():
-            ws_print.write(row_idx, 0, idx+1, fmt_locked)
+        for local_idx, (_, s) in enumerate(df.iterrows()):
+            ws_print.write(row_idx, 0, local_idx+1, fmt_locked)
             ws_print.write(row_idx, 1, s['Dummy_ID'], fmt_locked)
             
             if s['Status'] != "PRESENT":
                 ws_print.write(row_idx, 2, s['Status'], fmt_abs)
                 ws_print.write(row_idx, 3, "-", fmt_locked_gray)
             else:
-                final_marks_cell = xl_rowcol_to_cell(9 + idx, end_col_idx+3) 
+                final_marks_cell = xl_rowcol_to_cell(9 + local_idx, end_col_idx+3) 
                 ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
                 
                 # BULLETPROOF EXCEL FORMULA for Words
@@ -719,8 +719,11 @@ def gen_marks_bundles(df, assets, cycle_name):
                 chunk = group.iloc[i*20 : (i+1)*20].copy()
                 chunk['Dummy_ID'] = generate_dummy_ids(len(chunk))
                 
-                # 🟢 NEW BUNDLE ID: Branch-CourseCode-Sequence (e.g., CS_1AM-1BMATS201-01)
-                b_id = f"{b_group}-{cc}-{str(i+1).zfill(2)}"
+                # 🟢 FIX: Extract the 2-letter dummy prefix for this specific bundle
+                dummy_prefix = chunk['Dummy_ID'].iloc[0][:2]
+                
+                # 🟢 FIX: Inject the dummy prefix into the bundle file name
+                b_id = f"{b_group}-{cc}-{str(i+1).zfill(2)}-{dummy_prefix}"
                 course_name = chunk['Subject Name'].iloc[0] if 'Subject Name' in chunk.columns else cc
                 
                 for _, s in chunk.iterrows():
