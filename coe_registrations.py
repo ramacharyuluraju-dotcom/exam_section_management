@@ -327,12 +327,14 @@ with reg_tabs[0]:
             with st.spinner(f"Fetching cloud assets and compiling batch PDF..."):
                 try:
                     if f_branch == "ALL BRANCHES":
+                        # 🟢 STATUS GUARD: Only fetch ACTIVE students
                         students = fetch_all_records("master_students", "*", {"current_sem": str(f_sem), "status": "ACTIVE"})
                     else:
+                        # 🟢 STATUS GUARD: Only fetch ACTIVE students
                         students = fetch_all_records("master_students", "*", {"branch_code": f_branch, "current_sem": str(f_sem), "status": "ACTIVE"})
                     
                     if not students:
-                        st.warning(f"No students found for this criteria.")
+                        st.warning(f"No active students found for this criteria.")
                     else:
                         branch_courses_dict = {}
                         
@@ -442,6 +444,7 @@ with reg_tabs[1]:
                 st.error("Please upload your Course Syllabus CSV to map the subjects.")
             else:
                 with st.spinner("Building universal template for all students..."):
+                    # 🟢 STATUS GUARD: Only fetch ACTIVE students
                     stu_data = fetch_all_records("master_students", "usn, branch_code", {"current_sem": str(t_sem), "status": "ACTIVE"})
                     
                     df_crs = pd.read_csv(t_csv)
@@ -452,7 +455,7 @@ with reg_tabs[1]:
                     if not stream_col:
                         st.error("Your uploaded CSV must contain a 'Streams' or 'Branch' column!")
                     elif not stu_data:
-                        st.warning(f"No students found in Semester {t_sem}.")
+                        st.warning(f"No active students found in Semester {t_sem}.")
                     else:
                         branch_courses = {}
                         for _, r in df_crs.iterrows():
@@ -492,17 +495,13 @@ with reg_tabs[1]:
                 with st.spinner("Processing registrations and validating subjects..."):
                     valid_courses_db = fetch_all_records("master_courses", "course_code")
                     
-                    # 🟢 THE SILVER BULLET FIX 🟢
                     # Creates a dictionary mapping the "Cleaned Code" to the "Exact Messy Database Code"
-                    # If your database accidentally stored "25MMDE206 " (with a space) or "25mmde206" (lowercase), 
-                    # this auto-mapper finds it and translates your CSV silently so the DB accepts it!
                     db_mapping = {str(c['course_code']).strip().upper(): str(c['course_code']) for c in valid_courses_db}
                     
                     uploaded_courses = set()
                     for row in data:
                         clean_code = str(row['course_code']).strip().upper()
                         
-                        # Auto-map to the EXACT string the DB is expecting
                         if clean_code in db_mapping:
                             row['course_code'] = db_mapping[clean_code]
                         else:
@@ -522,7 +521,6 @@ with reg_tabs[1]:
                         st.info("Please fix these typos in your Excel file or add the missing subjects in the Course Master before continuing.")
                     else:
                         try:
-                            # 🟢 Only execute database insertion if validation completely passes
                             uploaded_usns = list(set([r['usn'] for r in data]))
                             for i in range(0, len(uploaded_usns), 100):
                                 supabase.table("course_registrations").delete().eq("cycle_id", selected_cycle_id).in_("usn", uploaded_usns[i:i+100]).execute()
@@ -550,7 +548,7 @@ with reg_tabs[2]:
     selected_branch = col1.selectbox("1. Select Branch", ["-- Select --"] + branch_list_int, key="int_branch_select")
     
     if selected_branch != "-- Select --":
-        # 🟢 ADDED STATUS GUARDRAIL: Only fetch 'ACTIVE' students
+        # 🟢 STATUS GUARD: Only fetch ACTIVE students
         students_data = fetch_all_records("master_students", "usn, full_name", {"branch_code": selected_branch, "status": "ACTIVE"})
         
         if not students_data: st.warning(f"No active students found in {selected_branch}")
@@ -561,7 +559,6 @@ with reg_tabs[2]:
             if selected_student_label != "-- Select --":
                 selected_usn = student_options[selected_student_label]
                 applicable_courses = [c for c in fetch_all_records("master_courses", "course_code, title, branch_code") if c['branch_code'] in [selected_branch, 'COMMON']]
-                # 🟢 NEW: Sorted mathematically using numeric course sort
                 applicable_courses = sorted(applicable_courses, key=lambda x: course_sort_key(x['course_code']))
                 
                 if not applicable_courses: st.warning("No courses mapped to this branch.")
