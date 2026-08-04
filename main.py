@@ -25,7 +25,7 @@ tabs = st.tabs([
     "🏫 Infrastructure", 
     "👥 Stakeholders", 
     "🎓 Academic Master",
-    "💾 Data Backup" # 🟢 NEW TAB ADDED
+    "💾 Data Backup"
 ])
 
 # ==========================================
@@ -87,7 +87,8 @@ with tabs[1]:
 # ==========================================
 with tabs[2]:
     st.header("Step 2: Stakeholder Master Data")
-    st_tabs = st.tabs(["Students", "Evaluators"])
+    # 🟢 ADDED THE NEW USN MIGRATION TAB HERE
+    st_tabs = st.tabs(["Students", "Evaluators", "🔄 USN Migration Tool"])
     
     with st_tabs[0]:
         st.subheader("Student Database Enrollment")
@@ -127,6 +128,87 @@ with tabs[2]:
                 if st.form_submit_button("Add/Update Faculty"):
                     supabase.table("master_evaluators").upsert({"faculty_id": f_id, "name": f_name, "department": f_dep}).execute()
                     st.success("Saved.")
+
+    # 🟢 THE NEW USN MIGRATION ENGINE
+    with st_tabs[2]:
+        st.subheader("Temp-to-Official USN Migration Tool")
+        st.info("When VTU releases official USNs, upload a CSV mapping the Temporary Admission Numbers to the Official USNs. This tool will instantly migrate their entire academic history across all modules.")
+        
+        with st.expander("View CSV Template Guide"):
+            st.code("temp_usn,official_usn\nTMP-ADM4059,1AM26CS001\nLAT-ADM9021,1AM26CS002")
+            
+        f_mig = st.file_uploader("Upload Migration CSV (temp_usn, official_usn)", type='csv')
+        
+        if f_mig and st.button("🚀 Execute USN Migration", type="primary"):
+            df_mig = pd.read_csv(f_mig)
+            
+            # Normalize column names in case of Excel capitalization
+            df_mig.columns = [str(c).strip().lower() for c in df_mig.columns]
+            
+            if 'temp_usn' not in df_mig.columns or 'official_usn' not in df_mig.columns:
+                st.error("❌ CSV must contain exact headers: 'temp_usn' and 'official_usn'.")
+            else:
+                with st.spinner("Migrating student records across the database..."):
+                    success_count = 0
+                    error_count = 0
+                    error_logs = []
+                    
+                    migrations = df_mig.to_dict('records')
+                    progress_bar = st.progress(0)
+                    
+                    for idx, row in enumerate(migrations):
+                        old_usn = str(row['temp_usn']).strip().upper()
+                        new_usn = str(row['official_usn']).strip().upper()
+                        
+                        try:
+                            # 1. Fetch old student record
+                            old_stu_res = supabase.table("master_students").select("*").eq("usn", old_usn).execute()
+                            
+                            if not old_stu_res.data:
+                                error_count += 1
+                                error_logs.append(f"{old_usn}: Not found in Master Students table.")
+                                continue
+                                
+                            old_stu_data = old_stu_res.data[0]
+                            
+                            # 2. Prepare new student record
+                            new_stu_data = old_stu_data.copy()
+                            new_stu_data['usn'] = new_usn
+                            
+                            # Move the Temp USN into the admission_number column for historical safekeeping!
+                            new_stu_data['admission_number'] = old_usn
+                            
+                            # 3. Insert new student profile (Bypasses FK constraints)
+                            supabase.table("master_students").upsert(new_stu_data).execute()
+                            
+                            # 4. Safely update all related tables to point to the new USN
+                            supabase.table("course_registrations").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            supabase.table("student_results").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            
+                            try:
+                                supabase.table("marks_audit_log").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            except:
+                                pass # In case audit log doesn't have entries for them yet
+                                
+                            # 5. Delete the old temporary student record
+                            supabase.table("master_students").delete().eq("usn", old_usn).execute()
+                            
+                            success_count += 1
+                            
+                        except Exception as e:
+                            error_count += 1
+                            error_logs.append(f"{old_usn} -> {new_usn}: {str(e)}")
+                            
+                        progress_bar.progress((idx + 1) / len(migrations))
+                        
+                    if success_count > 0:
+                        st.success(f"✅ Successfully migrated {success_count} students to their official USNs!")
+                        
+                    if error_count > 0:
+                        st.error(f"⚠️ Failed to migrate {error_count} records.")
+                        with st.expander("View Error Logs"):
+                            for err in error_logs:
+                                st.write(err)
 
 # ==========================================
 # 3. ACADEMIC MASTER (COURSES & BRANCHES)
@@ -286,3 +368,4 @@ with tabs[4]:
             
         except Exception as e:
             status_text.error(f"🚨 Backup generation failed: {e}")
+```eof
