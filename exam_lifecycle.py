@@ -95,23 +95,16 @@ with tabs[0]:
                 if f_tt:
                     df_tt = pd.read_csv(f_tt)
                     
-                    # 🟢 FIX 1: Normalize column names (catch "Date" or "exam date" with spaces)
                     df_tt.columns = [str(c).strip().lower().replace(' ', '_') for c in df_tt.columns]
                     if 'date' in df_tt.columns and 'exam_date' not in df_tt.columns:
                         df_tt.rename(columns={'date': 'exam_date'}, inplace=True)
                         
-                    # 🟢 FIX 2: Drop sneaky blank rows created by Excel
                     if 'course_code' in df_tt.columns and 'exam_date' in df_tt.columns:
                         df_tt = df_tt.dropna(subset=['course_code', 'exam_date'])
-                        # 🟢 FIX 3: Drop accidental duplicate subjects in the Excel file itself
                         df_tt = df_tt.drop_duplicates(subset=['course_code'], keep='first')
                     
-                    # 🟢 FIX 4: SMART BULLETPROOF DATE PARSING (No more silent drops!)
                     if 'exam_date' in df_tt.columns:
-                        # Parse dates, coercing errors to NaT without forcing an incorrect dayfirst assumption
                         df_tt['exam_date'] = pd.to_datetime(df_tt['exam_date'], errors='coerce')
-                        
-                        # If parsing failed, STOP and tell the user exactly which ones failed!
                         failed_mask = df_tt['exam_date'].isna()
                         if failed_mask.any():
                             failed_courses = df_tt.loc[failed_mask, 'course_code'].astype(str).tolist()
@@ -131,7 +124,6 @@ with tabs[0]:
                             expected = ['course_code', 'exam_date', 'session']
                             data = clean_data_for_db(df_tt, expected)
                             
-                            # 🟢 FIX: SMART VALIDATION: Check if courses exist in Master
                             uploaded_courses = {str(row['course_code']).strip().upper() for row in data}
                             valid_courses_db = fetch_all_records("master_courses", "course_code")
                             valid_courses = {str(c['course_code']).strip().upper() for c in valid_courses_db}
@@ -145,16 +137,11 @@ with tabs[0]:
                             else:
                                 for row in data:
                                     row['cycle_id'] = active_cycle_id
-                                    # Forcibly remove all hidden spaces before sending to the database!
                                     row['course_code'] = str(row['course_code']).strip().upper()
                                 
                                 try:
-                                    # 🟢 THE FIX: Explicitly delete the old timetable for this cycle before saving the new one!
                                     supabase.table("exam_timetable").delete().eq("cycle_id", active_cycle_id).execute()
-                                    
-                                    # Insert the fresh, clean data
                                     supabase.table("exam_timetable").insert(data).execute()
-                                    
                                     supabase.table("exam_cycles").update({"status_code": 2}).eq("cycle_id", active_cycle_id).execute()
                                     st.success("Timetable Processed! Lifecycle advanced.")
                                     st.rerun()
@@ -174,7 +161,6 @@ with tabs[0]:
                         st.rerun()
                 
                 with col_reset:
-                    # Undo Button is back and fully functional
                     if st.button("⏪ Undo (Back to Previous Step)"):
                         if current_status > 1:
                             supabase.table("exam_cycles").update({"status_code": current_status - 1}).eq("cycle_id", active_cycle_id).execute()
@@ -185,7 +171,6 @@ with tabs[0]:
                 st.markdown("### 🏁 Lifecycle Completed")
                 st.success("All examinations, result processing, and revaluations for this cycle are concluded.")
                 
-                # Allow Undo even from the final completed state just in case
                 if st.button("⏪ Undo (Re-open Phase 11 Revaluation)"):
                     supabase.table("exam_cycles").update({"status_code": 11}).eq("cycle_id", active_cycle_id).execute()
                     st.rerun()
@@ -352,8 +337,9 @@ with tabs[3]:
                 with st.spinner(f"Updating {target_prog} student records..."):
                     target_sem_str = str(target_sem) 
                     
-                    # 🟢 FIX 1: ONLY FETCH "ACTIVE" STUDENTS FOR PROMOTION
-                    all_sem_students = fetch_all_records("master_students", filters={"current_sem": target_sem_str, "status": "ACTIVE"})
+                    # 🟢 PYTHON GUARDRAIL APPLIED
+                    raw_students = fetch_all_records("master_students", filters={"current_sem": target_sem_str})
+                    all_sem_students = [s for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE']
                     
                     students = [s for s in all_sem_students if s.get('branch_code') in target_branches]
                     
@@ -399,8 +385,9 @@ with tabs[3]:
                 with st.spinner(f"Analyzing {target_prog_even} academic histories..."):
                     current_even_sem_str = str(current_even_sem)
                     
-                    # 🟢 FIX 2: ONLY FETCH "ACTIVE" STUDENTS FOR PROMOTION
-                    all_sem_students = fetch_all_records("master_students", filters={"current_sem": current_even_sem_str, "status": "ACTIVE"})
+                    # 🟢 PYTHON GUARDRAIL APPLIED
+                    raw_students = fetch_all_records("master_students", filters={"current_sem": current_even_sem_str})
+                    all_sem_students = [s for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE']
                     
                     students = [s for s in all_sem_students if s.get('branch_code') in target_branches_even]
                     
@@ -452,7 +439,6 @@ with tabs[3]:
                                     "Credits Earned": total_credits
                                 })
 
-                        # Save results to session state to preview before executing
                         st.session_state['promo_preview'] = {
                             "eligible": eligible_students,
                             "detained": detained_students,
@@ -460,7 +446,6 @@ with tabs[3]:
                             "prog": target_prog_even
                         }
 
-        # --- PREVIEW & CONFIRMATION SECTION ---
         if 'promo_preview' in st.session_state:
             preview_data = st.session_state['promo_preview']
             eligible = preview_data['eligible']
@@ -497,7 +482,5 @@ with tabs[3]:
                         for i in range(0, len(eligible), 1000):
                             supabase.table("master_students").upsert(eligible[i:i+1000]).execute()
                         st.success(f"✅ {len(eligible)} {prog_type} students successfully promoted to Semester {t_sem}!")
-                        del st.session_state['promo_preview'] # Clear preview after success
+                        del st.session_state['promo_preview'] 
                         st.rerun()
-
-Let me know if you would like me to output the full updated code for `student_360.py` next!
