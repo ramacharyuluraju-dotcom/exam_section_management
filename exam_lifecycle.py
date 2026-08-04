@@ -300,17 +300,22 @@ with tabs[2]:
 # 4. SEMESTER PROMOTION ENGINE
 # ==========================================
 with tabs[3]:
-    st.subheader("🎓 Master Semester Promotion")
-    st.info("Promote students to their next semester based on VTU progression rules. The engine evaluates ALL past cycles to determine active backlogs.")
+    st.subheader("🎓 Master Semester Promotion & Graduation")
+    st.info("Promote students, manage vertical progression rules, and finalize graduating classes.")
 
     try:
         all_branches = fetch_all_records("master_branches", "branch_code, program_type")
-        ug_branches = [b['branch_code'] for b in all_branches if b.get('program_type') == 'UG']
-        pg_branches = [b['branch_code'] for b in all_branches if b.get('program_type') == 'PG']
+        
+        # 🟢 FIX: Filter out non-departments from the promotion UI
+        ignore_branches = ['BS', 'HM', 'COMMON', 'FIRST_YEAR', 'MATH', 'ENG', 'PHY', 'CHE', 'GEN']
+        
+        ug_branches = [b['branch_code'] for b in all_branches if b.get('program_type') == 'UG' and str(b['branch_code']).upper() not in ignore_branches]
+        pg_branches = [b['branch_code'] for b in all_branches if b.get('program_type') == 'PG' and str(b['branch_code']).upper() not in ignore_branches]
     except Exception:
         ug_branches, pg_branches = [], []
 
-    promo_tabs = st.tabs(["⏩ Odd to Even Promotion", "🚧 Even to Odd (Vertical Progression)"])
+    # 🟢 NEW: 3 Tabs (Added End of Program Tab)
+    promo_tabs = st.tabs(["⏩ Odd to Even Promotion", "🚧 Even to Odd (Vertical Progression)", "🎓 Graduation & Course Completion"])
 
     # --- ODD TO EVEN PROMOTION ---
     with promo_tabs[0]:
@@ -337,7 +342,6 @@ with tabs[3]:
                 with st.spinner(f"Updating {target_prog} student records..."):
                     target_sem_str = str(target_sem) 
                     
-                    # 🟢 PYTHON GUARDRAIL APPLIED
                     raw_students = fetch_all_records("master_students", filters={"current_sem": target_sem_str})
                     all_sem_students = [s for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE']
                     
@@ -385,7 +389,6 @@ with tabs[3]:
                 with st.spinner(f"Analyzing {target_prog_even} academic histories..."):
                     current_even_sem_str = str(current_even_sem)
                     
-                    # 🟢 PYTHON GUARDRAIL APPLIED
                     raw_students = fetch_all_records("master_students", filters={"current_sem": current_even_sem_str})
                     all_sem_students = [s for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE']
                     
@@ -484,3 +487,80 @@ with tabs[3]:
                         st.success(f"✅ {len(eligible)} {prog_type} students successfully promoted to Semester {t_sem}!")
                         del st.session_state['promo_preview'] 
                         st.rerun()
+
+    # --- 🟢 NEW: GRADUATION / COURSE COMPLETION ---
+    with promo_tabs[2]:
+        st.write("Process students who have completed their final semester. Students with no backlogs become **ALUMNI**, while those with pending arrears become **COURSE_COMPLETED**.")
+        
+        e_col1, e_col2, e_col3 = st.columns(3)
+        e_prog = e_col1.selectbox("Program Type", ["UG", "PG"], key="end_prog")
+        
+        # Default Sem 8 for UG, Sem 4 for PG
+        default_sem = 8 if e_prog == "UG" else 4
+        e_sem = e_col2.number_input("Final Semester", value=default_sem, min_value=2, max_value=10)
+        
+        available_branches_end = ug_branches if e_prog == "UG" else pg_branches
+        e_branches = e_col3.multiselect("Select Branches", options=available_branches_end, default=available_branches_end, key="end_branches")
+        
+        if st.button(f"🎓 Process End-of-Program for {e_prog} Sem {e_sem}", type="primary"):
+            if not e_branches:
+                st.error("Please select at least one branch.")
+            else:
+                with st.spinner("Analyzing academic histories for graduation..."):
+                    
+                    # Fetch ACTIVE students in final semester
+                    raw_students = fetch_all_records("master_students", filters={"current_sem": str(e_sem)})
+                    students = [s for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE' and s.get('branch_code') in e_branches]
+                    
+                    if not students:
+                        st.warning(f"No ACTIVE {e_prog} students found in Semester {e_sem}.")
+                    else:
+                        # Fetch all results to determine ALUMNI vs COURSE_COMPLETED
+                        all_results = fetch_all_records("student_results", "usn, course_code, is_pass, cycle_id")
+                        all_results.sort(key=lambda x: int(x.get('cycle_id', 0)))
+                        
+                        latest_results = {}
+                        for r in all_results:
+                            u, c = r['usn'], r['course_code']
+                            if u not in latest_results: latest_results[u] = {}
+                            latest_results[u][c] = r.get('is_pass', False)
+                        
+                        alumni_payload = []
+                        cc_payload = []
+                        
+                        for s in students:
+                            usn = s['usn']
+                            student_courses = latest_results.get(usn, {})
+                            
+                            # Count subjects that are NOT passed
+                            active_backlogs = sum(1 for passed in student_courses.values() if not passed)
+                            
+                            if active_backlogs == 0 and len(student_courses) > 0:
+                                # Passed everything!
+                                alumni_payload.append({"usn": usn, "status": "ALUMNI"})
+                            else:
+                                # Has backlogs
+                                cc_payload.append({"usn": usn, "status": "COURSE_COMPLETED"})
+                        
+                        # Execute DB updates
+                        update_payload = alumni_payload + cc_payload
+                        for i in range(0, len(update_payload), 1000):
+                            # Updating just the status column for these USNs
+                            # We must include the existing data to satisfy the upsert, 
+                            # so we merge the new status into the student's existing record dict
+                            batch = []
+                            for row in update_payload[i:i+1000]:
+                                target_usn = row['usn']
+                                original_record = next(stu for stu in students if stu['usn'] == target_usn)
+                                original_record['status'] = row['status']
+                                batch.append(original_record)
+                                
+                            supabase.table("master_students").upsert(batch).execute()
+                        
+                        st.success(f"✅ Processed {len(students)} students!")
+                        
+                        if alumni_payload:
+                            st.balloons()
+                            st.success(f"🎓 {len(alumni_payload)} students successfully graduated and became ALUMNI!")
+                        if cc_payload:
+                            st.warning(f"🚧 {len(cc_payload)} students finished classes but have backlogs. Marked as COURSE_COMPLETED.")
