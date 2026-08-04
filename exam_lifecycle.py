@@ -351,7 +351,9 @@ with tabs[3]:
             else:
                 with st.spinner(f"Updating {target_prog} student records..."):
                     target_sem_str = str(target_sem) 
-                    all_sem_students = fetch_all_records("master_students", filters={"current_sem": target_sem_str})
+                    
+                    # 🟢 FIX 1: ONLY FETCH "ACTIVE" STUDENTS FOR PROMOTION
+                    all_sem_students = fetch_all_records("master_students", filters={"current_sem": target_sem_str, "status": "ACTIVE"})
                     
                     students = [s for s in all_sem_students if s.get('branch_code') in target_branches]
                     
@@ -396,7 +398,9 @@ with tabs[3]:
             else:
                 with st.spinner(f"Analyzing {target_prog_even} academic histories..."):
                     current_even_sem_str = str(current_even_sem)
-                    all_sem_students = fetch_all_records("master_students", filters={"current_sem": current_even_sem_str})
+                    
+                    # 🟢 FIX 2: ONLY FETCH "ACTIVE" STUDENTS FOR PROMOTION
+                    all_sem_students = fetch_all_records("master_students", filters={"current_sem": current_even_sem_str, "status": "ACTIVE"})
                     
                     students = [s for s in all_sem_students if s.get('branch_code') in target_branches_even]
                     
@@ -495,3 +499,5 @@ with tabs[3]:
                         st.success(f"✅ {len(eligible)} {prog_type} students successfully promoted to Semester {t_sem}!")
                         del st.session_state['promo_preview'] # Clear preview after success
                         st.rerun()
+
+Let me know if you would like me to output the full updated code for `student_360.py` next!
