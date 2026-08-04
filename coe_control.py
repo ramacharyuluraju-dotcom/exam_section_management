@@ -220,7 +220,6 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     c.drawString(30, y, "Student Details")
     y -= 5
     
-    # 🟢 Custom style to fix the massive font issue in Paragraphs
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.enums import TA_LEFT
     bold_9pt_style = ParagraphStyle('Bold9', fontName='Helvetica-Bold', fontSize=9, alignment=TA_LEFT)
@@ -377,7 +376,7 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
 
 
 def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, assets, cycle_name, photo_bytes_io, timetable_map, eligibility_map, header_branch, branch_name_str):
-    HALF_HEIGHT = 420.94 # Exact half of A4 height (841.89)
+    HALF_HEIGHT = 420.94 
     
     if assets.get("watermark"):
         c.saveState(); c.setFillAlpha(0.08)
@@ -448,7 +447,6 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
     
     valid_subs = [s for s in subjects if eligibility_map.get(s['code'], False)]
     
-    # 🟢 CHANGED THRESHOLD: 10 or more subjects now trigger the side-by-side layout
     if len(valid_subs) >= 10:
         mid = (len(valid_subs) + 1) // 2
         left_subs = valid_subs[:mid]
@@ -498,7 +496,6 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
         tg.drawOn(c, 30, y - gh)
 
     else:
-        # SINGLE TABLE LOGIC (1 to 9 subjects)
         grid_data = [["Date", "Session", "Sem", "Course Code", "Invigilator Sign"]]
         
         for s in valid_subs:
@@ -511,7 +508,6 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
                 grid_data.append(["", "", "", "", ""])
 
         total_rows = len(grid_data)
-        # Optimized stretching for max 9 subjects
         if total_rows <= 8:
             row_h = 18   
         else:
@@ -532,7 +528,6 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
         _, gh = tg.wrap(w, 500)
         tg.drawOn(c, 30, y - gh)
     
-    # 2. PIN THE SIGNATURES TO THE ABSOLUTE BOTTOM OF THE BOUNDING BOX
     footer_y = base_y + 20 
     
     c.setFont("Helvetica", 7)
@@ -542,7 +537,6 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
     c.setFont("Helvetica-Bold", 9)
     sig_w = 80
     
-    # Signatures lines and text
     c.line(40, footer_y + 25, 40 + sig_w, footer_y + 25)
     c.drawCentredString(40 + sig_w/2, footer_y + 15, "Candidate")
     
@@ -552,11 +546,11 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
     c.line(w - 40 - sig_w, footer_y + 25, w - 40, footer_y + 25)
     c.drawCentredString(w - 40 - sig_w/2, footer_y + 15, "Principal")
     
-    # Note at the very bottom
     c.setFont("Helvetica-Oblique", 7)
     c.drawCentredString(w/2, footer_y, "Note: Please verify the eligibility of candidate before issuing the admission ticket.")
     
     return y - 10
+
 # ==========================================
 # 5. APP MAIN LOGIC
 # ==========================================
@@ -595,7 +589,8 @@ with tabs[1]:
             fee_res = supabase.table("master_fees").select("*").execute()
             fees = {f['fee_type']: f['amount'] for f in fee_res.data}
 
-            all_students = fetch_all_records("master_students")
+            # 🟢 GUARDRAIL APPLIED: Only fetch ACTIVE students for bulk document generation
+            all_students = fetch_all_records("master_students", columns="*", filter_col="status", filter_val="ACTIVE")
             
             all_regs = fetch_all_records("course_registrations", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
             
@@ -659,7 +654,6 @@ with tabs[1]:
                     draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                     c.showPage()
                     
-                    # 🟢 Absolute Positioning for Bulk Tickets
                     HALF_A4 = 841.89 / 2
                     draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     
@@ -745,7 +739,6 @@ with tabs[2]:
                     draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                     c.showPage()
                     
-                    # 🟢 Absolute Positioning for Single Ticket
                     HALF_A4 = 841.89 / 2
                     
                     draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
