@@ -22,10 +22,13 @@ def fetch_all_records(table_name, select_query="*", filters=None):
     all_data = []
     start, step = 0, 1000
     while True:
-        query = supabase.table(table_name).select(select_query).range(start, start + step - 1)
+        # 🟢 FIX: Ensure query builder order is correct to prevent Supabase dropping rows
+        query = supabase.table(table_name).select(select_query)
         if filters:
-            for col, val in filters.items(): query = query.eq(col, val)
-        res = query.execute()
+            for col, val in filters.items(): 
+                query = query.eq(col, val)
+        res = query.range(start, start + step - 1).execute()
+        
         if not res.data: break
         all_data.extend(res.data)
         if len(res.data) < step: break
@@ -62,15 +65,19 @@ with t1:
     st.subheader("University Demographics & Exam Status")
     
     with st.spinner("Compiling institutional data..."):
-        # 🟢 FIX: Only count ACTIVE students in the official university headcount
-        students = fetch_all_records("master_students", "usn, branch_code", {"status": "ACTIVE"})
+        # 🟢 PANDAS GUARDRAIL: Fetch all students, then filter locally to bypass Supabase API quirks!
+        raw_students = fetch_all_records("master_students", "usn, branch_code, status")
+        df_st = pd.DataFrame(raw_students)
+        
+        if not df_st.empty:
+            df_st['status'] = df_st['status'].fillna('ACTIVE').astype(str).str.strip().str.upper()
+            df_st = df_st[df_st['status'] == 'ACTIVE'].copy()
+            
         branches = fetch_all_records("master_branches", "branch_code, program_type, branch_name")
         cycles = fetch_all_records("exam_cycles", "cycle_id, cycle_name, is_active, status_code")
         
-        if students and branches:
-            df_st = pd.DataFrame(students)
+        if not df_st.empty and branches:
             df_br = pd.DataFrame(branches)
-            
             df_st = pd.merge(df_st, df_br, on='branch_code', how='left')
             
             total_students = len(df_st)
@@ -132,7 +139,6 @@ with t2:
                     else:
                         df = pd.DataFrame(res_data)
                         
-                        # Note: We fetch ALL students here (no status filter) so historical results still map to branches
                         stu_data = fetch_all_records("master_students", "usn, branch_code")
                         branch_map = {str(r['usn']).strip().upper(): r.get('branch_code') for r in stu_data}
                         df['Branch'] = df['usn'].map(lambda x: branch_map.get(x, '⚠️ GHOST STUDENT'))
@@ -205,7 +211,6 @@ with t3:
                 
                 results_history = supabase.table("student_results").select("*").eq("usn", search_usn).execute().data
                 
-                # Fetch Maps
                 cycles_map = {c['cycle_id']: c for c in fetch_all_records("exam_cycles", "cycle_id, cycle_name, exam_type")}
                 audit_history = fetch_all_records("marks_audit_log", "course_code, change_type", filters={"usn": search_usn})
                 
@@ -221,7 +226,6 @@ with t3:
                             break
                 courses_map = {c['course_code']: c for c in crs_data}
                 
-                # 🟢 CALCULATE CGPA (Using Latest Attempts) 🟢
                 sorted_history = sorted(results_history, key=lambda x: int(x.get('cycle_id', 0)))
                 latest_attempts = {}
                 for r in sorted_history:
@@ -242,7 +246,6 @@ with t3:
 
                 cgpa = (total_grade_points_earned / total_credits_attempted) if total_credits_attempted > 0 else 0.0
                 
-                # --- RENDER PROFILE HEADER ---
                 st.markdown("---")
                 col_img, col_det, col_met = st.columns([1, 2, 1.5])
                 
@@ -256,8 +259,7 @@ with t3:
                 with col_det:
                     st.markdown(f"### 👤 {profile.get('full_name', 'Name Not Provided')}")
                     
-                    # 🟢 NEW STATUS BADGE LOGIC
-                    status = profile.get('status', 'ACTIVE')
+                    status = str(profile.get('status', 'ACTIVE')).strip().upper()
                     if status == 'DETAINED':
                         st.error("⚠️ **STATUS: DETAINED** (Frozen due to attendance/credits)")
                     elif status == 'DISCONTINUED':
@@ -286,7 +288,6 @@ with t3:
                     st.metric("Total Credits Attempted", f"{total_credits_attempted}")
                     st.metric("Active Backlogs", f"{active_backlogs}", delta_color="inverse")
 
-                # --- RENDER SEMESTER-WISE HISTORY ---
                 st.markdown("### 📚 Semester-wise Academic Transcript")
                 
                 if not results_history:
@@ -299,10 +300,7 @@ with t3:
                     df_res['Credits'] = df_res['course_code'].map(lambda x: safe_float(courses_map.get(x, {}).get('credits', 0)))
                     df_res['Course Sem'] = df_res['course_code'].map(lambda x: safe_float(courses_map.get(x, {}).get(course_sem_col, 1)))
                     
-                    # Sort chronologically by cycle to count attempts accurately
                     df_res = df_res.sort_values(by='cycle_id')
-                    
-                    # Count how many times the student has attempted this specific course
                     df_res['Attempt_Count'] = df_res.groupby('course_code').cumcount() + 1
                     
                     def determine_attempt_type(row):
@@ -310,20 +308,11 @@ with t3:
                         cc = row['course_code']
                         attempt = row['Attempt_Count']
                         
-                        # 1. Check for Make-up exams
-                        if 'MAKE-UP' in c_type: 
-                            base = 'Make-up'
-                        # 2. If it's their 2nd (or 3rd+) time taking the exact same subject, it is an Arrear
-                        elif attempt > 1: 
-                            base = 'Arrear'
-                        # 3. Catch strictly supplementary cycles just in case
-                        elif c_type in ['SUPPLEMENTARY', 'SUPPLEMENTARY (ARREAR ONLY)']: 
-                            base = 'Arrear'
-                        # 4. Otherwise, it is their first, regular attempt
-                        else: 
-                            base = 'Regular'
+                        if 'MAKE-UP' in c_type: base = 'Make-up'
+                        elif attempt > 1: base = 'Arrear'
+                        elif c_type in ['SUPPLEMENTARY', 'SUPPLEMENTARY (ARREAR ONLY)']: base = 'Arrear'
+                        else: base = 'Regular'
                         
-                        # Add Revaluation or Grace tags
                         if cc in reval_courses: base += ' + Reval'
                         elif cc in grace_courses: base += ' + Graced'
                             
@@ -331,12 +320,10 @@ with t3:
                         
                     df_res['Attempt Type'] = df_res.apply(determine_attempt_type, axis=1)
                     
-                    # Group strictly by Course Semester
                     for sem, group in sorted(df_res.groupby('Course Sem')):
                         with st.expander(f"🎓 Semester {int(sem)} History", expanded=True):
                             group = group.sort_values(by='cycle_id')
                             
-                            # SGPA based on latest cleared attempts for this specific semester
                             latest_sem_attempts = group.drop_duplicates(subset=['course_code'], keep='last')
                             sem_cr = latest_sem_attempts['Credits'].sum()
                             sem_gp = (latest_sem_attempts['grade_points'] * latest_sem_attempts['Credits']).sum()
