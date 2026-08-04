@@ -6,14 +6,12 @@ import datetime
 from utils import init_db, clean_data_for_db
 
 # --- CONFIGURATION ---
-# Note: st.set_page_config removed because app.py handles it
 supabase = init_db()
 
 st.title("🏛️ Institutional Command Center")
 st.sidebar.markdown("### Permanent Setup Phase")
 
 # --- GLOBAL CONTEXT ---
-# Pulls the active cycle directly from the session state managed by app.py
 active_cycle_id = st.session_state.get('active_cycle_id')
 
 if not active_cycle_id:
@@ -87,8 +85,8 @@ with tabs[1]:
 # ==========================================
 with tabs[2]:
     st.header("Step 2: Stakeholder Master Data")
-    # 🟢 ADDED THE NEW USN MIGRATION TAB HERE
-    st_tabs = st.tabs(["Students", "Evaluators", "🔄 USN Migration Tool"])
+    # 🟢 ADDED THE STATUS MANAGER TAB HERE
+    st_tabs = st.tabs(["Students", "Evaluators", "🔄 USN Migration", "🛑 Status Manager"])
     
     with st_tabs[0]:
         st.subheader("Student Database Enrollment")
@@ -129,10 +127,9 @@ with tabs[2]:
                     supabase.table("master_evaluators").upsert({"faculty_id": f_id, "name": f_name, "department": f_dep}).execute()
                     st.success("Saved.")
 
-    # 🟢 THE NEW USN MIGRATION ENGINE
     with st_tabs[2]:
         st.subheader("Temp-to-Official USN Migration Tool")
-        st.info("When VTU releases official USNs, upload a CSV mapping the Temporary Admission Numbers to the Official USNs. This tool will instantly migrate their entire academic history across all modules.")
+        st.info("When VTU releases official USNs, upload a CSV mapping the Temporary Admission Numbers to the Official USNs.")
         
         with st.expander("View CSV Template Guide"):
             st.code("temp_usn,official_usn\nTMP-ADM4059,1AM26CS001\nLAT-ADM9021,1AM26CS002")
@@ -141,8 +138,6 @@ with tabs[2]:
         
         if f_mig and st.button("🚀 Execute USN Migration", type="primary"):
             df_mig = pd.read_csv(f_mig)
-            
-            # Normalize column names in case of Excel capitalization
             df_mig.columns = [str(c).strip().lower() for c in df_mig.columns]
             
             if 'temp_usn' not in df_mig.columns or 'official_usn' not in df_mig.columns:
@@ -152,7 +147,6 @@ with tabs[2]:
                     success_count = 0
                     error_count = 0
                     error_logs = []
-                    
                     migrations = df_mig.to_dict('records')
                     progress_bar = st.progress(0)
                     
@@ -161,38 +155,25 @@ with tabs[2]:
                         new_usn = str(row['official_usn']).strip().upper()
                         
                         try:
-                            # 1. Fetch old student record
                             old_stu_res = supabase.table("master_students").select("*").eq("usn", old_usn).execute()
-                            
                             if not old_stu_res.data:
                                 error_count += 1
-                                error_logs.append(f"{old_usn}: Not found in Master Students table.")
+                                error_logs.append(f"{old_usn}: Not found.")
                                 continue
                                 
-                            old_stu_data = old_stu_res.data[0]
-                            
-                            # 2. Prepare new student record
-                            new_stu_data = old_stu_data.copy()
+                            new_stu_data = old_stu_res.data[0].copy()
                             new_stu_data['usn'] = new_usn
-                            
-                            # Move the Temp USN into the admission_number column for historical safekeeping!
                             new_stu_data['admission_number'] = old_usn
                             
-                            # 3. Insert new student profile (Bypasses FK constraints)
                             supabase.table("master_students").upsert(new_stu_data).execute()
-                            
-                            # 4. Safely update all related tables to point to the new USN
                             supabase.table("course_registrations").update({"usn": new_usn}).eq("usn", old_usn).execute()
                             supabase.table("student_results").update({"usn": new_usn}).eq("usn", old_usn).execute()
                             
                             try:
                                 supabase.table("marks_audit_log").update({"usn": new_usn}).eq("usn", old_usn).execute()
-                            except:
-                                pass # In case audit log doesn't have entries for them yet
+                            except: pass
                                 
-                            # 5. Delete the old temporary student record
                             supabase.table("master_students").delete().eq("usn", old_usn).execute()
-                            
                             success_count += 1
                             
                         except Exception as e:
@@ -203,12 +184,63 @@ with tabs[2]:
                         
                     if success_count > 0:
                         st.success(f"✅ Successfully migrated {success_count} students to their official USNs!")
-                        
                     if error_count > 0:
                         st.error(f"⚠️ Failed to migrate {error_count} records.")
                         with st.expander("View Error Logs"):
-                            for err in error_logs:
-                                st.write(err)
+                            for err in error_logs: st.write(err)
+
+    # 🟢 THE NEW STATUS MANAGER ENGINE
+    with st_tabs[3]:
+        st.subheader("Student Status Management")
+        st.warning("Marking a student as 'DETAINED' or 'DISCONTINUED' will freeze their profile and prevent them from appearing in future registrations, OMR generation, and seating allotments.")
+        
+        col_m1, col_m2 = st.columns(2)
+        
+        with col_m1:
+            st.markdown("**Single Student Update**")
+            search_usn = st.text_input("Enter USN").strip().upper()
+            
+            if search_usn:
+                # Fetch their current status
+                stu_res = supabase.table("master_students").select("usn, full_name, status").eq("usn", search_usn).execute()
+                
+                if stu_res.data:
+                    student = stu_res.data[0]
+                    current_status = student.get('status', 'ACTIVE')
+                    st.info(f"👤 **{student['full_name']}** | Current Status: **{current_status}**")
+                    
+                    # Form to update status
+                    with st.form("status_update_form"):
+                        new_status = st.selectbox("Update Status To:", ["ACTIVE", "DETAINED", "DISCONTINUED"], index=["ACTIVE", "DETAINED", "DISCONTINUED"].index(current_status))
+                        
+                        if st.form_submit_button("Apply Status Change"):
+                            supabase.table("master_students").update({"status": new_status}).eq("usn", search_usn).execute()
+                            st.success(f"Status for {search_usn} updated to {new_status}!")
+                else:
+                    st.error("Student not found in database.")
+
+        with col_m2:
+            st.markdown("**Bulk Status Update**")
+            st.caption("Upload a CSV to process Detained lists quickly.")
+            with st.expander("View CSV Template Guide"):
+                st.code("usn,status\n1AM24CS001,DETAINED\n1AM24AI015,DISCONTINUED")
+                
+            f_stat = st.file_uploader("Upload Status CSV (usn, status)", type='csv')
+            if f_stat and st.button("Execute Bulk Update"):
+                df_stat = pd.read_csv(f_stat)
+                df_stat.columns = [str(c).strip().lower() for c in df_stat.columns]
+                
+                if 'usn' not in df_stat.columns or 'status' not in df_stat.columns:
+                    st.error("❌ CSV must contain exact headers: 'usn' and 'status'.")
+                else:
+                    with st.spinner("Updating statuses..."):
+                        updates = df_stat.to_dict('records')
+                        for row in updates:
+                            clean_usn = str(row['usn']).strip().upper()
+                            clean_status = str(row['status']).strip().upper()
+                            if clean_status in ["ACTIVE", "DETAINED", "DISCONTINUED"]:
+                                supabase.table("master_students").update({"status": clean_status}).eq("usn", clean_usn).execute()
+                    st.success(f"✅ Successfully processed {len(updates)} status updates.")
 
 # ==========================================
 # 3. ACADEMIC MASTER (COURSES & BRANCHES)
@@ -252,7 +284,6 @@ with tabs[3]:
                     supabase.table("master_courses").upsert(data).execute()
                     st.success("✅ Scheme Updated Successfully.")
                 except Exception as e:
-                    # This will print the exact DB complaint (e.g., missing Foreign Key)
                     st.error(f"🚨 RAW DATABASE ERROR: {e}")
                     
         with c_m2:
@@ -283,9 +314,8 @@ with tabs[3]:
 # ==========================================
 with tabs[4]:
     st.header("Step 4: Master Data Backup Engine")
-    st.info("This utility securely pulls your entire University ERP database (Students, Courses, Registrations, Results, Timetables, and Audit Logs) and packages it into a single, highly compressed ZIP file for offline storage.")
+    st.info("This utility securely pulls your entire University ERP database and packages it into a single, highly compressed ZIP file for offline storage.")
 
-    # Helper function to bypass the 1000-row limit for backups
     def fetch_backup_records(table_name):
         all_data = []
         start = 0
@@ -293,11 +323,9 @@ with tabs[4]:
         while True:
             try:
                 res = supabase.table(table_name).select("*").range(start, start + step - 1).execute()
-                if not res.data:
-                    break
+                if not res.data: break
                 all_data.extend(res.data)
-                if len(res.data) < step:
-                    break
+                if len(res.data) < step: break
                 start += step
             except Exception as e:
                 st.error(f"Error fetching table {table_name}: {e}")
@@ -307,24 +335,14 @@ with tabs[4]:
     st.write("### Prepare Offline Backup")
 
     if st.button("🚀 Generate Master Database Backup", type="primary"):
-        # Define every critical table in your ERP ecosystem
         tables_to_backup = [
-            "master_students", 
-            "master_courses", 
-            "master_branches", 
-            "master_fees",
-            "exam_cycles",
-            "exam_timetable",
-            "course_registrations",
-            "student_results",
-            "marks_audit_log"
+            "master_students", "master_courses", "master_branches", "master_fees",
+            "exam_cycles", "exam_timetable", "course_registrations",
+            "student_results", "marks_audit_log"
         ]
         
-        # Create UI elements for progress tracking
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
-        # Create an in-memory ZIP file buffer
         zip_buffer = io.BytesIO()
         
         try:
@@ -332,31 +350,23 @@ with tabs[4]:
                 total_tables = len(tables_to_backup)
                 
                 for index, table in enumerate(tables_to_backup):
-                    # Update UI
                     status_text.text(f"Extracting {table}... ({index + 1}/{total_tables})")
-                    
-                    # Fetch data
                     data = fetch_backup_records(table)
                     
                     if data:
-                        # Convert to CSV string and write to ZIP
                         df = pd.DataFrame(data)
                         csv_string = df.to_csv(index=False)
                         zf.writestr(f"{table}_backup.csv", csv_string)
                     else:
-                        # Placeholder for empty tables
                         zf.writestr(f"{table}_backup_EMPTY.csv", "No data currently exists in this table.")
                     
-                    # Update progress bar
                     progress_bar.progress((index + 1) / total_tables)
                     
-            # Finalize filename
             timestamp = datetime.datetime.now().strftime("%Y_%m_%d_%H%M")
             zip_filename = f"AMC_ERP_Master_Backup_{timestamp}.zip"
             
             status_text.success("✅ Database compiled successfully! Ready for download.")
             
-            # Display the actual download button
             st.download_button(
                 label="📥 Download Master Backup (ZIP)",
                 data=zip_buffer.getvalue(),
@@ -368,4 +378,3 @@ with tabs[4]:
             
         except Exception as e:
             status_text.error(f"🚨 Backup generation failed: {e}")
-```eof
