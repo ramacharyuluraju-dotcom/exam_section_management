@@ -33,8 +33,6 @@ def clean_data_for_db(df, expected_cols, numeric_cols=None):
 
 # --- MULTI-CYCLE SWITCHBOARD LOGIC ---
 
-# --- MULTI-CYCLE SWITCHBOARD LOGIC ---
-
 def global_cycle_selector(supabase):
     """
     Displays a dropdown in the sidebar to pick the active context.
@@ -43,18 +41,49 @@ def global_cycle_selector(supabase):
     st.sidebar.markdown("---")
     st.sidebar.subheader("🎯 Context Selector")
     
+    # --- 1. Fetch available Academic Years ---
     try:
-        # 🟢 FIX: Added .order("created_at", desc=True) to guarantee the newest cycle is first
+        ay_res = supabase.table("exam_cycles").select("academic_year").execute()
+        unique_ays = sorted(list(set([r['academic_year'] for r in ay_res.data if r.get('academic_year')])), reverse=True)
+        if not unique_ays:
+            unique_ays = ["2025-26"]
+    except Exception:
+        unique_ays = ["2025-26"]
+
+    # AY Widget Callback
+    def update_ay():
+        st.session_state.active_academic_year = st.session_state['ay_selector_widget']
+        # Clear the cycle so it forces a refresh for the new year
+        st.session_state.active_cycle_id = None 
+        st.session_state.active_cycle_name = None
+
+    if 'active_academic_year' not in st.session_state or st.session_state.active_academic_year not in unique_ays:
+        st.session_state.active_academic_year = unique_ays[0]
+
+    default_ay_index = unique_ays.index(st.session_state.active_academic_year)
+
+    st.sidebar.selectbox(
+        "📅 Academic Year", 
+        options=unique_ays, 
+        index=default_ay_index,
+        key="ay_selector_widget",
+        on_change=update_ay
+    )
+
+    # --- 2. Cascading Filter for Exam Cycles ---
+    try:
+        # ONLY fetch cycles for the selected Academic Year
         res = supabase.table("exam_cycles")\
             .select("cycle_id, cycle_name")\
             .eq("is_active", True)\
+            .eq("academic_year", st.session_state.active_academic_year)\
             .order("created_at", desc=True)\
             .execute()
             
         cycles = res.data
         
         if not cycles:
-            st.sidebar.warning("No active cycles available. Create one in Lifecycle Management.")
+            st.sidebar.warning(f"No active cycles found for {st.session_state.active_academic_year}.")
             st.session_state.active_cycle_id = None
             st.session_state.active_cycle_name = None
             return None
@@ -63,8 +92,8 @@ def global_cycle_selector(supabase):
         options = {r['cycle_name']: r['cycle_id'] for r in cycles}
         cycle_labels = list(options.keys())
         
-        # 🟢 AUTO-INITIALIZE: Locks in the LATEST cycle (cycles[0]) if user just logged in
-        if "active_cycle_id" not in st.session_state or not st.session_state.active_cycle_id:
+        # AUTO-INITIALIZE: Locks in the LATEST cycle if none selected, or if user switched Academic Years
+        if "active_cycle_id" not in st.session_state or not st.session_state.active_cycle_id or st.session_state.active_cycle_name not in cycle_labels:
             st.session_state.active_cycle_id = cycles[0]['cycle_id']
             st.session_state.active_cycle_name = cycles[0]['cycle_name']
 
@@ -81,7 +110,7 @@ def global_cycle_selector(supabase):
 
         # The Widget
         st.sidebar.selectbox(
-            "Select Working Cycle:",
+            "📂 Working Cycle",
             options=cycle_labels,
             index=default_index,
             key='cycle_selector_widget',
