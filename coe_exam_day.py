@@ -45,7 +45,6 @@ def load_pdf_assets():
     return assets
 
 def resize_image_for_excel(img_bytes, target_height=50):
-    """Physically resizes the image to a fixed height before giving it to Excel."""
     try:
         with PILImage.open(io.BytesIO(img_bytes)) as img:
             w_percent = (target_height / float(img.size[1]))
@@ -107,14 +106,20 @@ def fetch_exam_data(cycle_id, date_str, session_str):
     usns = df_regs['usn'].unique().tolist()
     start = 0; all_stus = []
     while True:
-        # 🟢 GUARDRAIL APPLIED: Only pull ACTIVE students for the exam seating allotment
-        res = supabase.table("master_students").select("usn, full_name, branch_code").in_("usn", usns).eq("status", "ACTIVE").range(start, start + limit - 1).execute()
+        # 🟢 PANDAS GUARDRAIL: Fetch matching USNs without the Supabase filter to bypass API quirks
+        res = supabase.table("master_students").select("usn, full_name, branch_code, status").in_("usn", usns).range(start, start + limit - 1).execute()
         if not res.data: break
         all_stus.extend(res.data)
         if len(res.data) < limit: break
         start += limit
         
     df_stus = pd.DataFrame(all_stus)
+    if df_stus.empty: return pd.DataFrame()
+    
+    # 🟢 PANDAS GUARDRAIL: Filter Active students locally! This prevents the "No registered active students" bug.
+    df_stus['status'] = df_stus['status'].fillna('ACTIVE').astype(str).str.strip().str.upper()
+    df_stus = df_stus[df_stus['status'] == 'ACTIVE'].copy()
+    
     if df_stus.empty: return pd.DataFrame()
     
     df_stus['Branch'] = df_stus['branch_code']
@@ -133,7 +138,7 @@ def fetch_rooms():
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
 # ==========================================
-# 3. ALLOCATION ENGINE (Anti-Fragmentation & Sequential Fallback)
+# 3. ALLOCATION ENGINE
 # ==========================================
 
 def run_allocation(df_students, df_rooms):
