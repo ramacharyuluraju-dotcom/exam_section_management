@@ -327,9 +327,9 @@ with reg_tabs[0]:
             with st.spinner(f"Fetching cloud assets and compiling batch PDF..."):
                 try:
                     if f_branch == "ALL BRANCHES":
-                        students = fetch_all_records("master_students", "*", {"current_sem": str(f_sem)})
+                        students = fetch_all_records("master_students", "*", {"current_sem": str(f_sem), "status": "ACTIVE"})
                     else:
-                        students = fetch_all_records("master_students", "*", {"branch_code": f_branch, "current_sem": str(f_sem)})
+                        students = fetch_all_records("master_students", "*", {"branch_code": f_branch, "current_sem": str(f_sem), "status": "ACTIVE"})
                     
                     if not students:
                         st.warning(f"No students found for this criteria.")
@@ -442,7 +442,7 @@ with reg_tabs[1]:
                 st.error("Please upload your Course Syllabus CSV to map the subjects.")
             else:
                 with st.spinner("Building universal template for all students..."):
-                    stu_data = fetch_all_records("master_students", "usn, branch_code", {"current_sem": str(t_sem)})
+                    stu_data = fetch_all_records("master_students", "usn, branch_code", {"current_sem": str(t_sem), "status": "ACTIVE"})
                     
                     df_crs = pd.read_csv(t_csv)
                     col_map = {c.strip().upper(): c for c in df_crs.columns}
@@ -550,8 +550,10 @@ with reg_tabs[2]:
     selected_branch = col1.selectbox("1. Select Branch", ["-- Select --"] + branch_list_int, key="int_branch_select")
     
     if selected_branch != "-- Select --":
-        students_data = fetch_all_records("master_students", "usn, full_name", {"branch_code": selected_branch})
-        if not students_data: st.warning(f"No students found in {selected_branch}")
+        # 🟢 ADDED STATUS GUARDRAIL: Only fetch 'ACTIVE' students
+        students_data = fetch_all_records("master_students", "usn, full_name", {"branch_code": selected_branch, "status": "ACTIVE"})
+        
+        if not students_data: st.warning(f"No active students found in {selected_branch}")
         else:
             student_options = {f"{s['usn']} - {s['full_name']}": s['usn'] for s in students_data}
             selected_student_label = col2.selectbox("2. Select Student", ["-- Select --"] + list(student_options.keys()))
@@ -678,7 +680,12 @@ with reg_tabs[5]:
         with st.spinner("Analyzing historical exam data to find active backlogs..."):
             try:
                 branches_res = fetch_all_records("master_branches", "branch_code, program_type")
-                students_res = fetch_all_records("master_students", "usn, branch_code")
+                
+                # 🟢 GUARDRAIL: Fetch all students, but explicitly BLOCK 'DISCONTINUED'
+                # Detained students CAN write arrears, so we purposely leave them in!
+                raw_students = fetch_all_records("master_students", "usn, branch_code, status")
+                students_res = [s for s in raw_students if s.get('status', 'ACTIVE') != 'DISCONTINUED']
+                
                 courses_res = fetch_all_records("master_courses", "course_code, title, semester_id")
                 
                 prog_map = {b['branch_code']: b['program_type'] for b in branches_res}
@@ -740,6 +747,11 @@ with reg_tabs[6]:
                 courses_res = fetch_all_records("master_courses", "course_code, title, semester_id, max_cie")
                 results_res = fetch_all_records("student_results", "usn, course_code, grade, cie_marks, cycle_id")
                 
+                # 🟢 GUARDRAIL: Fetch all students to build a valid USN checklist
+                # Completely block DISCONTINUED students from Make-up exams
+                raw_students = fetch_all_records("master_students", "usn, status")
+                valid_usns = {s['usn'] for s in raw_students if s.get('status', 'ACTIVE') != 'DISCONTINUED'}
+                
                 course_map = {
                     c['course_code']: {
                         "max_cie": safe_float(c.get('max_cie'), 50.0), 
@@ -753,6 +765,11 @@ with reg_tabs[6]:
                 latest_results = {}
                 for r in results_res:
                     usn = r['usn']
+                    
+                    # 🟢 Apply the Guardrail Checklist here
+                    if usn not in valid_usns:
+                        continue
+                        
                     cc = r['course_code']
                     if usn not in latest_results:
                         latest_results[usn] = {}
