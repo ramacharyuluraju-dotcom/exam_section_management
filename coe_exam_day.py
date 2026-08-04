@@ -62,11 +62,9 @@ def resize_image_for_excel(img_bytes, target_height=50):
     except Exception as e:
         return io.BytesIO(img_bytes)
 
-# Keep track of used prefixes so we NEVER get a duplicate
 USED_PREFIXES = set()
 
 def generate_dummy_ids(count):
-    """Generates a sequential series of IDs per bundle with a guaranteed unique prefix."""
     global USED_PREFIXES
     while True:
         prefix = "".join(random.choices(string.ascii_uppercase, k=2))
@@ -109,16 +107,19 @@ def fetch_exam_data(cycle_id, date_str, session_str):
     usns = df_regs['usn'].unique().tolist()
     start = 0; all_stus = []
     while True:
-        res = supabase.table("master_students").select("usn, full_name, branch_code").in_("usn", usns).range(start, start + limit - 1).execute()
+        # 🟢 GUARDRAIL APPLIED: Only pull ACTIVE students for the exam seating allotment
+        res = supabase.table("master_students").select("usn, full_name, branch_code").in_("usn", usns).eq("status", "ACTIVE").range(start, start + limit - 1).execute()
         if not res.data: break
         all_stus.extend(res.data)
         if len(res.data) < limit: break
         start += limit
         
     df_stus = pd.DataFrame(all_stus)
+    if df_stus.empty: return pd.DataFrame()
+    
     df_stus['Branch'] = df_stus['branch_code']
     
-    df_merged = pd.merge(df_regs, df_stus, on='usn', how='left')
+    df_merged = pd.merge(df_regs, df_stus, on='usn', how='inner')
     df_merged.rename(columns={'usn': 'USN', 'full_name': 'Student Name', 'course_code': 'Subject Code'}, inplace=True)
     
     courses_res = supabase.table("master_courses").select("course_code, title").in_("course_code", course_codes).execute()
@@ -136,24 +137,20 @@ def fetch_rooms():
 # ==========================================
 
 def run_allocation(df_students, df_rooms):
-    # 🟢 1. ALIAS MAPPING
     subj_map = {
         '1BKSK109': '1BKSK209', '1BKBK109': '1BKBK209',
         '1BENG106': '1BENG206'
     }
     df_students['AllocCode'] = df_students['Subject Code'].replace(subj_map)
 
-    # 🟢 2. SIZE CALCULATION & SORTING (Largest Branches First)
     branch_counts = df_students.groupby(['AllocCode', 'Branch']).size().to_dict()
     df_students['BranchSize'] = df_students.apply(lambda x: branch_counts[(x['AllocCode'], x['Branch'])], axis=1)
     
-    # Sort: Subject -> BranchSize (Largest to Smallest) -> Branch -> USN
     df_students = df_students.sort_values(['AllocCode', 'BranchSize', 'Branch', 'USN'], ascending=[True, False, True, True])
 
     OMR_SUBJECTS = ['1BKSK209', '1BKBK209', '1BENG206']
     allotment_rows = []
     
-    # 🟢 3. STRICT ROOM SORTING 
     df_rooms = df_rooms.sort_values('room_no')
     rooms_list = df_rooms.to_dict('records')
     room_idx = 0
@@ -168,9 +165,6 @@ def run_allocation(df_students, df_rooms):
 
     current_room_no, current_capacity = get_next_room()
 
-    # ==========================================
-    # PHASE 1: OMR SUBJECTS (Strictly Sequential)
-    # ==========================================
     df_omr = df_students[df_students['AllocCode'].isin(OMR_SUBJECTS)]
     if not df_omr.empty:
         for code in sorted(df_omr['AllocCode'].unique()):
@@ -201,29 +195,21 @@ def run_allocation(df_students, df_rooms):
         if current_seat > 1:
             current_room_no, current_capacity = get_next_room()
 
-    # ==========================================
-    # PHASE 2: REGULAR SUBJECTS (Rock-Solid Zig-Zag)
-    # ==========================================
     df_reg = df_students[~df_students['AllocCode'].isin(OMR_SUBJECTS)]
     if not df_reg.empty:
-        # Load subjects into simple queues
         subj_queues = {}
         for code in df_reg['AllocCode'].unique():
             subj_queues[code] = df_reg[df_reg['AllocCode'] == code].to_dict('records')
 
-        # Get initial subject list sorted by size
         active_subjs = sorted(subj_queues.keys(), key=lambda k: len(subj_queues[k]), reverse=True)
 
         while active_subjs and current_room_no:
             subj_A = active_subjs[0]
             subj_B = active_subjs[1] if len(active_subjs) > 1 else None
 
-            # Fill room seat by seat
             for seat in range(1, current_capacity + 1):
-                # Odd seats = A, Even seats = B
                 target_subj = subj_A if seat % 2 != 0 else (subj_B or subj_A)
 
-                # Fallbacks if a queue is unexpectedly empty
                 if target_subj and not subj_queues[target_subj]:
                     target_subj = subj_B if target_subj == subj_A else subj_A
 
@@ -234,7 +220,6 @@ def run_allocation(df_students, df_rooms):
                     subj_B = active_subjs[1] if len(active_subjs) > 1 else None
                     target_subj = subj_A 
 
-                # Allocate
                 student = subj_queues[target_subj].pop(0)
                 allotment_rows.append({
                     'RoomNo': current_room_no, 'SeatNo': seat,
@@ -243,8 +228,6 @@ def run_allocation(df_students, df_rooms):
                     'Subject Name': student['Subject Name']
                 })
 
-                # If we just emptied a subject, refresh the list immediately 
-                # so the rest of the room picks up the next subject seamlessly
                 if not subj_queues[target_subj]:
                     active_subjs = [s for s in active_subjs if subj_queues[s]]
                     if active_subjs:
@@ -260,7 +243,6 @@ def run_allocation(df_students, df_rooms):
 # ==========================================
 
 def get_header_drawer(assets):
-    """Dynamically injects the official College Logos and Header Text into every PDF page"""
     def draw_header(c, doc):
         c.saveState()
         y_start = A4[1] - 35
@@ -421,7 +403,6 @@ def gen_form_a(df, date, session, assets, cycle_name):
             [Paragraph(f"<b>Date:</b>", meta_style), Paragraph(f"{date}", meta_style), Paragraph(f"<b>Time:</b>", meta_style), Paragraph(f"{session}", meta_style)]
         ]
         
-        # Shrink columns slightly to ensure they fit inside margins safely
         m_table = Table(m_data, colWidths=[1.3*inch, 3.2*inch, 1.2*inch, 1.3*inch])
         m_table.setStyle(TableStyle([
             ('ALIGN', (0,0), (-1,-1), 'LEFT'),
@@ -435,7 +416,6 @@ def gen_form_a(df, date, session, assets, cycle_name):
         absent_usns = group[group['Status'] == 'ABSENT']['USN'].sort_values().tolist()
         malpractice_usns = group[group['Status'] == 'MALPRACTICE']['USN'].sort_values().tolist()
         
-        # 🟢 DYNAMIC CHUNKING LOGIC
         t_data = []
         t_styles = [
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
@@ -448,20 +428,18 @@ def gen_form_a(df, date, session, assets, cycle_name):
         
         def add_section(title, usn_list, total_count):
             nonlocal current_row
-            # 1. Add Header
             t_data.append([Paragraph(f"<b>{title}</b>", th_style), Paragraph("<b>COUNT</b>", th_style)])
             t_styles.append(('BACKGROUND', (0, current_row), (-1, current_row), colors.lightgrey))
             current_row += 1
             
-            # 2. Add Content (Chunked to prevent LayoutError)
             if not usn_list:
                 t_data.append([Paragraph("Nil", td_style_l), Paragraph("0", td_style_c)])
                 current_row += 1
             else:
-                chunk_size = 60 # Safe amount of USNs per row
+                chunk_size = 60 
                 for i in range(0, len(usn_list), chunk_size):
                     chunk = usn_list[i:i+chunk_size]
-                    count_text = str(total_count) if i == 0 else "" # Only show the total count on the first chunk
+                    count_text = str(total_count) if i == 0 else "" 
                     t_data.append([Paragraph(", ".join(chunk), td_style_l), Paragraph(count_text, td_style_c)])
                     current_row += 1
 
@@ -541,7 +519,6 @@ def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, tota
         fmt_footer = wb.add_format({'bold': True, 'font_size': 11, 'valign': 'vcenter'})
         fmt_footer_val = wb.add_format({'bold': True, 'font_size': 11, 'valign': 'vcenter', 'align': 'left', 'font_color': '#0000FF'})
         
-        # Determine Exact Column Bounds
         end_col_idx = 2 + (num_q * 4) 
         col_tot = xl_col_to_name(end_col_idx)
         col_mod = xl_col_to_name(end_col_idx + 1)
@@ -549,9 +526,6 @@ def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, tota
         col_final = xl_col_to_name(end_col_idx + 3)
         last_q_col = xl_col_to_name(end_col_idx - 1)
 
-        # ==========================================
-        # SHEET 1: MARKS ENTRY 
-        # ==========================================
         ws_marks.protect('admin123')
         ws_marks.merge_range(f'A1:{col_final}1', 'AMC Engineering College', fmt_title)
         ws_marks.merge_range(f'A2:{col_final}2', 'AMC Campus Bannerghatta Road, Bengaluru', fmt_sub)
@@ -610,10 +584,9 @@ def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, tota
 
             row_idx += 1
             
-        # 🟢 NEW: Add Evaluator Name Input to Marks Entry
         eval_row = row_idx + 2
         ws_marks.merge_range(eval_row, 0, eval_row, 1, "Evaluator Name:", fmt_head)
-        ws_marks.merge_range(eval_row, 2, eval_row, 5, "", fmt_edit) # Unlocked yellow box
+        ws_marks.merge_range(eval_row, 2, eval_row, 5, "", fmt_edit) 
         eval_input_cell = xl_rowcol_to_cell(eval_row, 2)
             
         ws_marks.set_column('A:A', 8)
@@ -621,9 +594,6 @@ def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, tota
         ws_marks.set_column(f'C:{last_q_col}', 5)
         ws_marks.set_column(f'{col_tot}:{col_final}', 14)
         
-        # ==========================================
-        # SHEET 2: PRINT 
-        # ==========================================
         ws_print.protect('admin123')
         ws_print.set_row(0, 45) 
         
@@ -652,7 +622,6 @@ def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, tota
                 final_marks_cell = xl_rowcol_to_cell(9 + local_idx, end_col_idx+3) 
                 ws_print.write_formula(row_idx, 2, f"='Marks Entry'!{final_marks_cell}", fmt_locked)
                 
-                # BULLETPROOF EXCEL FORMULA for Words
                 c_cell = xl_rowcol_to_cell(row_idx, 2) 
                 ch = 'CHOOSE(MID({},{},1)+1, "Zero","One","Two","Three","Four","Five","Six","Seven","Eight","Nine")'
                 p1 = f'IF(LEN({c_cell})>=1, {ch.format(c_cell, 1)}, "")'
@@ -669,49 +638,36 @@ def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, tota
         ws_print.set_column('C:C', 25)
         ws_print.set_column('D:D', 35)
 
-        # 🟢 NEW: Auto-populate Evaluator Name in Print Sheet
         row_idx += 3
         ws_print.write(row_idx, 1, "Evaluator Name:", fmt_footer)
-        
-        # Link to the Marks Entry sheet (with an IF statement so it doesn't show "0" if empty)
         ws_print.write_formula(row_idx, 2, f'=IF(\'Marks Entry\'!{eval_input_cell}="","",\'Marks Entry\'!{eval_input_cell})', fmt_footer_val)
-        
         ws_print.write(row_idx, 3, "Signature with Date: _________________________", fmt_footer)
 
     return out.getvalue()
 
 def gen_marks_bundles(df, assets, cycle_name):
     global USED_PREFIXES
-    USED_PREFIXES.clear() # Reset prefixes per zip generation
+    USED_PREFIXES.clear() 
     
     zip_buf = io.BytesIO()
     key_log = []
     
-    # 🟢 STRICT COURSE & BRANCH GROUPING (Ignores Rooms)
     def get_bundle_group(row):
         usn = str(row['USN']).strip().upper()
         branch = str(row['Branch']).strip().upper()
         
-        # Split CS branch by college code series
         if branch == 'CS' or 'CS' in usn:
             if usn.startswith('1AX'):
                 return 'CS_1AX'
             else:
                 return 'CS_1AM'
-        
-        # Return standard branch for CI, CV, ME, EE, EC, AE, AI
         return branch 
 
-    # Apply the grouping logic to the dataframe
     df_bundles = df.copy()
     df_bundles['BundleGroup'] = df_bundles.apply(get_bundle_group, axis=1)
     
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        
-        # 🟢 GROUP BY SUBJECT AND BRANCH (Rooms are totally bypassed)
         for (cc, b_group), group in df_bundles.groupby(['Subject Code', 'BundleGroup']):
-            
-            # Sort strictly by USN so evaluators get a perfect sequential stack
             group = group.sort_values('USN').reset_index(drop=True)
             n_chunks = math.ceil(len(group) / 20)
             
@@ -719,17 +675,14 @@ def gen_marks_bundles(df, assets, cycle_name):
                 chunk = group.iloc[i*20 : (i+1)*20].copy()
                 chunk['Dummy_ID'] = generate_dummy_ids(len(chunk))
                 
-                # 🟢 FIX: Extract the 2-letter dummy prefix for this specific bundle
                 dummy_prefix = chunk['Dummy_ID'].iloc[0][:2]
-                
-                # 🟢 FIX: Inject the dummy prefix into the bundle file name
                 b_id = f"{b_group}-{cc}-{str(i+1).zfill(2)}-{dummy_prefix}"
                 course_name = chunk['Subject Name'].iloc[0] if 'Subject Name' in chunk.columns else cc
                 
                 for _, s in chunk.iterrows():
                     key_log.append({
                         'Bundle_ID': b_id, 
-                        'Original_Room': s.get('RoomNo', 'N/A'), # Kept ONLY in the secret key for tracing
+                        'Original_Room': s.get('RoomNo', 'N/A'), 
                         'USN': s['USN'], 
                         'Subject': cc, 
                         'Branch_Group': b_group,
@@ -737,11 +690,9 @@ def gen_marks_bundles(df, assets, cycle_name):
                         'Status': s['Status']
                     })
                 
-                # Generate the locked Excel file
                 excel_bytes = create_locked_bundle(chunk, cc, course_name, b_group, i+1, n_chunks, cycle_name, assets)
                 zf.writestr(f"Bundles/{b_id}.xlsx", excel_bytes)
                 
-        # Generate Master Secret Key
         kdf = pd.DataFrame(key_log)
         out_k = io.BytesIO()
         kdf.to_excel(out_k, index=False)
@@ -757,7 +708,6 @@ if not selected_cycle_id:
     st.warning("⚠️ Please select an Active Exam Cycle in the Sidebar to proceed.")
     st.stop()
 
-# Pre-load Logos from Supabase Storage
 pdf_assets = load_pdf_assets()
 
 st.title("🚀 Live Exam Day Operations")
@@ -774,17 +724,16 @@ selected_slot = st.selectbox("📅 Select Date & Session", sessions, on_change=c
 
 date_str, sess_str = selected_slot.split(" | ")
 
-# PULL REAL DATA FROM DATABASE
 df_stus = fetch_exam_data(selected_cycle_id, date_str, sess_str)
 df_rooms_master = fetch_rooms()
 
 if df_stus.empty:
-    st.error("No students registered for this session.")
+    st.error("No registered active students found for this session.")
 elif df_rooms_master.empty:
     st.error("No rooms defined in Infrastructure master.")
 else:
     total_students = len(df_stus)
-    st.info(f"👨‍🎓 **Total Students to Allocate:** {total_students}")
+    st.info(f"👨‍🎓 **Total Active Students to Allocate:** {total_students}")
 
     st.markdown("---")
     st.subheader("🏢 Select Exam Blocks & Rooms")
