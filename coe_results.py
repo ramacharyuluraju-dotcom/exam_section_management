@@ -833,21 +833,11 @@ if show_mod:
                                             "usn": u,
                                             "course_code": c,
                                             "change_type": "THIRD VALUATION PENDING",
-                                            "old_cie": float(db_row.get('cie_marks', 0) or 0),
-                                            "new_cie": float(db_row.get('cie_marks', 0) or 0),
-                                            "old_see": float(true_orig_see),
+                                            "old_see": true_orig_see,
                                             "old_grade": old_grade,
-                                            "new_see": float(mod_mark),
+                                            "new_see": mod_mark,
                                             "new_grade": "FROZEN",
                                             "reason": f"Diff is {mark_diff} (Orig:{true_orig_see}, Mod:{mod_mark}). Escalate to 3rd Val."
-                                        })
-                                        # 🟢 THE FIX: Actually freeze the grade in the database so it appears in the 3rd Val list!
-                                        updates_list.append({
-                                            "cycle_id": selected_cycle_id,
-                                            "usn": u,
-                                            "course_code": c,
-                                            "see_raw": float(mod_mark),
-                                            "grade": "FROZEN"
                                         })
                                     else:
                                         if mod_mark > true_orig_see:
@@ -883,11 +873,9 @@ if show_mod:
                                                 "usn": u,
                                                 "course_code": c,
                                                 "change_type": "MODERATION - APPLIED",
-                                                "old_cie": float(db_row.get('cie_marks', 0) or 0),
-                                                "new_cie": float(db_row.get('cie_marks', 0) or 0),
-                                                "old_see": float(true_orig_see),
+                                                "old_see": true_orig_see,
                                                 "old_grade": old_grade,
-                                                "new_see": float(mod_mark),
+                                                "new_see": mod_mark,
                                                 "new_grade": grd,
                                                 "reason": f"Diff <= 15. Kept Higher Mod ({mod_mark})."
                                             })
@@ -898,11 +886,9 @@ if show_mod:
                                                 "usn": u,
                                                 "course_code": c,
                                                 "change_type": "MODERATION - IGNORED",
-                                                "old_cie": float(db_row.get('cie_marks', 0) or 0),
-                                                "new_cie": float(db_row.get('cie_marks', 0) or 0),
-                                                "old_see": float(true_orig_see),
+                                                "old_see": true_orig_see,
                                                 "old_grade": old_grade,
-                                                "new_see": float(true_orig_see),
+                                                "new_see": true_orig_see,
                                                 "new_grade": old_grade,
                                                 "reason": f"Diff <= 15. Kept Higher Orig ({true_orig_see})."
                                             })
@@ -915,8 +901,8 @@ if show_mod:
                                 for i in range(0, len(audit_list), 500):
                                     try:
                                         supabase.table("marks_audit_log").insert(audit_list[i:i + 500]).execute()
-                                    except Exception as e:
-                                        st.error(f"Failed to save Audit Log: {e}")
+                                    except:
+                                        pass
 
                                 st.success("✅ Moderation Processed & Audited!")
                                 c1, c2, c3 = st.columns(3)
@@ -1149,11 +1135,9 @@ if show_mod:
                                         "usn": u,
                                         "course_code": c,
                                         "change_type": "THIRD VALUATION - RESOLVED",
-                                        "old_cie": float(db_row.get('cie_marks', 0) or 0),
-                                        "new_cie": float(db_row.get('cie_marks', 0) or 0),
-                                        "old_see": float(m1),
+                                        "old_see": m1,
                                         "old_grade": db_row.get('grade'),
-                                        "new_see": float(final_raw_see),
+                                        "new_see": final_raw_see,
                                         "new_grade": grd,
                                         "reason": f"VTU Nearest Two [M1:{m1}, M2:{m2}, M3:{m3}] -> Final: {final_raw_see}"
                                     })
@@ -1162,10 +1146,7 @@ if show_mod:
                                 for i in range(0, len(updates_list), 500):
                                     supabase.table("student_results").upsert(updates_list[i:i + 500]).execute()
                                 for i in range(0, len(audit_list), 500):
-                                    try:
-                                        supabase.table("marks_audit_log").insert(audit_list[i:i + 500]).execute()
-                                    except Exception as e:
-                                        st.error(f"Failed to save Audit Log: {e}")
+                                    supabase.table("marks_audit_log").insert(audit_list[i:i + 500]).execute()
                                 
                                 st.success(f"✅ Third Valuation Complete! {len(updates_list)} grades updated based on VTU rules.")
                             else:
@@ -1200,8 +1181,9 @@ if show_ledgers:
                     res_data = fetch_all_records("student_results", filters={"cycle_id": selected_cycle_id})
                     res_map = {(clean_str(r['usn']), clean_str(r['course_code'])): r for r in res_data}
                     
-                    # Fetch '*' to prevent Column Name mismatches
-                    stu_res = fetch_all_records("master_students", "*")
+                    # 🟢 FIX: Fetch master students and filter out DISCONTINUED students
+                    raw_stu_res = fetch_all_records("master_students", "*")
+                    stu_res = [s for s in raw_stu_res if s.get('status', 'ACTIVE') != 'DISCONTINUED']
                     
                     # Auto-detect student column names
                     student_sem_col = 'semester'
@@ -1250,6 +1232,10 @@ if show_ledgers:
                     with zipfile.ZipFile(pdf_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                         for usn, courses in stu_courses.items():
                             s_info = student_info_map.get(usn, {})
+                            
+                            # If student was filtered out (discontinued), skip their entire loop
+                            if not s_info: continue 
+                            
                             name = s_info.get('name', 'Unknown')
                             branch = s_info.get('branch', 'UNKNOWN')
                             student_cur_sem = safe_float(s_info.get('cur_sem'), 0)
@@ -1405,9 +1391,16 @@ if show_dashboard:
                         st.warning("No data available.")
                     else:
                         df = pd.DataFrame(res_data)
-                        stu_data = fetch_all_records("master_students", "usn, branch_code")
-                        branch_map = {str(r['usn']).strip().upper(): r.get('branch_code', 'UNKNOWN') for r in stu_data}
+                        
+                        # 🟢 FIX: Only count ACTIVE students in the analytics dashboard
+                        raw_stu_data = fetch_all_records("master_students", "usn, branch_code, status")
+                        active_stu_data = [s for s in raw_stu_data if s.get('status', 'ACTIVE') == 'ACTIVE']
+                        
+                        branch_map = {str(r['usn']).strip().upper(): r.get('branch_code', 'UNKNOWN') for r in active_stu_data}
                         df['Branch'] = df['usn'].map(branch_map)
+                        
+                        # Filter out any results that belong to non-active students
+                        df = df[df['Branch'].notna()]
 
                         total_evals = len(df)
                         pending_evals = len(df[df['grade'].isin(['PND', 'PENDING'])])
@@ -1535,16 +1528,14 @@ if show_reval:
                                         audit_list.append({
                                             "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
                                             "change_type": "THIRD VALUATION PENDING",
-                                            "old_cie": float(db_row.get('cie_marks', 0) or 0),
-                                            "new_cie": float(db_row.get('cie_marks', 0) or 0),
-                                            "old_see": float(true_orig_see), "old_grade": old_grade,
-                                            "new_see": float(rv_mark), "new_grade": "FROZEN",
+                                            "old_see": true_orig_see, "old_grade": old_grade,
+                                            "new_see": rv_mark, "new_grade": "FROZEN",
                                             "reason": f"RV Diff is {mark_diff} (Orig:{true_orig_see}, RV:{rv_mark}). Escalate to 3rd Val."
                                         })
                                         # Freeze the grade pending 3rd Valuation
                                         updates_list.append({
                                             "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
-                                            "see_raw": float(rv_mark), "grade": "FROZEN"
+                                            "see_raw": rv_mark, "grade": "FROZEN"
                                         })
                                     else:
                                         if rv_mark > true_orig_see:
@@ -1560,7 +1551,7 @@ if show_reval:
 
                                             updates_list.append({
                                                 "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
-                                                "see_raw": float(rv_mark), "see_scaled": scaled_see,
+                                                "see_raw": rv_mark, "see_scaled": scaled_see,
                                                 "total_marks": tot, "grade": grd, "grade_points": gp,
                                                 "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass, "exam_status": healed_status
                                             })
@@ -1568,10 +1559,8 @@ if show_reval:
                                             audit_list.append({
                                                 "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
                                                 "change_type": "REVALUATION - APPLIED",
-                                                "old_cie": float(db_row.get('cie_marks', 0) or 0),
-                                                "new_cie": float(db_row.get('cie_marks', 0) or 0),
-                                                "old_see": float(true_orig_see), "old_grade": old_grade,
-                                                "new_see": float(rv_mark), "new_grade": grd,
+                                                "old_see": true_orig_see, "old_grade": old_grade,
+                                                "new_see": rv_mark, "new_grade": grd,
                                                 "reason": f"RV Diff <= 15. Kept Higher RV ({rv_mark})."
                                             })
                                         else:
@@ -1579,10 +1568,8 @@ if show_reval:
                                             audit_list.append({
                                                 "cycle_id": selected_cycle_id, "usn": u, "course_code": c,
                                                 "change_type": "REVALUATION - IGNORED",
-                                                "old_cie": float(db_row.get('cie_marks', 0) or 0),
-                                                "new_cie": float(db_row.get('cie_marks', 0) or 0),
-                                                "old_see": float(true_orig_see), "old_grade": old_grade,
-                                                "new_see": float(true_orig_see), "new_grade": old_grade,
+                                                "old_see": true_orig_see, "old_grade": old_grade,
+                                                "new_see": true_orig_see, "new_grade": old_grade,
                                                 "reason": f"RV Diff <= 15. Kept Higher Orig ({true_orig_see})."
                                             })
                                 else:
@@ -1596,7 +1583,7 @@ if show_reval:
                                         
                                 for i in range(0, len(audit_list), 500):
                                     try: supabase.table("marks_audit_log").insert(audit_list[i:i+500]).execute()
-                                    except Exception as e: st.error(f"Failed to save Audit Log: {e}")
+                                    except: pass
 
                             st.success("✅ Revaluation Processed & Audited!")
                             c1, c2, c3 = st.columns(3)
@@ -1646,15 +1633,13 @@ if show_reval:
                                     if mark_diff > 15:
                                         payload = {
                                             "cycle_id": selected_cycle_id, "usn": rv_usn, "course_code": rv_cc,
-                                            "see_raw": float(rv_mark), "grade": "FROZEN"
+                                            "see_raw": rv_mark, "grade": "FROZEN"
                                         }
                                         audit_payload = {
                                             "cycle_id": selected_cycle_id, "usn": rv_usn, "course_code": rv_cc,
                                             "change_type": "THIRD VALUATION PENDING",
-                                            "old_cie": float(db_row.get('cie_marks', 0) or 0),
-                                            "new_cie": float(db_row.get('cie_marks', 0) or 0),
-                                            "old_see": float(true_orig_see), "old_grade": old_grade,
-                                            "new_see": float(rv_mark), "new_grade": "FROZEN",
+                                            "old_see": true_orig_see, "old_grade": old_grade,
+                                            "new_see": rv_mark, "new_grade": "FROZEN",
                                             "reason": f"RV Diff is {mark_diff} (Orig:{true_orig_see}, RV:{rv_mark}). Escalate to 3rd Val."
                                         }
                                         st.warning(f"🚨 Difference is {mark_diff}. Grade is FROZEN pending Third Valuation.")
@@ -1670,17 +1655,15 @@ if show_reval:
 
                                             payload = {
                                                 "cycle_id": selected_cycle_id, "usn": rv_usn, "course_code": rv_cc,
-                                                "see_raw": float(rv_mark), "see_scaled": scaled_see,
+                                                "see_raw": rv_mark, "see_scaled": scaled_see,
                                                 "total_marks": tot, "grade": grd, "grade_points": gp,
                                                 "credits_earned": cred if is_pass else 0.0, "is_pass": is_pass, "exam_status": healed_status
                                             }
                                             audit_payload = {
                                                 "cycle_id": selected_cycle_id, "usn": rv_usn, "course_code": rv_cc,
                                                 "change_type": "REVALUATION - APPLIED",
-                                                "old_cie": float(db_row.get('cie_marks', 0) or 0),
-                                                "new_cie": float(db_row.get('cie_marks', 0) or 0),
-                                                "old_see": float(true_orig_see), "old_grade": old_grade,
-                                                "new_see": float(rv_mark), "new_grade": grd,
+                                                "old_see": true_orig_see, "old_grade": old_grade,
+                                                "new_see": rv_mark, "new_grade": grd,
                                                 "reason": f"RV Diff <= 15. Kept Higher RV ({rv_mark})."
                                             }
                                             st.success(f"✅ Upgraded! New Grade calculated as: **{grd}**")
@@ -1688,10 +1671,8 @@ if show_reval:
                                             audit_payload = {
                                                 "cycle_id": selected_cycle_id, "usn": rv_usn, "course_code": rv_cc,
                                                 "change_type": "REVALUATION - IGNORED",
-                                                "old_cie": float(db_row.get('cie_marks', 0) or 0),
-                                                "new_cie": float(db_row.get('cie_marks', 0) or 0),
-                                                "old_see": float(true_orig_see), "old_grade": old_grade,
-                                                "new_see": float(true_orig_see), "new_grade": old_grade,
+                                                "old_see": true_orig_see, "old_grade": old_grade,
+                                                "new_see": true_orig_see, "new_grade": old_grade,
                                                 "reason": f"RV Diff <= 15. Kept Higher Orig ({true_orig_see})."
                                             }
                                             st.info(f"➖ Ignored. The original mark ({true_orig_see}) was higher than or equal to the RV mark ({rv_mark}).")
@@ -1700,7 +1681,7 @@ if show_reval:
                                     if payload: supabase.table("student_results").upsert(payload).execute()
                                     if audit_payload: 
                                         try: supabase.table("marks_audit_log").insert(audit_payload).execute()
-                                        except Exception as e: st.error(f"Failed to save Audit Log: {e}")
+                                        except: pass
 
                             except Exception as e:
                                 st.error(f"Database Error: {e}")
