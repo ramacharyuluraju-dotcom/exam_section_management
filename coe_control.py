@@ -47,7 +47,6 @@ def generate_app_id(usn, cycle_id):
     return f"AMC-26-{h}"
 
 def get_sem_num(sem_val):
-    """Safely extracts the numeric semester value to evaluate Regular vs Arrear"""
     try:
         return int(re.search(r'\d+', str(sem_val)).group())
     except:
@@ -589,8 +588,9 @@ with tabs[1]:
             fee_res = supabase.table("master_fees").select("*").execute()
             fees = {f['fee_type']: f['amount'] for f in fee_res.data}
 
-            # 🟢 GUARDRAIL APPLIED: Only fetch ACTIVE students for bulk document generation
-            all_students = fetch_all_records("master_students", columns="*", filter_col="status", filter_val="ACTIVE")
+            # 🟢 PYTHON GUARDRAIL APPLIED
+            raw_students = fetch_all_records("master_students", columns="*")
+            all_students = [s for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE']
             
             all_regs = fetch_all_records("course_registrations", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
             
