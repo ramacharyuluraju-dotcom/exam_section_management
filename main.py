@@ -85,7 +85,6 @@ with tabs[1]:
 # ==========================================
 with tabs[2]:
     st.header("Step 2: Stakeholder Master Data")
-    # 🟢 ADDED THE STATUS MANAGER TAB HERE
     st_tabs = st.tabs(["Students", "Evaluators", "🔄 USN Migration", "🛑 Status Manager"])
     
     with st_tabs[0]:
@@ -206,12 +205,21 @@ with tabs[2]:
                 
                 if stu_res.data:
                     student = stu_res.data[0]
-                    current_status = student.get('status', 'ACTIVE')
+                    
+                    # 🟢 FIX: Handle NULL or empty statuses safely from existing database records
+                    raw_status = student.get('status')
+                    current_status = str(raw_status).strip().upper() if raw_status else "ACTIVE"
+                    
+                    # Double-check safety fallback
+                    if current_status not in ["ACTIVE", "DETAINED", "DISCONTINUED"]:
+                        current_status = "ACTIVE"
+                        
                     st.info(f"👤 **{student['full_name']}** | Current Status: **{current_status}**")
                     
                     # Form to update status
                     with st.form("status_update_form"):
-                        new_status = st.selectbox("Update Status To:", ["ACTIVE", "DETAINED", "DISCONTINUED"], index=["ACTIVE", "DETAINED", "DISCONTINUED"].index(current_status))
+                        valid_options = ["ACTIVE", "DETAINED", "DISCONTINUED"]
+                        new_status = st.selectbox("Update Status To:", valid_options, index=valid_options.index(current_status))
                         
                         if st.form_submit_button("Apply Status Change"):
                             supabase.table("master_students").update({"status": new_status}).eq("usn", search_usn).execute()
