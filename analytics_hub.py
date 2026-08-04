@@ -62,7 +62,8 @@ with t1:
     st.subheader("University Demographics & Exam Status")
     
     with st.spinner("Compiling institutional data..."):
-        students = fetch_all_records("master_students", "usn, branch_code")
+        # 🟢 FIX: Only count ACTIVE students in the official university headcount
+        students = fetch_all_records("master_students", "usn, branch_code", {"status": "ACTIVE"})
         branches = fetch_all_records("master_branches", "branch_code, program_type, branch_name")
         cycles = fetch_all_records("exam_cycles", "cycle_id, cycle_name, is_active, status_code")
         
@@ -131,6 +132,7 @@ with t2:
                     else:
                         df = pd.DataFrame(res_data)
                         
+                        # Note: We fetch ALL students here (no status filter) so historical results still map to branches
                         stu_data = fetch_all_records("master_students", "usn, branch_code")
                         branch_map = {str(r['usn']).strip().upper(): r.get('branch_code') for r in stu_data}
                         df['Branch'] = df['usn'].map(lambda x: branch_map.get(x, '⚠️ GHOST STUDENT'))
@@ -253,6 +255,16 @@ with t3:
                 
                 with col_det:
                     st.markdown(f"### 👤 {profile.get('full_name', 'Name Not Provided')}")
+                    
+                    # 🟢 NEW STATUS BADGE LOGIC
+                    status = profile.get('status', 'ACTIVE')
+                    if status == 'DETAINED':
+                        st.error("⚠️ **STATUS: DETAINED** (Frozen due to attendance/credits)")
+                    elif status == 'DISCONTINUED':
+                        st.error("🛑 **STATUS: DISCONTINUED** (Left the institution)")
+                    else:
+                        st.success("✅ **STATUS: ACTIVE**")
+                        
                     st.markdown(f"**USN:** `{search_usn}`")
                     st.markdown(f"**Program:** {prog_type.upper()} | **Branch:** {branch_name}")
                     
@@ -287,7 +299,6 @@ with t3:
                     df_res['Credits'] = df_res['course_code'].map(lambda x: safe_float(courses_map.get(x, {}).get('credits', 0)))
                     df_res['Course Sem'] = df_res['course_code'].map(lambda x: safe_float(courses_map.get(x, {}).get(course_sem_col, 1)))
                     
-                    # 🟢 THE FIX: Determine attempt based on chronological history
                     # Sort chronologically by cycle to count attempts accurately
                     df_res = df_res.sort_values(by='cycle_id')
                     
