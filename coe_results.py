@@ -1289,8 +1289,13 @@ if show_ledgers:
                                 for cc in bucket_courses:
                                     mc = crs_map.get(cc, {})
                                     cr = safe_float(mc.get('credits'), 0.0)
-                                    c_max = safe_float(mc.get('total_marks'), 100.0)
-                                    is_internal_only = (safe_float(mc.get('max_see'), 50.0) == 0.0)
+                                    m_cie = safe_float(mc.get('max_cie'), 50.0)
+                                    m_see = safe_float(mc.get('max_see'), 50.0)
+                                    
+                                    # Use true max score (CIE+SEE) instead of total_marks hack to fix OMR percentages
+                                    c_max = m_cie + m_see 
+                                    is_internal_only = (m_see == 0.0)
+                                    
                                     r = res_map.get((usn, cc))
                                     
                                     see_missing = not r or pd.isna(r.get('see_raw')) or r.get('see_raw') is None if not is_internal_only else False
@@ -1315,8 +1320,11 @@ if show_ledgers:
                                         
                                         total_cr_attempted += cr
                                         total_gp_earned += (r.get('grade_points', 0) * cr)
-                                        grand_tot += safe_float(tot_val, 0)
-                                        max_tot += c_max
+                                        
+                                        # VTU RULE: Only add to Grand Total & Percentage if the course has > 0 credits
+                                        if cr > 0:
+                                            grand_tot += safe_float(tot_val, 0)
+                                            max_tot += c_max
                                         
                                         if r.get('is_pass', False): total_cred_earned += cr
                                         else: pass_flag = False
