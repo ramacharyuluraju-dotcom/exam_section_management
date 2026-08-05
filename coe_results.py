@@ -153,8 +153,8 @@ def apply_grading_rules(cie_raw, see_raw, status, credits, max_cie=50, max_see=5
         elif pct >= 0.80: return see_scaled, total, 'A+', 9, True, status
         elif pct >= 0.70: return see_scaled, total, 'A', 8, True, status
         elif pct >= 0.60: return see_scaled, total, 'B+', 7, True, status
-        elif pct >= 0.50: return see_scaled, total, 'B', 6, True, status
-        elif pct >= 0.45: return see_scaled, total, 'C', 5, True, status
+        elif pct >= 0.55: return see_scaled, total, 'B', 6, True, status
+        elif pct >= 0.50: return see_scaled, total, 'C', 5, True, status
         elif pct >= 0.40: return see_scaled, total, 'P', 4, True, status
         else: return see_scaled, total, 'F', 0, False, status
 
