@@ -1400,14 +1400,18 @@ if show_dashboard:
                     else:
                         df = pd.DataFrame(res_data)
                         
-                        # 🟢 FIX: Only count ACTIVE students in the analytics dashboard
+                        # 🟢 FIX 1: Safely fetch students and ignore DISCONTINUED
                         raw_stu_data = fetch_all_records("master_students", "usn, branch_code, status")
-                        active_stu_data = [s for s in raw_stu_data if s.get('status', 'ACTIVE') == 'ACTIVE']
+                        active_stu_data = [s for s in raw_stu_data if str(s.get('status', 'ACTIVE')).strip().upper() != 'DISCONTINUED']
                         
+                        # 🟢 FIX 2: Create a bulletproof dictionary with clean uppercase USNs
                         branch_map = {str(r['usn']).strip().upper(): r.get('branch_code', 'UNKNOWN') for r in active_stu_data}
-                        df['Branch'] = df['usn'].map(branch_map)
                         
-                        # Filter out any results that belong to non-active students
+                        # 🟢 FIX 3: Clean the results dataframe USNs before mapping to prevent 'NaN' ghosting
+                        df['clean_usn'] = df['usn'].astype(str).str.strip().str.upper()
+                        df['Branch'] = df['clean_usn'].map(branch_map)
+                        
+                        # Filter out any results that belong to non-active/discontinued students
                         df = df[df['Branch'].notna()]
 
                         total_evals = len(df)
