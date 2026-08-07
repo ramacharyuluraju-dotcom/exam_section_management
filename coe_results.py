@@ -1414,8 +1414,11 @@ if show_dashboard:
                         # Filter out any results that belong to non-active/discontinued students
                         df = df[df['Branch'].notna()]
 
+                        # 🟢 NEW ROBUST MASK: Catches 'PND' grades OR completely blank/null SEE marks
+                        pending_mask = df['grade'].isin(['PND', 'PENDING', '', None]) | df['see_raw'].isna() | (df['see_raw'].astype(str).str.strip() == '')
+
                         total_evals = len(df)
-                        pending_evals = len(df[df['grade'].isin(['PND', 'PENDING'])])
+                        pending_evals = len(df[pending_mask])
                         failed_evals = len(df[df['grade'].isin(['F', 'AB', 'NP', 'MP', 'WH'])])
                         passed_evals = total_evals - pending_evals - failed_evals
                         completed_evals = total_evals - pending_evals
@@ -1431,11 +1434,11 @@ if show_dashboard:
                         chart_col1, chart_col2 = st.columns(2)
                         with chart_col1:
                             st.markdown("##### 📈 Grade Distribution")
-                            df_graded = df[~df['grade'].isin(['PND', 'PENDING'])]
+                            df_graded = df[~pending_mask]
                             if not df_graded.empty:
                                 grade_counts = df_graded['grade'].value_counts().reset_index()
                                 grade_counts.columns = ['Grade', 'Count']
-                                grade_order = ['O', 'A+', 'A', 'B+', 'B', 'C', 'P', 'F', 'AB', 'MP']
+                                grade_order = ['O', 'A+', 'A', 'B+', 'B', 'C', 'P', 'F', 'AB', 'MP', 'NP']
                                 grade_counts['Grade'] = pd.Categorical(grade_counts['Grade'], categories=grade_order, ordered=True)
                                 st.bar_chart(grade_counts.sort_values('Grade').set_index('Grade')['Count'], color="#4CAF50")
 
@@ -1450,11 +1453,37 @@ if show_dashboard:
                                 st.bar_chart(pd.DataFrame(branch_stats).set_index('Branch')['Pass Rate %'], color="#2196F3")
 
                         st.markdown("---")
-                        st.subheader("⚠️ Actionable Alerts")
-                        pending_df = df[df['grade'].isin(['PND', 'PENDING'])]
+                        st.subheader("⚠️ Actionable Alerts (Missing Marks)")
+                        
+                        # 🟢 DETAILED TABLE FOR MISSING MARKS
+                        pending_df = df[pending_mask].copy()
+                        
                         if not pending_df.empty:
-                            for course, count in pending_df['course_code'].value_counts().items():
-                                st.error(f"Missing SEE Marks for **{count}** students in subject **{course}**.")
+                            st.error(f"Found {pending_evals} evaluations missing SEE marks.")
+                            
+                            # Format the table nicely for the UI
+                            display_df = pending_df[['usn', 'course_code', 'cie_marks', 'see_raw']].copy()
+                            display_df.rename(columns={
+                                'usn': 'USN', 
+                                'course_code': 'Course Code', 
+                                'cie_marks': 'CIE Marks', 
+                                'see_raw': 'SEE Marks'
+                            }, inplace=True)
+                            
+                            display_df = display_df.sort_values(by=['Course Code', 'USN'])
+                            
+                            # Show the interactive table
+                            st.dataframe(display_df, use_container_width=True, hide_index=True)
+                            
+                            # Add a Download CSV button
+                            csv = display_df.to_csv(index=False).encode('utf-8')
+                            st.download_button(
+                                label="📥 Download Pending List (CSV)",
+                                data=csv,
+                                file_name=f"Missing_SEE_Marks_Cycle_{selected_cycle_id}.csv",
+                                mime="text/csv",
+                                type="primary"
+                            )
                         else:
                             st.success("🎉 All clear! All evaluated subjects have full marks uploaded.")
                 except Exception as e:
