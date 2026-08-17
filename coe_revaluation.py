@@ -7,7 +7,7 @@ from utils import init_db, clean_data_for_db
 # --- CONFIGURATION ---
 supabase = init_db()
 
-st.title("⚖️ Revaluation & Make-up Engine")
+st.title("⚖️ Revaluation Engine")
 st.markdown("#### 🏢 Favorable-Rule Processing & Auditing")
 
 # --- GLOBAL CONTEXT ---
@@ -21,12 +21,15 @@ if not active_cycle_id:
 st.info(f"🔵 Currently processing Revaluations for Cycle: **{active_cycle_name}**")
 
 # --- HELPER FUNCTIONS ---
-def get_vtu_grade(total_marks, cie_marks, see_scaled, is_absent=False):
-    """Calculates VTU standard grade, ensuring minimum passing thresholds are met."""
+def get_vtu_grade(total_marks, cie_marks, see_scaled, program_type='UG', is_absent=False):
+    """Calculates VTU standard grade, dynamically applying UG or PG minimums."""
     if is_absent: return 'AB', False
     
-    # Passing minimums: SEE >= 18/50 (approx 35%), Total >= 40
-    if see_scaled < 18 or total_marks < 40:
+    # Passing minimums: PG (SEE >= 20, Total >= 50) | UG (SEE >= 18, Total >= 40)
+    min_see = 20 if program_type == 'PG' else 18
+    min_total = 50 if program_type == 'PG' else 40
+    
+    if see_scaled < min_see or total_marks < min_total:
         return 'F', False
         
     if total_marks >= 90: return 'O', True
@@ -35,7 +38,7 @@ def get_vtu_grade(total_marks, cie_marks, see_scaled, is_absent=False):
     elif total_marks >= 60: return 'B+', True
     elif total_marks >= 55: return 'B', True
     elif total_marks >= 50: return 'C', True
-    elif total_marks >= 40: return 'P', True
+    elif total_marks >= 40 and program_type == 'UG': return 'P', True
     else: return 'F', False
 
 def process_revaluation(usn, course_code, new_raw_marks, evaluator_id, cycle_id):
@@ -53,6 +56,14 @@ def process_revaluation(usn, course_code, new_raw_marks, evaluator_id, cycle_id)
     current_data = res.data[0]
     old_raw = current_data.get('see_raw')
     
+    # 🟢 FETCH UG/PG STATUS FOR THIS USN
+    stu_res = supabase.table("master_students").select("branch_code").eq("usn", clean_usn).execute()
+    prog_type = 'UG'
+    if stu_res.data:
+        br_res = supabase.table("master_branches").select("program_type").eq("branch_code", stu_res.data[0].get('branch_code')).execute()
+        if br_res.data:
+            prog_type = br_res.data[0].get('program_type', 'UG')
+
     # If they were absent originally, old_raw might be None. Treat as 0 for math.
     old_raw_val = int(old_raw) if old_raw is not None else 0
     cie_marks = int(current_data.get('cie_marks', 0))
@@ -64,7 +75,7 @@ def process_revaluation(usn, course_code, new_raw_marks, evaluator_id, cycle_id)
         # Calculate new scaled and total marks (Assuming 100 raw scales to 50)
         new_scaled = math.ceil(new_raw_marks / 2.0)
         new_total = cie_marks + new_scaled
-        new_grade, is_pass = get_vtu_grade(new_total, cie_marks, new_scaled)
+        new_grade, is_pass = get_vtu_grade(new_total, cie_marks, new_scaled, program_type=prog_type)
         
         # Update Main Table
         update_payload = {
