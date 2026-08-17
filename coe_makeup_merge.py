@@ -39,7 +39,7 @@ results_page = st.Page("coe_results.py", title="6. Results & Grading", icon="�
 reval_page = st.Page("coe_revaluation.py", title="7. Revaluation Engine", icon="⚖️")
 
 # 🟢 THE NEW MAKE-UP MERGE ENGINE
-makeup_merge_page = st.Page("makeup_merger.py", title="8. Make-up Merge", icon="🚑")
+makeup_merge_page = st.Page("coe_makeup_merge.py", title="8. Make-up Merge", icon="🚑")
 
 analytics_page = st.Page("analytics_hub.py", title="9. Global Analytics", icon="📊")
 utilities_page = st.Page("doc_utilities.py", title="10. Doc Generator", icon="🖨️")
