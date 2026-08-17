@@ -36,15 +36,19 @@ registration_page = st.Page("coe_registrations.py", title="3. Registrations", ic
 pre_exam_page = st.Page("coe_control.py", title="4. Pre-Exam (Docs)", icon="🖨️")
 exam_day_page = st.Page("coe_exam_day.py", title="5. Exam Day Logistics", icon="🚀")
 results_page = st.Page("coe_results.py", title="6. Results & Grading", icon="🏆")
-analytics_page = st.Page("analytics_hub.py", title="7. Global Analytics", icon="📊")
-utilities_page = st.Page("doc_utilities.py", title="8. Doc Generator", icon="🖨️")
+
+# 🟢 NEW: REVALUATION ENGINE
+reval_page = st.Page("coe_revaluation.py", title="7. Revaluation Engine", icon="⚖️")
+
+analytics_page = st.Page("analytics_hub.py", title="8. Global Analytics", icon="📊")
+utilities_page = st.Page("doc_utilities.py", title="9. Doc Generator", icon="🖨️")
 
 # 🟢 OMR PAGES
-omr_gen_page = st.Page("omr_sheet.py", title="9. OMR Generator", icon="🖨️")
-omr_eval_page = st.Page("OMR_evaluation.py", title="10. OMR Evaluator", icon="🎯")
+omr_gen_page = st.Page("omr_sheet.py", title="10. OMR Generator", icon="🖨️")
+omr_eval_page = st.Page("OMR_evaluation.py", title="11. OMR Evaluator", icon="🎯")
 
 # 🟢 SMART TIMETABLE PAGE
-timetable_page = st.Page("smart_timetable.py", title="11. Smart Timetable", icon="📆")
+timetable_page = st.Page("smart_timetable.py", title="12. Smart Timetable", icon="📆")
 
 # 5. BUILD NAVIGATION MENU
 pages = {
@@ -53,7 +57,9 @@ pages = {
     # 🟢 INJECTED TIMETABLE PAGE INTO EXAM MANAGEMENT
     "📅 Exam Management": [lifecycle_page, registration_page, timetable_page],
     
-    "🚀 Operations": [pre_exam_page, exam_day_page, results_page, utilities_page],
+    # 🟢 ADDED REVALUATION PAGE TO OPERATIONS
+    "🚀 Operations": [pre_exam_page, exam_day_page, results_page, reval_page, utilities_page],
+    
     "🎯 OMR Suite": [omr_gen_page, omr_eval_page],
     "📈 Intelligence": [analytics_page]
 }
