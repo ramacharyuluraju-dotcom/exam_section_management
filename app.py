@@ -37,8 +37,11 @@ pre_exam_page = st.Page("coe_control.py", title="4. Pre-Exam (Docs)", icon="🖨
 exam_day_page = st.Page("coe_exam_day.py", title="5. Exam Day Logistics", icon="🚀")
 results_page = st.Page("coe_results.py", title="6. Results & Grading", icon="🏆")
 reval_page = st.Page("coe_revaluation.py", title="7. Revaluation Engine", icon="⚖️")
-analytics_page = st.Page("analytics_hub.py", title="8. Global Analytics", icon="📊")
-utilities_page = st.Page("doc_utilities.py", title="9. Doc Generator", icon="🖨️")
+
+# 🟢 RENAMED UTILITY PAGE TO MATCH YOUR FILE
+utilities_page = st.Page("ledger_utility.py", title="8. Doc & Ledger Hub", icon="🖨️")
+
+analytics_page = st.Page("analytics_hub.py", title="9. Global Analytics", icon="📊")
 
 # 🟢 OMR PAGES
 omr_gen_page = st.Page("omr_sheet.py", title="10. OMR Generator", icon="🖨️")
