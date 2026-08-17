@@ -1,25 +1,42 @@
 import streamlit as st
 import pandas as pd
 import io
-import datetime
-
-# --- PDF LIBRARIES ---
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-
+import xlsxwriter
 from utils import init_db
 
 # --- CONFIGURATION ---
 supabase = init_db()
 
-st.title("🖨️ Central Document & Ledger Hub")
-st.info("🏛️ **Historical Read-Only Mode:** You can generate ledgers, marks cards, and hall tickets for ANY cycle here, including archived/closed cycles. Make-up marks are automatically resolved.")
+st.title("🖨️ A3 Tabulation Ledger Hub")
+st.info("🏛️ **Read-Only A3 Ledger Generator:** Generates official, wide-format tabulation registers designed specifically for A3 landscape printing. Automatically separates Regular and Arrear students and fully resolves Make-up upgrades.")
+
+# --- HELPER FUNCTIONS ---
+def fetch_all_records(table_name, select_query="*", filters=None):
+    all_data = []
+    start, step = 0, 1000
+    while True:
+        query = supabase.table(table_name).select(select_query)
+        if filters:
+            for col, val in filters.items():
+                query = query.eq(col, val)
+        res = query.range(start, start + step - 1).execute()
+        
+        if not res.data: break
+        all_data.extend(res.data)
+        if len(res.data) < step: break
+        start += step
+    return all_data
+
+def safe_float(val, default=0.0):
+    try: return float(val) if val and pd.notna(val) else default
+    except: return default
+
+def get_grade_point(grade):
+    gp_map = {'O': 10, 'A+': 9, 'A': 8, 'B+': 7, 'B': 6, 'C': 5, 'P': 4, 'F': 0, 'AB': 0, 'NP': 0}
+    return gp_map.get(str(grade).strip().upper(), 0)
 
 # ==========================================
-# 1. HISTORICAL CYCLE SELECTOR
+# 1. CYCLE SELECTOR (Global Override)
 # ==========================================
 st.markdown("### 1️⃣ Select Academic Context")
 
@@ -33,293 +50,287 @@ if not all_cycles:
     st.error("No exam cycles found in the database.")
     st.stop()
 
-# Group by Academic Year for a clean UI
-ay_list = sorted(list(set([c['academic_year'] for c in all_cycles if c.get('academic_year')])), reverse=True)
+ay_list = sorted(list(set([c.get('academic_year', 'Unknown') for c in all_cycles])), reverse=True)
+
 col1, col2 = st.columns(2)
 selected_ay = col1.selectbox("Filter by Academic Year", ay_list)
 
-filtered_cycles = [c for c in all_cycles if c['academic_year'] == selected_ay]
+filtered_cycles = [c for c in all_cycles if c.get('academic_year') == selected_ay]
 cycle_options = {f"{c['cycle_name']} ({'ACTIVE' if c['is_active'] else 'CLOSED'})": c['cycle_id'] for c in filtered_cycles}
 
 selected_cycle_name = col2.selectbox("Select Target Exam Cycle", list(cycle_options.keys()))
 target_cycle_id = cycle_options[selected_cycle_name]
+clean_cycle_name = selected_cycle_name.split(' (')[0]
 
 st.divider()
 
 # ==========================================
-# 2. CORE DATA FETCHER (WITH MAKE-UP LOGIC)
+# 2. LEDGER CONFIGURATION
 # ==========================================
-def fetch_resolved_results(parent_cycle_id):
-    """
-    Fetches results for the parent cycle AND any linked child (Make-up) cycles.
-    It returns a resolved Pandas DataFrame where Make-up grades have replaced 'I' or 'X' grades.
-    """
-    # 1. Fetch Parent Results
-    parent_res = supabase.table("student_results").select("*").eq("cycle_id", parent_cycle_id).execute()
-    if not parent_res.data:
-        return pd.DataFrame()
+st.markdown("### 2️⃣ Ledger Configuration")
+
+l_col1, l_col2 = st.columns(2)
+all_branches = fetch_all_records("master_branches", "branch_code")
+valid_branches = [b['branch_code'] for b in all_branches if b.get('branch_code') != 'COMMON']
+
+l_branch = l_col1.selectbox("Select Target Branch", valid_branches)
+l_sem = l_col2.number_input("Select Target Semester", min_value=1, max_value=10, value=1)
+
+def generate_a3_ledger(data_dict, sorted_courses, crs_info_dict, branch, sem, ledger_type):
+    """Generates the wide-format A3 Matrix Excel Ledger"""
+    output = io.BytesIO()
+    workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+    ws = workbook.add_worksheet(f"Sem_{sem}_{ledger_type}")
+
+    # --- A3 PRINT SETTINGS ---
+    ws.set_paper(8) # 8 = A3 Paper Size
+    ws.set_landscape()
+    ws.set_margins(left=0.25, right=0.25, top=0.5, bottom=0.5)
+    ws.fit_to_pages(1, 0) # Fit width to 1 page, let length flow naturally
+
+    # --- FORMATS ---
+    fmt_title = workbook.add_format({'bold': True, 'font_size': 16, 'align': 'center', 'valign': 'vcenter'})
+    fmt_subtitle = workbook.add_format({'bold': True, 'font_size': 12, 'align': 'center', 'valign': 'vcenter'})
+    fmt_head_main = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#E0E0E0'})
+    fmt_head_sub = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#F5F5F5', 'font_size': 9})
+    fmt_cell = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_size': 10})
+    fmt_name = workbook.add_format({'border': 1, 'align': 'left', 'valign': 'vcenter', 'font_size': 10, 'text_wrap': True})
+    fmt_fail = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_size': 10, 'font_color': '#9C0006', 'bg_color': '#FFC7CE', 'bold': True})
+
+    # --- HEADER ROWS ---
+    total_cols = 3 + (len(sorted_courses) * 4) + 3 # Sl, USN, Name + (Courses * 4) + Total, Credits, SGPA
+    end_col_letter = xlsxwriter.utility.xl_col_to_name(total_cols - 1)
     
-    df_parent = pd.DataFrame(parent_res.data)
+    ws.merge_range(f"A1:{end_col_letter}1", "AMC ENGINEERING COLLEGE, BENGALURU", fmt_title)
+    ws.merge_range(f"A2:{end_col_letter}2", f"TABULATION REGISTER - {clean_cycle_name.upper()}", fmt_subtitle)
+    ws.merge_range(f"A3:{end_col_letter}3", f"Branch: {branch}   |   Semester: {sem}   |   Type: {ledger_type}", fmt_subtitle)
+
+    # --- TABLE HEADERS ---
+    ws.merge_range("A5:A6", "Sl.No", fmt_head_main)
+    ws.merge_range("B5:B6", "USN", fmt_head_main)
+    ws.merge_range("C5:C6", "Student Name", fmt_head_main)
+
+    col_idx = 3
+    for cc in sorted_courses:
+        ws.merge_range(4, col_idx, 4, col_idx + 3, cc, fmt_head_main)
+        ws.write(5, col_idx, "CIE", fmt_head_sub)
+        ws.write(5, col_idx + 1, "SEE", fmt_head_sub)
+        ws.write(5, col_idx + 2, "TOT", fmt_head_sub)
+        ws.write(5, col_idx + 3, "GRD", fmt_head_sub)
+        col_idx += 4
+
+    ws.merge_range(4, col_idx, 5, col_idx, "Total\nMarks", fmt_head_main)
+    ws.merge_range(4, col_idx + 1, 5, col_idx + 1, "Earned\nCredits", fmt_head_main)
+    ws.merge_range(4, col_idx + 2, 5, col_idx + 2, "SGPA", fmt_head_main)
+
+    # --- COLUMN WIDTHS ---
+    ws.set_column("A:A", 5)
+    ws.set_column("B:B", 14)
+    ws.set_column("C:C", 25)
     
-    # 2. Check for Linked Child Cycles (Make-ups / Supplementary)
-    child_cycles = supabase.table("exam_cycles").select("cycle_id").eq("parent_cycle_id", parent_cycle_id).execute()
+    for i in range(3, col_idx):
+        ws.set_column(i, i, 5) # Compress marks columns tightly for A3 fitting
     
-    if child_cycles.data:
-        child_ids = [c['cycle_id'] for c in child_cycles.data]
+    ws.set_column(col_idx, col_idx + 2, 8)
+
+    # --- DATA ROWS ---
+    row_idx = 6
+    sorted_usns = sorted(data_dict.keys())
+    
+    for i, usn in enumerate(sorted_usns):
+        stu = data_dict[usn]
+        ws.write(row_idx, 0, i + 1, fmt_cell)
+        ws.write(row_idx, 1, usn, fmt_cell)
+        ws.write(row_idx, 2, stu['name'], fmt_name)
         
-        # 3. Fetch Child Results
-        # Using a loop to safely fetch if there are many records
-        child_data = []
-        for c_id in child_ids:
-            c_res = supabase.table("student_results").select("*").eq("cycle_id", c_id).execute()
-            if c_res.data:
-                child_data.extend(c_res.data)
+        c_idx = 3
+        stu_total_marks = 0
+        stu_earned_credits = 0
+        stu_total_points = 0
+        stu_attempted_credits = 0
+        
+        for cc in sorted_courses:
+            res = stu['results'].get(cc)
+            
+            if res:
+                cie = res['cie']
+                see = res['see']
+                tot = res['tot']
+                grd = res['grd']
                 
-        if child_data:
-            df_child = pd.DataFrame(child_data)
-            
-            # 4. 🟢 THE MAGIC MERGE (Pandas equivalent of COALESCE)
-            # We set the index to USN + Course Code so we can easily update matching rows
-            df_parent.set_index(['usn', 'course_code'], inplace=True)
-            df_child.set_index(['usn', 'course_code'], inplace=True)
-            
-            # Update the parent dataframe with child records that actually have a grade
-            valid_child_updates = df_child[~df_child['grade'].isin(['PND', 'PENDING', 'FROZEN', '', None])]
-            df_parent.update(valid_child_updates)
-            
-            df_parent.reset_index(inplace=True)
-            
-    return df_parent
-
-# ==========================================
-# 3. TABBED UI FOR GENERATORS
-# ==========================================
-t1, t2, t3 = st.tabs(["📊 Consolidated Ledgers", "🪪 Semester Marks Cards", "🎟️ Hall Tickets"])
-
-# ------------------------------------------------------------------
-# TAB 1: CONSOLIDATED LEDGERS (EXCEL)
-# ------------------------------------------------------------------
-with t1:
-    st.subheader("Generate Master Tabulation Ledger")
-    st.write("Generates a comprehensive Excel sheet detailing every student's performance across all subjects in the selected cycle. Automatically includes Make-up upgrades.")
-    
-    l_col1, l_col2 = st.columns(2)
-    l_prog = l_col1.selectbox("Program Type", ["UG", "PG"], key="ledger_prog")
-    
-    # Fetch branches dynamically based on program
-    all_branches = supabase.table("master_branches").select("branch_code, program_type").execute().data
-    valid_branches = [b['branch_code'] for b in all_branches if b.get('program_type') == l_prog]
-    
-    l_branch = l_col2.selectbox("Select Branch", ["ALL BRANCHES"] + valid_branches, key="ledger_branch")
-    
-    if st.button("📥 Generate Excel Ledger", type="primary"):
-        with st.spinner("Compiling results and resolving Make-up exam upgrades..."):
-            df_results = fetch_resolved_results(target_cycle_id)
-            
-            if df_results.empty:
-                st.error("No results found for this cycle.")
+                # Math calculations
+                crs_credits = safe_float(crs_info_dict.get(cc, {}).get('credits', 0))
+                stu_total_marks += tot
+                
+                # Exclude pending/frozen from SGPA math
+                if grd not in ['PND', 'PENDING', 'FROZEN', 'W', 'X', 'I']:
+                    stu_attempted_credits += crs_credits
+                    gp = get_grade_point(grd)
+                    stu_total_points += (gp * crs_credits)
+                    
+                    if res['is_pass']:
+                        stu_earned_credits += crs_credits
+                
+                # Format Fails in Red
+                cell_format = fmt_fail if not res['is_pass'] and grd not in ['PND', 'PENDING'] else fmt_cell
+                
+                ws.write(row_idx, c_idx, cie, cell_format)
+                ws.write(row_idx, c_idx + 1, see if see is not None else "-", cell_format)
+                ws.write(row_idx, c_idx + 2, tot, cell_format)
+                ws.write(row_idx, c_idx + 3, grd, cell_format)
             else:
-                # Fetch Students to filter by Branch
-                stu_res = supabase.table("master_students").select("usn, full_name, branch_code").execute()
-                df_stu = pd.DataFrame(stu_res.data)
+                # Student didn't register for this specific course
+                ws.write(row_idx, c_idx, "-", fmt_cell)
+                ws.write(row_idx, c_idx + 1, "-", fmt_cell)
+                ws.write(row_idx, c_idx + 2, "-", fmt_cell)
+                ws.write(row_idx, c_idx + 3, "-", fmt_cell)
                 
-                if l_branch != "ALL BRANCHES":
-                    df_stu = df_stu[df_stu['branch_code'] == l_branch]
-                    
-                # Merge Student Info into Results
-                df_merged = pd.merge(df_results, df_stu, on="usn", how="inner")
-                
-                if df_merged.empty:
-                    st.warning(f"No results found for {l_branch} in this cycle.")
-                else:
-                    # Clean up the dataframe for Excel presentation
-                    display_cols = [
-                        'usn', 'full_name', 'branch_code', 'course_code', 
-                        'cie_marks', 'see_raw', 'total_marks', 'grade', 'is_pass'
-                    ]
-                    
-                    # Ensure columns exist before filtering
-                    available_cols = [c for c in display_cols if c in df_merged.columns]
-                    df_ledger = df_merged[available_cols].copy()
-                    
-                    df_ledger.rename(columns={
-                        'usn': 'USN', 'full_name': 'Student Name', 'branch_code': 'Branch',
-                        'course_code': 'Course Code', 'cie_marks': 'CIE', 'see_raw': 'SEE (Raw)',
-                        'total_marks': 'Total Marks', 'grade': 'Final Grade', 'is_pass': 'Passed?'
-                    }, inplace=True)
-                    
-                    # Sort logically
-                    df_ledger = df_ledger.sort_values(by=['Branch', 'USN', 'Course Code'])
-                    
-                    # Generate Excel File in memory
-                    excel_buffer = io.BytesIO()
-                    with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
-                        df_ledger.to_excel(writer, sheet_name='Consolidated_Ledger', index=False)
-                        
-                        # Auto-adjust column widths
-                        worksheet = writer.sheets['Consolidated_Ledger']
-                        for i, col in enumerate(df_ledger.columns):
-                            max_len = max(df_ledger[col].astype(str).map(len).max(), len(col)) + 2
-                            worksheet.set_column(i, i, max_len)
-
-                    st.success("✅ Ledger compiled successfully!")
-                    st.download_button(
-                        label="💾 Download Excel Ledger",
-                        data=excel_buffer.getvalue(),
-                        file_name=f"Consolidated_Ledger_{selected_cycle_name.split(' ')[0]}_{l_branch}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-
-# ------------------------------------------------------------------
-# TAB 2: MARKS CARDS (PDF)
-# ------------------------------------------------------------------
-with t2:
-    st.subheader("Generate Official Semester Marks Cards")
-    st.write("Generates individual PDF grade cards for students. Resolves all transitional grades based on connected Make-up cycles.")
-    
-    m_col1, m_col2 = st.columns(2)
-    m_usn_input = m_col1.text_input("Enter specific USN (Leave blank for whole branch)")
-    m_branch = m_col2.selectbox("Select Branch (If USN is blank)", valid_branches, key="marks_branch")
-    
-    if st.button("🖨️ Generate PDF Marks Cards", type="primary"):
-        with st.spinner("Rendering PDFs..."):
-            df_results = fetch_resolved_results(target_cycle_id)
+            c_idx += 4
             
-            if df_results.empty:
-                st.error("No results found for this cycle.")
-            else:
-                # Apply filters
-                if m_usn_input:
-                    df_results = df_results[df_results['usn'] == m_usn_input.strip().upper()]
-                else:
-                    stu_res = supabase.table("master_students").select("usn").eq("branch_code", m_branch).execute()
-                    branch_usns = [s['usn'] for s in stu_res.data]
-                    df_results = df_results[df_results['usn'].isin(branch_usns)]
+        sgpa = (stu_total_points / stu_attempted_credits) if stu_attempted_credits > 0 else 0
+        
+        ws.write(row_idx, c_idx, stu_total_marks, fmt_cell)
+        ws.write(row_idx, c_idx + 1, stu_earned_credits, fmt_cell)
+        ws.write(row_idx, c_idx + 2, f"{sgpa:.2f}", fmt_cell)
+        
+        row_idx += 1
+
+    workbook.close()
+    return output.getvalue()
+
+
+if st.button("📥 Generate A3 Master Ledgers", type="primary"):
+    with st.spinner(f"Compiling verified ledgers for {l_branch} Semester {l_sem}..."):
+        
+        # 1. Fetch Parent Results
+        parent_results = fetch_all_records("student_results", filters={"cycle_id": target_cycle_id})
+        
+        if not parent_results:
+            st.error(f"No results found for {clean_cycle_name}.")
+            st.stop()
+            
+        # 2. Safely Fetch Make-up Child Cycles & Results
+        child_cycles = fetch_all_records("exam_cycles", "cycle_id", filters={"parent_cycle_id": target_cycle_id})
+        child_results = []
+        for c in child_cycles:
+            child_results.extend(fetch_all_records("student_results", filters={"cycle_id": c['cycle_id']}))
+            
+        # 3. Bulletproof Dictionary Merge (Child overwrites Parent)
+        results_map = {}
+        for r in parent_results:
+            usn = str(r.get('usn', '')).strip().upper()
+            cc = str(r.get('course_code', '')).strip().upper()
+            results_map[f"{usn}_{cc}"] = r.copy()
+            
+        for cr in child_results:
+            grade = str(cr.get('grade', '')).strip().upper()
+            # Only overwrite if Make-up mark is officially finalized
+            if grade not in ['PND', 'PENDING', 'FROZEN', '', 'NONE']:
+                usn = str(cr.get('usn', '')).strip().upper()
+                cc = str(cr.get('course_code', '')).strip().upper()
+                key = f"{usn}_{cc}"
                 
-                if df_results.empty:
-                    st.warning("No data matches your filter criteria.")
-                else:
-                    # Fetch extra details for the PDF
-                    course_res = supabase.table("master_courses").select("course_code, title, credits").execute()
-                    course_map = {c['course_code']: c for c in course_res.data}
-                    
-                    student_usns = df_results['usn'].unique().tolist()
-                    stu_res = supabase.table("master_students").select("*").in_("usn", student_usns).execute()
-                    stu_map = {s['usn']: s for s in stu_res.data}
-                    
-                    # Try to load logos
-                    left_logo, right_logo = "", ""
-                    try:
-                        res_l = supabase.storage.from_("College_Logos").download("College_logo.png")
-                        if res_l: left_logo = Image(io.BytesIO(res_l), width=0.8*inch, height=0.8*inch)
-                        res_r = supabase.storage.from_("College_Logos").download("NAAC_A_Logo.jpg")
-                        if res_r: right_logo = Image(io.BytesIO(res_r), width=0.8*inch, height=0.8*inch)
-                    except: pass
+                if key in results_map:
+                    results_map[key]['see_raw'] = cr.get('see_raw')
+                    results_map[key]['see_scaled'] = cr.get('see_scaled')
+                    results_map[key]['total_marks'] = cr.get('total_marks')
+                    results_map[key]['grade'] = cr.get('grade')
+                    results_map[key]['is_pass'] = cr.get('is_pass')
+            
+        final_resolved_results = list(results_map.values())
+        
+        # 4. Fetch Master Data References
+        students = fetch_all_records("master_students", "usn, full_name, branch_code, current_sem, status")
+        stu_dict = {str(s['usn']).strip().upper(): s for s in students}
+        
+        courses = fetch_all_records("master_courses", "course_code, title, semester_id, credits")
+        crs_dict = {str(c['course_code']).strip().upper(): c for c in courses}
+        
+        # 5. Filter and Split into Regular vs Arrear
+        regular_data = {}
+        arrear_data = {}
+        unique_courses_reg = set()
+        unique_courses_arr = set()
+        
+        for r in final_resolved_results:
+            usn = str(r.get('usn', '')).strip().upper()
+            cc = str(r.get('course_code', '')).strip().upper()
+            
+            stu = stu_dict.get(usn)
+            if not stu: continue
+            
+            # Ignore students who have officially left the college
+            if str(stu.get('status', '')).upper() == 'DISCONTINUED': 
+                continue
+                
+            branch = str(stu.get('branch_code', '')).strip().upper()
+            if branch != l_branch: 
+                continue
+                
+            crs = crs_dict.get(cc)
+            if not crs: continue
+            
+            # We ONLY want subjects belonging to the user's targeted semester
+            course_sem = safe_float(crs.get('semester_id', 0))
+            if course_sem != l_sem: 
+                continue
+                
+            student_current_sem = safe_float(stu.get('current_sem', 0))
+            
+            # 🟢 THE SEPARATION LOGIC
+            # If the student's current semester matches the course semester, it's a Regular exam.
+            # If the student's current semester is HIGHER than the course semester, it's an Arrear/Backlog exam.
+            is_regular = (student_current_sem == l_sem)
+            
+            target_dict = regular_data if is_regular else arrear_data
+            target_courses = unique_courses_reg if is_regular else unique_courses_arr
+            
+            if usn not in target_dict:
+                target_dict[usn] = {'name': stu.get('full_name', 'Unknown'), 'results': {}}
+                
+            # The A3 Ledger needs the Scaled SEE marks (out of 50) usually, so we default to that if available
+            see_mark = r.get('see_scaled') if r.get('see_scaled') is not None else r.get('see_raw')
+                
+            target_dict[usn]['results'][cc] = {
+                'cie': r.get('cie_marks', 0),
+                'see': see_mark,
+                'tot': r.get('total_marks', 0),
+                'grd': r.get('grade', 'PND'),
+                'is_pass': r.get('is_pass', False)
+            }
+            target_courses.add(cc)
 
-                    # BUILD THE PDF
-                    pdf_buffer = io.BytesIO()
-                    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, topMargin=40, bottomMargin=40, leftMargin=40, rightMargin=40)
-                    elements = []
-                    styles = getSampleStyleSheet()
-                    
-                    title_style = ParagraphStyle('Title', parent=styles['Heading2'], alignment=1, fontName='Helvetica-Bold')
-                    normal_bold = ParagraphStyle('NB', parent=styles['Normal'], fontName='Helvetica-Bold')
-                    center_text = ParagraphStyle('CT', parent=styles['Normal'], alignment=1)
-                    
-                    grouped = df_results.groupby('usn')
-                    
-                    for usn, group in grouped:
-                        student = stu_map.get(usn, {})
-                        stu_name = student.get('full_name', 'Unknown')
-                        branch_name = student.get('branch_code', 'Unknown Branch')
-                        
-                        # --- Header ---
-                        header_text = """<center>
-                            <font size="14"><b>AMC ENGINEERING COLLEGE</b></font><br/>
-                            <font size="9">Autonomous Institution Affiliated to VTU, Belagavi | NAAC A+ Accredited</font><br/>
-                            <font size="10"><b>SEMESTER END EXAMINATION GRADE CARD</b></font>
-                        </center>"""
-                        
-                        t_header = Table([[left_logo, Paragraph(header_text, styles['Normal']), right_logo]], colWidths=[1*inch, 4.5*inch, 1*inch])
-                        t_header.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('ALIGN', (0,0), (0,0), 'LEFT'), ('ALIGN', (2,0), (2,0), 'RIGHT')]))
-                        elements.append(t_header)
-                        elements.append(Spacer(1, 15))
-                        
-                        # --- Student Info ---
-                        info_data = [
-                            [Paragraph("<b>USN:</b>", normal_bold), usn, Paragraph("<b>Date:</b>", normal_bold), datetime.datetime.now().strftime("%d-%m-%Y")],
-                            [Paragraph("<b>Name:</b>", normal_bold), stu_name, Paragraph("<b>Branch:</b>", normal_bold), branch_name]
-                        ]
-                        t_info = Table(info_data, colWidths=[0.8*inch, 3*inch, 0.8*inch, 2*inch])
-                        t_info.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('PADDING', (0,0), (-1,-1), 6), ('BACKGROUND', (0,0), (0,-1), colors.whitesmoke), ('BACKGROUND', (2,0), (2,-1), colors.whitesmoke)]))
-                        elements.append(t_info)
-                        elements.append(Spacer(1, 20))
-                        
-                        # --- Marks Table ---
-                        marks_data = [[
-                            Paragraph("<b>Course Code</b>", center_text), Paragraph("<b>Course Title</b>", center_text), 
-                            Paragraph("<b>Credits</b>", center_text), Paragraph("<b>Grade</b>", center_text)
-                        ]]
-                        
-                        total_credits = 0
-                        total_points = 0
-                        
-                        for _, row in group.iterrows():
-                            c_code = row['course_code']
-                            c_data = course_map.get(c_code, {})
-                            credits = float(c_data.get('credits', 0))
-                            grade = row.get('grade', 'F')
-                            
-                            # Simple SGPA math for demo
-                            gp_map = {'O': 10, 'A+': 9, 'A': 8, 'B+': 7, 'B': 6, 'C': 5, 'P': 4, 'F': 0, 'AB': 0}
-                            gp = gp_map.get(grade, 0)
-                            
-                            if grade not in ['F', 'AB', 'I', 'W', 'X', 'PND']:
-                                total_credits += credits
-                                total_points += (credits * gp)
-                                
-                            marks_data.append([
-                                Paragraph(c_code, center_text), 
-                                Paragraph(c_data.get('title', 'Unknown'), styles['Normal']),
-                                Paragraph(str(credits), center_text),
-                                Paragraph(f"<b>{grade}</b>", center_text)
-                            ])
-                            
-                        t_marks = Table(marks_data, colWidths=[1.2*inch, 3.5*inch, 0.8*inch, 1*inch])
-                        t_marks.setStyle(TableStyle([
-                            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-                            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
-                            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                            ('PADDING', (0,0), (-1,-1), 6)
-                        ]))
-                        elements.append(t_marks)
-                        elements.append(Spacer(1, 15))
-                        
-                        # --- SGPA Footer ---
-                        sgpa = (total_points / total_credits) if total_credits > 0 else 0
-                        sgpa_text = f"<b>Semester Grade Point Average (SGPA):</b> {sgpa:.2f}"
-                        elements.append(Paragraph(sgpa_text, styles['Normal']))
-                        elements.append(Spacer(1, 40))
-                        
-                        # --- Signatures ---
-                        sig_data = [["_______________________", "_______________________"], ["Controller of Examinations", "Principal"]]
-                        t_sig = Table(sig_data, colWidths=[3.2*inch, 3.2*inch])
-                        t_sig.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
-                        elements.append(t_sig)
-                        
-                        elements.append(PageBreak())
-                        
-                    doc.build(elements)
-                    
-                    st.success("✅ PDF Marks Cards Generated!")
-                    filename = f"Marks_Cards_{m_usn_input}.pdf" if m_usn_input else f"Batch_Marks_Cards_{m_branch}.pdf"
-                    st.download_button(label="📥 Download PDF Marks Cards", data=pdf_buffer.getvalue(), file_name=filename, mime="application/pdf", type="primary")
-
-# ------------------------------------------------------------------
-# TAB 3: HALL TICKETS
-# ------------------------------------------------------------------
-with t3:
-    st.subheader("Admit Cards / Hall Tickets")
-    st.info("Since Hall Tickets are generated *before* exams occur, this tool fetches registered subjects directly from the Timetable mapping.")
-    st.write("*(Coming Soon - Awaiting final confirmation on Barcode vs QR code format for the AMC Admit Cards)*")
+        # 6. Generate Excel Files if Data Exists
+        sorted_courses_reg = sorted(list(unique_courses_reg))
+        sorted_courses_arr = sorted(list(unique_courses_arr))
+        
+        if not regular_data and not arrear_data:
+            st.warning(f"No results found for {l_branch} Semester {l_sem} in this cycle.")
+        else:
+            c1, c2 = st.columns(2)
+            
+            if regular_data:
+                excel_reg = generate_a3_ledger(regular_data, sorted_courses_reg, crs_dict, l_branch, l_sem, "REGULAR")
+                c1.success(f"✅ Regular Ledger Ready ({len(regular_data)} Students)")
+                c1.download_button(
+                    label="💾 Download REGULAR A3 Ledger",
+                    data=excel_reg,
+                    file_name=f"Ledger_{l_branch}_Sem{l_sem}_REGULAR.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            else:
+                c1.info("No Regular students found.")
+                
+            if arrear_data:
+                excel_arr = generate_a3_ledger(arrear_data, sorted_courses_arr, crs_dict, l_branch, l_sem, "ARREAR")
+                c2.success(f"✅ Arrear Ledger Ready ({len(arrear_data)} Students)")
+                c2.download_button(
+                    label="💾 Download ARREAR A3 Ledger",
+                    data=excel_arr,
+                    file_name=f"Ledger_{l_branch}_Sem{l_sem}_ARREAR.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            else:
+                c2.info("No Arrear students found.")
