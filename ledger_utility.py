@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import xlsxwriter
+import zipfile
 from utils import init_db
 
 # --- CONFIGURATION ---
@@ -9,6 +10,16 @@ supabase = init_db()
 
 st.title("🖨️ A3 Tabulation Ledger Hub")
 st.info("🏛️ **Read-Only A3 Ledger Generator:** Generates official, wide-format tabulation registers designed specifically for A3 landscape printing. Automatically separates Regular and Arrear students and fully resolves Make-up upgrades.")
+
+# --- GLOBAL CONTEXT ---
+active_cycle_id = st.session_state.get('active_cycle_id')
+active_cycle_name = st.session_state.get('active_cycle_name', 'Unknown Cycle')
+
+if not active_cycle_id:
+    st.warning("⚠️ Please select an Active Exam Cycle in the Sidebar to proceed.")
+    st.stop()
+
+st.success(f"🔵 **Currently Generating Ledgers for:** {active_cycle_name}")
 
 # --- HELPER FUNCTIONS ---
 def fetch_all_records(table_name, select_query="*", filters=None):
@@ -36,45 +47,21 @@ def get_grade_point(grade):
     return gp_map.get(str(grade).strip().upper(), 0)
 
 # ==========================================
-# 1. CYCLE SELECTOR (Global Override)
+# 1. LEDGER CONFIGURATION
 # ==========================================
-st.markdown("### 1️⃣ Select Academic Context")
+st.markdown("### ⚙️ Ledger Configuration")
 
-@st.cache_data(ttl=60)
-def get_all_cycles():
-    res = supabase.table("exam_cycles").select("cycle_id, cycle_name, academic_year, is_active").order("created_at", desc=True).execute()
-    return res.data
+l_col1, l_col2, l_col3 = st.columns(3)
 
-all_cycles = get_all_cycles()
-if not all_cycles:
-    st.error("No exam cycles found in the database.")
-    st.stop()
+# Program Type Filter
+l_prog = l_col1.selectbox("Select Program Type", ["UG", "PG"])
 
-ay_list = sorted(list(set([c.get('academic_year', 'Unknown') for c in all_cycles])), reverse=True)
+# Fetch branches dynamically based on program
+all_branches = fetch_all_records("master_branches", "branch_code, program_type")
+valid_branches = [b['branch_code'] for b in all_branches if b.get('program_type') == l_prog and b.get('branch_code') != 'COMMON']
 
-col1, col2 = st.columns(2)
-selected_ay = col1.selectbox("Filter by Academic Year", ay_list)
-
-filtered_cycles = [c for c in all_cycles if c.get('academic_year') == selected_ay]
-cycle_options = {f"{c['cycle_name']} ({'ACTIVE' if c['is_active'] else 'CLOSED'})": c['cycle_id'] for c in filtered_cycles}
-
-selected_cycle_name = col2.selectbox("Select Target Exam Cycle", list(cycle_options.keys()))
-target_cycle_id = cycle_options[selected_cycle_name]
-clean_cycle_name = selected_cycle_name.split(' (')[0]
-
-st.divider()
-
-# ==========================================
-# 2. LEDGER CONFIGURATION
-# ==========================================
-st.markdown("### 2️⃣ Ledger Configuration")
-
-l_col1, l_col2 = st.columns(2)
-all_branches = fetch_all_records("master_branches", "branch_code")
-valid_branches = [b['branch_code'] for b in all_branches if b.get('branch_code') != 'COMMON']
-
-l_branch = l_col1.selectbox("Select Target Branch", valid_branches)
-l_sem = l_col2.number_input("Select Target Semester", min_value=1, max_value=10, value=1)
+l_branch = l_col2.selectbox("Select Target Branch", ["ALL BRANCHES"] + valid_branches)
+l_sem = l_col3.number_input("Select Target Semester", min_value=1, max_value=10, value=1)
 
 def generate_a3_ledger(data_dict, sorted_courses, crs_info_dict, branch, sem, ledger_type):
     """Generates the wide-format A3 Matrix Excel Ledger"""
@@ -101,9 +88,11 @@ def generate_a3_ledger(data_dict, sorted_courses, crs_info_dict, branch, sem, le
     total_cols = 3 + (len(sorted_courses) * 4) + 3 # Sl, USN, Name + (Courses * 4) + Total, Credits, SGPA
     end_col_letter = xlsxwriter.utility.xl_col_to_name(total_cols - 1)
     
+    clean_cycle_name = active_cycle_name.split(' (')[0]
+    
     ws.merge_range(f"A1:{end_col_letter}1", "AMC ENGINEERING COLLEGE, BENGALURU", fmt_title)
     ws.merge_range(f"A2:{end_col_letter}2", f"TABULATION REGISTER - {clean_cycle_name.upper()}", fmt_subtitle)
-    ws.merge_range(f"A3:{end_col_letter}3", f"Branch: {branch}   |   Semester: {sem}   |   Type: {ledger_type}", fmt_subtitle)
+    ws.merge_range(f"A3:{end_col_letter}3", f"Program: {l_prog}   |   Branch: {branch}   |   Semester: {sem}   |   Type: {ledger_type}", fmt_subtitle)
 
     # --- TABLE HEADERS ---
     ws.merge_range("A5:A6", "Sl.No", fmt_head_main)
@@ -200,22 +189,22 @@ def generate_a3_ledger(data_dict, sorted_courses, crs_info_dict, branch, sem, le
 
 
 if st.button("📥 Generate A3 Master Ledgers", type="primary"):
-    with st.spinner(f"Compiling verified ledgers for {l_branch} Semester {l_sem}..."):
+    with st.spinner(f"Compiling verified ledgers..."):
         
         # 1. Fetch Parent Results
-        parent_results = fetch_all_records("student_results", filters={"cycle_id": target_cycle_id})
+        parent_results = fetch_all_records("student_results", filters={"cycle_id": active_cycle_id})
         
         if not parent_results:
-            st.error(f"No results found for {clean_cycle_name}.")
+            st.error(f"No results found for {active_cycle_name}.")
             st.stop()
             
         # 2. Safely Fetch Make-up Child Cycles & Results
-        child_cycles = fetch_all_records("exam_cycles", "cycle_id", filters={"parent_cycle_id": target_cycle_id})
+        child_cycles = fetch_all_records("exam_cycles", "cycle_id", filters={"parent_cycle_id": active_cycle_id})
         child_results = []
         for c in child_cycles:
             child_results.extend(fetch_all_records("student_results", filters={"cycle_id": c['cycle_id']}))
             
-        # 3. Bulletproof Dictionary Merge (Child overwrites Parent)
+        # 3. Bulletproof Dictionary Merge (Child overwrites Parent for final Ledger output)
         results_map = {}
         for r in parent_results:
             usn = str(r.get('usn', '')).strip().upper()
@@ -246,91 +235,132 @@ if st.button("📥 Generate A3 Master Ledgers", type="primary"):
         courses = fetch_all_records("master_courses", "course_code, title, semester_id, credits")
         crs_dict = {str(c['course_code']).strip().upper(): c for c in courses}
         
-        # 5. Filter and Split into Regular vs Arrear
-        regular_data = {}
-        arrear_data = {}
-        unique_courses_reg = set()
-        unique_courses_arr = set()
-        
+        # 5. SMART HEURISTIC: Pre-calculate max semester taken by each student in this cycle
+        student_max_sem = {}
         for r in final_resolved_results:
             usn = str(r.get('usn', '')).strip().upper()
             cc = str(r.get('course_code', '')).strip().upper()
-            
-            stu = stu_dict.get(usn)
-            if not stu: continue
-            
-            # Ignore students who have officially left the college
-            if str(stu.get('status', '')).upper() == 'DISCONTINUED': 
-                continue
-                
-            branch = str(stu.get('branch_code', '')).strip().upper()
-            if branch != l_branch: 
-                continue
-                
-            crs = crs_dict.get(cc)
-            if not crs: continue
-            
-            # We ONLY want subjects belonging to the user's targeted semester
-            course_sem = safe_float(crs.get('semester_id', 0))
-            if course_sem != l_sem: 
-                continue
-                
-            student_current_sem = safe_float(stu.get('current_sem', 0))
-            
-            # 🟢 THE SEPARATION LOGIC
-            # If the student's current semester matches the course semester, it's a Regular exam.
-            # If the student's current semester is HIGHER than the course semester, it's an Arrear/Backlog exam.
-            is_regular = (student_current_sem == l_sem)
-            
-            target_dict = regular_data if is_regular else arrear_data
-            target_courses = unique_courses_reg if is_regular else unique_courses_arr
-            
-            if usn not in target_dict:
-                target_dict[usn] = {'name': stu.get('full_name', 'Unknown'), 'results': {}}
-                
-            # The A3 Ledger needs the Scaled SEE marks (out of 50) usually, so we default to that if available
-            see_mark = r.get('see_scaled') if r.get('see_scaled') is not None else r.get('see_raw')
-                
-            target_dict[usn]['results'][cc] = {
-                'cie': r.get('cie_marks', 0),
-                'see': see_mark,
-                'tot': r.get('total_marks', 0),
-                'grd': r.get('grade', 'PND'),
-                'is_pass': r.get('is_pass', False)
-            }
-            target_courses.add(cc)
+            c_info = crs_dict.get(cc)
+            if c_info:
+                c_sem = safe_float(c_info.get('semester_id', 0))
+                student_max_sem[usn] = max(student_max_sem.get(usn, 0), c_sem)
 
-        # 6. Generate Excel Files if Data Exists
-        sorted_courses_reg = sorted(list(unique_courses_reg))
-        sorted_courses_arr = sorted(list(unique_courses_arr))
+        # 6. Branch Iteration Logic
+        target_branches = valid_branches if l_branch == "ALL BRANCHES" else [l_branch]
         
-        if not regular_data and not arrear_data:
-            st.warning(f"No results found for {l_branch} Semester {l_sem} in this cycle.")
-        else:
-            c1, c2 = st.columns(2)
+        branch_ledgers = {} # Will store the final excel bytes per branch/type
+        total_students_processed = 0
+
+        for branch in target_branches:
+            regular_data = {}
+            arrear_data = {}
+            unique_courses_reg = set()
+            unique_courses_arr = set()
+            
+            for r in final_resolved_results:
+                usn = str(r.get('usn', '')).strip().upper()
+                cc = str(r.get('course_code', '')).strip().upper()
+                
+                stu = stu_dict.get(usn)
+                if not stu: continue
+                
+                # Ignore discontinued students
+                if str(stu.get('status', '')).upper() == 'DISCONTINUED': 
+                    continue
+                    
+                stu_branch = str(stu.get('branch_code', '')).strip().upper()
+                if stu_branch != branch: 
+                    continue
+                    
+                crs = crs_dict.get(cc)
+                if not crs: continue
+                
+                course_sem = safe_float(crs.get('semester_id', 0))
+                if course_sem != l_sem: 
+                    continue
+                    
+                # 🟢 THE SMART SEPARATION LOGIC
+                # 1. If the student wrote a subject in this cycle higher than l_sem, they are writing an arrear.
+                # 2. Safety Buffer: Even if they didn't, if their actual database `current_sem` is 2 levels higher, it's an arrear.
+                stu_current_sem = safe_float(stu.get('current_sem', 0))
+                
+                is_regular = (student_max_sem.get(usn, 0) <= l_sem) and (stu_current_sem <= l_sem + 1)
+                
+                target_dict = regular_data if is_regular else arrear_data
+                target_courses = unique_courses_reg if is_regular else unique_courses_arr
+                
+                if usn not in target_dict:
+                    target_dict[usn] = {'name': stu.get('full_name', 'Unknown'), 'results': {}}
+                    
+                see_mark = r.get('see_scaled') if r.get('see_scaled') is not None else r.get('see_raw')
+                    
+                target_dict[usn]['results'][cc] = {
+                    'cie': r.get('cie_marks', 0),
+                    'see': see_mark,
+                    'tot': r.get('total_marks', 0),
+                    'grd': r.get('grade', 'PND'),
+                    'is_pass': r.get('is_pass', False)
+                }
+                target_courses.add(cc)
+
+            # Generate Excel Files for this branch if data exists
+            sorted_courses_reg = sorted(list(unique_courses_reg))
+            sorted_courses_arr = sorted(list(unique_courses_arr))
             
             if regular_data:
-                excel_reg = generate_a3_ledger(regular_data, sorted_courses_reg, crs_dict, l_branch, l_sem, "REGULAR")
-                c1.success(f"✅ Regular Ledger Ready ({len(regular_data)} Students)")
-                c1.download_button(
-                    label="💾 Download REGULAR A3 Ledger",
-                    data=excel_reg,
-                    file_name=f"Ledger_{l_branch}_Sem{l_sem}_REGULAR.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            else:
-                c1.info("No Regular students found.")
+                excel_reg = generate_a3_ledger(regular_data, sorted_courses_reg, crs_dict, branch, l_sem, "REGULAR")
+                branch_ledgers[f"Ledger_{branch}_Sem{l_sem}_REGULAR.xlsx"] = excel_reg
+                total_students_processed += len(regular_data)
                 
             if arrear_data:
-                excel_arr = generate_a3_ledger(arrear_data, sorted_courses_arr, crs_dict, l_branch, l_sem, "ARREAR")
-                c2.success(f"✅ Arrear Ledger Ready ({len(arrear_data)} Students)")
-                c2.download_button(
-                    label="💾 Download ARREAR A3 Ledger",
-                    data=excel_arr,
-                    file_name=f"Ledger_{l_branch}_Sem{l_sem}_ARREAR.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                excel_arr = generate_a3_ledger(arrear_data, sorted_courses_arr, crs_dict, branch, l_sem, "ARREAR")
+                branch_ledgers[f"Ledger_{branch}_Sem{l_sem}_ARREAR.xlsx"] = excel_arr
+                total_students_processed += len(arrear_data)
+
+        if not branch_ledgers:
+            st.warning(f"No results found for {l_prog} Semester {l_sem} in this cycle.")
+        else:
+            if l_branch == "ALL BRANCHES":
+                # Create a ZIP file
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for filename, excel_bytes in branch_ledgers.items():
+                        zf.writestr(filename, excel_bytes)
+                
+                st.success(f"✅ ZIP Archive Ready! Generated Ledgers for {len(target_branches)} {l_prog} branches ({total_students_processed} Students Total).")
+                st.download_button(
+                    label="💾 Download ALL BRANCHES (ZIP)",
+                    data=zip_buffer.getvalue(),
+                    file_name=f"Ledgers_{l_prog}_Sem{l_sem}_All_Branches.zip",
+                    mime="application/zip",
                     use_container_width=True
                 )
             else:
-                c2.info("No Arrear students found.")
+                # Single branch output
+                c1, c2 = st.columns(2)
+                
+                reg_file = f"Ledger_{l_branch}_Sem{l_sem}_REGULAR.xlsx"
+                if reg_file in branch_ledgers:
+                    c1.success("✅ Regular Ledger Ready")
+                    c1.download_button(
+                        label="💾 Download REGULAR Ledger",
+                        data=branch_ledgers[reg_file],
+                        file_name=reg_file,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                else:
+                    c1.info("No Regular students found.")
+                    
+                arr_file = f"Ledger_{l_branch}_Sem{l_sem}_ARREAR.xlsx"
+                if arr_file in branch_ledgers:
+                    c2.success("✅ Arrear Ledger Ready")
+                    c2.download_button(
+                        label="💾 Download ARREAR Ledger",
+                        data=branch_ledgers[arr_file],
+                        file_name=arr_file,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                else:
+                    c2.info("No Arrear students found.")
