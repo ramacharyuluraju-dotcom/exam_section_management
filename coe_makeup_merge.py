@@ -1,4 +1,15 @@
 import streamlit as st
+import math
+from utils import init_db
+
+# --- CONFIGURATION ---
+supabase = init_db()
+
+# REMOVE THIS LINE IF IT EXISTS:
+# global_cycle_selector(supabase) 
+
+st.title("🚑 Child-to-Parent Merge Engine")
+st.markdown("#### 🔄 Make-up & Supplementary Results Integrator")
 
 # 1. INITIALIZE MASTER PAGE CONFIG (Must be the absolute first Streamlit command)
 st.set_page_config(page_title="AMC COE ERP", layout="wide", page_icon="🏛️")
