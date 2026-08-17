@@ -36,29 +36,36 @@ registration_page = st.Page("coe_registrations.py", title="3. Registrations", ic
 pre_exam_page = st.Page("coe_control.py", title="4. Pre-Exam (Docs)", icon="🖨️")
 exam_day_page = st.Page("coe_exam_day.py", title="5. Exam Day Logistics", icon="🚀")
 results_page = st.Page("coe_results.py", title="6. Results & Grading", icon="🏆")
-
-# 🟢 NEW: REVALUATION ENGINE
 reval_page = st.Page("coe_revaluation.py", title="7. Revaluation Engine", icon="⚖️")
 
-analytics_page = st.Page("analytics_hub.py", title="8. Global Analytics", icon="📊")
-utilities_page = st.Page("doc_utilities.py", title="9. Doc Generator", icon="🖨️")
+# 🟢 THE NEW MAKE-UP MERGE ENGINE
+makeup_merge_page = st.Page("coe_makeup_merge.py", title="8. Make-up Merge", icon="🚑")
+
+analytics_page = st.Page("analytics_hub.py", title="9. Global Analytics", icon="📊")
+utilities_page = st.Page("doc_utilities.py", title="10. Doc Generator", icon="🖨️")
 
 # 🟢 OMR PAGES
-omr_gen_page = st.Page("omr_sheet.py", title="10. OMR Generator", icon="🖨️")
-omr_eval_page = st.Page("OMR_evaluation.py", title="11. OMR Evaluator", icon="🎯")
+omr_gen_page = st.Page("omr_sheet.py", title="11. OMR Generator", icon="🖨️")
+omr_eval_page = st.Page("OMR_evaluation.py", title="12. OMR Evaluator", icon="🎯")
 
 # 🟢 SMART TIMETABLE PAGE
-timetable_page = st.Page("smart_timetable.py", title="12. Smart Timetable", icon="📆")
+timetable_page = st.Page("smart_timetable.py", title="13. Smart Timetable", icon="📆")
 
 # 5. BUILD NAVIGATION MENU
 pages = {
     "🏠 Welcome": [home_page],
     
-    # 🟢 INJECTED TIMETABLE PAGE INTO EXAM MANAGEMENT
     "📅 Exam Management": [lifecycle_page, registration_page, timetable_page],
     
-    # 🟢 ADDED REVALUATION PAGE TO OPERATIONS
-    "🚀 Operations": [pre_exam_page, exam_day_page, results_page, reval_page, utilities_page],
+    # 🟢 MAKE-UP MERGE ADDED TO OPERATIONS HERE
+    "🚀 Operations": [
+        pre_exam_page, 
+        exam_day_page, 
+        results_page, 
+        reval_page, 
+        makeup_merge_page, 
+        utilities_page
+    ],
     
     "🎯 OMR Suite": [omr_gen_page, omr_eval_page],
     "📈 Intelligence": [analytics_page]
