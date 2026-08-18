@@ -48,13 +48,14 @@ def process_revaluation(usn, course_code, new_raw_marks, evaluator_id, cycle_id)
     new_raw_marks = int(new_raw_marks)
     
     # 1. Fetch current result and course constraints
-    res = supabase.table("student_results").select("cie_marks, see_raw, see_scaled").eq("cycle_id", cycle_id).eq("usn", clean_usn).eq("course_code", clean_course).execute()
+    res = supabase.table("student_results").select("cie_marks, see_raw, see_scaled, grade").eq("cycle_id", cycle_id).eq("usn", clean_usn).eq("course_code", clean_course).execute()
     
     if not res.data:
         return False, f"No existing result found for {clean_usn} in {clean_course}."
         
     current_data = res.data[0]
     old_raw = current_data.get('see_raw')
+    old_grade = current_data.get('grade')
     
     # 🟢 FETCH UG/PG STATUS FOR THIS USN
     stu_res = supabase.table("master_students").select("branch_code").eq("usn", clean_usn).execute()
@@ -87,12 +88,19 @@ def process_revaluation(usn, course_code, new_raw_marks, evaluator_id, cycle_id)
         }
         supabase.table("student_results").update(update_payload).eq("cycle_id", cycle_id).eq("usn", clean_usn).eq("course_code", clean_course).execute()
         
-        # Insert Audit Log
+        # Insert Audit Log with CORRECT column names
         audit_payload = {
-            "usn": clean_usn, "course_code": clean_course, "cycle_id": cycle_id,
+            "usn": clean_usn, 
+            "course_code": clean_course, 
+            "cycle_id": cycle_id,
             "change_type": "REVAL_UPGRADE",
-            "old_marks": old_raw_val, "new_marks": new_raw_marks,
-            "evaluator_id": str(evaluator_id)
+            "old_see": old_raw_val,      # Changed to DB col
+            "new_see": new_raw_marks,    # Changed to DB col
+            "old_grade": old_grade,      # Added to meet DB constraints
+            "new_grade": new_grade,      # Added to meet DB constraints
+            "changed_by": st.session_state.get('user', 'admin'),
+            "evaluator_id": str(evaluator_id),
+            "reason": "Revaluation - Favorable Rule Applied"
         }
         supabase.table("marks_audit_log").insert(audit_payload).execute()
         
@@ -102,12 +110,19 @@ def process_revaluation(usn, course_code, new_raw_marks, evaluator_id, cycle_id)
         # --- 🔴 UNFAVORABLE (NO CHANGE) ---
         
         # DO NOT update student_results!
-        # Only log the attempt for legal auditing.
+        # Only log the attempt for legal auditing with CORRECT column names.
         audit_payload = {
-            "usn": clean_usn, "course_code": clean_course, "cycle_id": cycle_id,
+            "usn": clean_usn, 
+            "course_code": clean_course, 
+            "cycle_id": cycle_id,
             "change_type": "REVAL_NO_CHANGE",
-            "old_marks": old_raw_val, "new_marks": new_raw_marks,
-            "evaluator_id": str(evaluator_id)
+            "old_see": old_raw_val,      # Changed to DB col
+            "new_see": new_raw_marks,    # Changed to DB col
+            "old_grade": old_grade,      # Added
+            "new_grade": old_grade,      # Grade didn't change
+            "changed_by": st.session_state.get('user', 'admin'),
+            "evaluator_id": str(evaluator_id),
+            "reason": "Revaluation - Favorable Rule Not Met (No Change)"
         }
         supabase.table("marks_audit_log").insert(audit_payload).execute()
         
@@ -209,10 +224,16 @@ with t3:
             else:
                 df_audit = pd.DataFrame(res.data)
                 
-                # Clean up display columns
-                df_audit = df_audit[['timestamp', 'usn', 'course_code', 'change_type', 'old_marks', 'new_marks', 'evaluator_id']]
-                df_audit['timestamp'] = pd.to_datetime(df_audit['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
-                df_audit = df_audit.sort_values(by='timestamp', ascending=False)
+                # Clean up display columns (updated for new DB schema)
+                # Ensure we only select columns that actually exist in the dataframe
+                display_cols = ['created_at', 'usn', 'course_code', 'change_type', 'old_see', 'new_see', 'old_grade', 'new_grade', 'changed_by', 'evaluator_id', 'reason']
+                available_cols = [col for col in display_cols if col in df_audit.columns]
+                
+                df_audit = df_audit[available_cols]
+                
+                if 'created_at' in df_audit.columns:
+                    df_audit['created_at'] = pd.to_datetime(df_audit['created_at']).dt.strftime('%Y-%m-%d %H:%M')
+                    df_audit = df_audit.sort_values(by='created_at', ascending=False)
                 
                 # Apply color formatting
                 def highlight_changes(val):
