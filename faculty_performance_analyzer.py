@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from utils import init_db, global_cycle_selector
+from utils import init_db
 
 # Initialize Supabase Connection securely via utils.py
 supabase = init_db()
@@ -8,10 +8,14 @@ supabase = init_db()
 st.title("👨‍🏫 Faculty Performance Analyzer")
 st.markdown("Upload your mapping CSV to instantly calculate faculty-wise pass percentages.")
 
-# 1. Fetch Exam Cycles using your built-in Utils function!
-cycle_id = global_cycle_selector(supabase)
+# 1. Read the active cycle securely from the session state
+cycle_id = st.session_state.get("active_cycle_id")
 
 if cycle_id:
+    # Display the currently active cycle to confirm context
+    cycle_name = st.session_state.get("active_cycle_name", "Unknown Cycle")
+    st.info(f"Currently analyzing context: **{cycle_name}**")
+    
     # 2. Upload Mapping File
     uploaded_file = st.file_uploader("Upload Faculty Mapping CSV", type=["csv"], help="CSV must contain 'usn', 'course_code', and 'faculty_name'")
     
@@ -37,7 +41,7 @@ if cycle_id:
                 st.stop()
         
         if results_df.empty:
-            st.error(f"❌ The database returned 0 rows from 'student_results' for this cycle. Make sure results have been uploaded via the COE interface.")
+            st.error("❌ The database returned 0 rows from 'student_results' for this cycle. Make sure results have been uploaded via the COE interface.")
             st.stop()
 
         # --- SANITIZE DB DATA ---
