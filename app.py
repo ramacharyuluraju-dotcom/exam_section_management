@@ -42,13 +42,14 @@ reval_page = st.Page("coe_revaluation.py", title="7. Revaluation Engine", icon="
 utilities_page = st.Page("ledger_utility.py", title="8. Doc & Ledger Hub", icon="🖨️")
 
 analytics_page = st.Page("analytics_hub.py", title="9. Global Analytics", icon="📊")
+faculty_analytics_page = st.Page("faculty_performance_analyzer.py", title="10. Faculty Analytics", icon="👨‍🏫")
 
 # 🟢 OMR PAGES
-omr_gen_page = st.Page("omr_sheet.py", title="10. OMR Generator", icon="🖨️")
-omr_eval_page = st.Page("OMR_evaluation.py", title="11. OMR Evaluator", icon="🎯")
+omr_gen_page = st.Page("omr_sheet.py", title="11. OMR Generator", icon="🖨️")
+omr_eval_page = st.Page("OMR_evaluation.py", title="12. OMR Evaluator", icon="🎯")
 
 # 🟢 SMART TIMETABLE PAGE
-timetable_page = st.Page("smart_timetable.py", title="12. Smart Timetable", icon="📆")
+timetable_page = st.Page("smart_timetable.py", title="13. Smart Timetable", icon="📆")
 
 # 5. BUILD NAVIGATION MENU
 pages = {
@@ -65,7 +66,7 @@ pages = {
     ],
     
     "🎯 OMR Suite": [omr_gen_page, omr_eval_page],
-    "📈 Intelligence": [analytics_page]
+    "📈 Intelligence": [analytics_page, faculty_analytics_page]
 }
 
 # Only show Administration tab to Super Users or COE
