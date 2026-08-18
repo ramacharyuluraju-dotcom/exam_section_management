@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from utils import init_db
+from utils import init_db, global_cycle_selector
 
 # Initialize Supabase Connection securely via utils.py
 supabase = init_db()
@@ -8,47 +8,10 @@ supabase = init_db()
 st.title("👨‍🏫 Faculty Performance Analyzer")
 st.markdown("Upload your mapping CSV to instantly calculate faculty-wise pass percentages.")
 
-# 1. Fetch Exam Cycles
-with st.spinner("Loading Exam Cycles..."):
-    try:
-        cycles_resp = supabase.table("exam_cycles").select("cycle_id, cycle_name, academic_year, is_active").execute()
-        cycles_data = cycles_resp.data
-    except Exception as e:
-        # Fallback if your table uses 'id' instead of 'cycle_id'
-        try:
-            cycles_resp = supabase.table("exam_cycles").select("id, cycle_name, academic_year, is_active").execute()
-            cycles_data = cycles_resp.data
-            for c in cycles_data:
-                c['cycle_id'] = c.pop('id') # Normalize key
-        except Exception as inner_e:
-            st.error(f"Error connecting to Supabase: {inner_e}")
-            st.stop()
+# 1. Fetch Exam Cycles using your built-in Utils function!
+cycle_id = global_cycle_selector(supabase)
 
-if not cycles_data:
-    st.warning("No exam cycles found in database.")
-    st.stop()
-
-# Group cycles by Academic Year
-academic_years = sorted(list(set([c.get('academic_year', 'Unknown') for c in cycles_data])), reverse=True)
-cycle_options = []
-cycle_dict = {}
-
-for yr in academic_years:
-    cycle_options.append(f"--- {yr} ---")
-    yr_cycles = [c for c in cycles_data if c.get('academic_year') == yr]
-    for c in yr_cycles:
-        status = " (Active)" if c.get('is_active') else " (Closed)"
-        label = f"   {c.get('cycle_name')}{status}"
-        cycle_options.append(label)
-        cycle_dict[label] = c['cycle_id']
-
-selected_cycle = st.sidebar.selectbox("Select Exam Cycle", cycle_options)
-
-if selected_cycle and not selected_cycle.startswith("---"):
-    cycle_id = cycle_dict[selected_cycle]
-    
-    st.sidebar.success(f"Context: `{selected_cycle.strip()}`")
-    
+if cycle_id:
     # 2. Upload Mapping File
     uploaded_file = st.file_uploader("Upload Faculty Mapping CSV", type=["csv"], help="CSV must contain 'usn', 'course_code', and 'faculty_name'")
     
