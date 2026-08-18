@@ -31,11 +31,32 @@ if cycle_id:
         mapping_df['usn'] = mapping_df['usn'].astype(str).str.strip().str.upper()
         mapping_df['course_code'] = mapping_df['course_code'].astype(str).str.strip().str.upper()
         
-        # Fetch data from student_results (Fetching both grade and is_pass)
-        with st.spinner("Fetching exam results from database..."):
+        # Fetch data from student_results (BYPASSING THE 1000 ROW LIMIT)
+        with st.spinner("Fetching all exam results from database (This may take a few seconds for large datasets)..."):
             try:
-                response = supabase.table("student_results").select("usn, course_code, grade, is_pass").eq("cycle_id", cycle_id).execute()
-                results_df = pd.DataFrame(response.data)
+                all_data = []
+                chunk_size = 1000
+                start = 0
+                
+                while True:
+                    response = supabase.table("student_results") \
+                        .select("usn, course_code, grade, is_pass") \
+                        .eq("cycle_id", cycle_id) \
+                        .range(start, start + chunk_size - 1) \
+                        .execute()
+                    
+                    chunk = response.data
+                    if not chunk:
+                        break # Break loop if no more data is returned
+                        
+                    all_data.extend(chunk)
+                    
+                    if len(chunk) < chunk_size:
+                        break # Break loop if we retrieved less than 1000 rows (meaning it's the last page)
+                        
+                    start += chunk_size
+                    
+                results_df = pd.DataFrame(all_data)
             except Exception as e:
                 st.error(f"Failed to query student_results table: {e}")
                 st.stop()
@@ -51,7 +72,7 @@ if cycle_id:
         # --- DIAGNOSTIC EXPANDER ---
         with st.expander("🛠️ Debug Mismatches: View Raw Formatting (Click to expand)"):
             st.markdown("If you get a mismatch error, compare these two tables. Do the Course Codes look exactly the same?")
-            st.markdown("**1. Raw Database Results (First 100 rows):**")
+            st.markdown(f"**1. Raw Database Results (Total: {len(results_df)} rows pulled from Supabase):**")
             st.dataframe(results_df.head(100), use_container_width=True)
             st.markdown(f"**Unique DB Course Codes:** `{results_df['course_code'].unique().tolist()}`")
             
@@ -67,7 +88,7 @@ if cycle_id:
             st.warning("Please check the 'Debug' expander above to compare the formatting of your CSV versus the Database.")
             st.stop()
             
-        st.success(f"✅ Successfully matched {len(merged_df)} student records!")
+        st.success(f"✅ Successfully matched {len(merged_df)} student records out of {len(results_df)} total database entries!")
 
         # 4. Calculate Pass Percentages based on ATTENDED students
         # Mark Attended = 0 if AB or NE, else 1
