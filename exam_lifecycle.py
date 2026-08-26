@@ -207,8 +207,24 @@ with tabs[1]:
         default_sem_type = "BOTH" if c_type == "Regular + Arrear (Concurrent)" else "EVEN"
         c_sem_type = col3.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"], index=["ODD", "EVEN", "BOTH"].index(default_sem_type)) 
         
-        c_target_sems = st.multiselect("Select Target Semesters", options=list(range(1, 11)), default=[2, 4, 6, 8])
+        if c_sem_type == "ODD": sem_options = [1, 3, 5, 7, 9]
+        elif c_sem_type == "EVEN": sem_options = [2, 4, 6, 8, 10]
+        else: sem_options = list(range(1, 11))
+            
+        c_target_sems = st.multiselect("Select Target Semesters", options=sem_options, default=[1, 2] if c_type == "Regular + Arrear (Concurrent)" else sem_options)
         
+        parent_cycle_id = None
+        if c_type == "Supplementary (Arrear Only)":
+            st.markdown("🔗 **Link to Parent Exam Cycle**")
+            try:
+                existing_cycles = supabase.table("exam_cycles").select("cycle_id, cycle_name").execute().data
+                if existing_cycles:
+                    cycle_dict = {f"{c['cycle_name']} (ID: {c['cycle_id']})": int(c['cycle_id']) for c in existing_cycles}
+                    selected_parent = st.selectbox("Select Parent Cycle", options=["None"] + list(cycle_dict.keys()))
+                    if selected_parent != "None": parent_cycle_id = cycle_dict[selected_parent]
+            except Exception as e:
+                st.error("Could not load existing cycles for linking.")
+
         if st.button("🚀 Start Standard Cycle", type="primary"):
             if not c_name or not c_target_sems:
                 st.error("Please provide a name and select target semesters.")
@@ -216,11 +232,15 @@ with tabs[1]:
                 new_cycle = {
                     "cycle_name": c_name, "academic_year": c_ay, "exam_type": c_type,
                     "semester_type": c_sem_type, "target_semesters": c_target_sems,
-                    "status_code": 1, "is_active": True, "is_brs_active": False # Standard cycles don't use BRS initially
+                    "status_code": 1, "is_active": True, 
+                    "is_brs_active": False,
+                    "parent_cycle_id": parent_cycle_id
                 }
-                supabase.table("exam_cycles").insert(new_cycle).execute()
-                st.success(f"Standard Cycle '{c_name}' initiated!")
-                st.rerun()
+                try:
+                    supabase.table("exam_cycles").insert(new_cycle).execute()
+                    st.success(f"Standard Cycle '{c_name}' initiated!")
+                    st.rerun()
+                except Exception as e: st.error(f"Database Error: {e}")
 
     # --- SPECIAL EVENT CYCLE (SUMMER / MAKE-UP) ---
     elif cycle_category == "Special Event Cycle (Summer / Make-up)":
@@ -235,6 +255,18 @@ with tabs[1]:
         
         e_target_sems = st.multiselect("Select Target Semesters", options=list(range(1, 11)), default=list(range(1, 11)), key="e_sems")
         
+        parent_cycle_id = None
+        if e_type == "Make-up":
+            st.markdown("🔗 **Link to Parent Exam Cycle**")
+            try:
+                existing_cycles = supabase.table("exam_cycles").select("cycle_id, cycle_name").execute().data
+                if existing_cycles:
+                    cycle_dict = {f"{c['cycle_name']} (ID: {c['cycle_id']})": int(c['cycle_id']) for c in existing_cycles}
+                    selected_parent = st.selectbox("Select Parent Cycle", options=["None"] + list(cycle_dict.keys()), key="e_parent")
+                    if selected_parent != "None": parent_cycle_id = cycle_dict[selected_parent]
+            except Exception as e:
+                st.error("Could not load existing cycles for linking.")
+
         st.markdown("### 🌐 Department Portal Integration")
         push_to_brs = st.toggle(f"Push {e_type} Event to BRS Portal?", value=True, help="If toggled ON, departments will immediately be able to register students for this event online.")
         
@@ -246,11 +278,14 @@ with tabs[1]:
                     "cycle_name": e_name, "academic_year": e_ay, "exam_type": e_type,
                     "semester_type": e_sem_type, "target_semesters": e_target_sems,
                     "status_code": 1, "is_active": True, 
-                    "is_brs_active": push_to_brs # 🟢 Explicitly telling BRS to open!
+                    "is_brs_active": push_to_brs,
+                    "parent_cycle_id": parent_cycle_id
                 }
-                supabase.table("exam_cycles").insert(new_event).execute()
-                st.success(f"{e_type} Event '{e_name}' initiated! (BRS Portal Active: {push_to_brs})")
-                st.rerun()
+                try:
+                    supabase.table("exam_cycles").insert(new_event).execute()
+                    st.success(f"{e_type} Event '{e_name}' initiated! (BRS Portal Active: {push_to_brs})")
+                    st.rerun()
+                except Exception as e: st.error(f"Database Error: {e}")
                 
 # ==========================================
 # 3. CYCLE HISTORY & RESTORE
