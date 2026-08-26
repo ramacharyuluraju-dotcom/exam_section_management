@@ -200,17 +200,22 @@ with tabs[1]:
         st.info("Use this for standard End-of-Semester examinations.")
         c_name = st.text_input("Cycle Name", placeholder="e.g., Even Sem + Odd Arrears July 2026")
         
-        col1, col2, col3 = st.columns(3)
-        c_ay = col1.text_input("Academic Year", value="2025-26")
-        c_type = col2.selectbox("Exam Type", ["Regular", "Regular + Arrear (Concurrent)", "Supplementary (Arrear Only)"])
+        # 🟢 NEW: Added Program Type Selector
+        col_p1, col_p2, col_p3 = st.columns([1, 1, 2])
+        c_ay = col_p1.text_input("Academic Year", value="2025-26")
+        c_prog_type = col_p2.selectbox("Program", ["UG", "PG", "BOTH"])
+        c_type = col_p3.selectbox("Exam Type", ["Regular", "Regular + Arrear (Concurrent)", "Supplementary (Arrear Only)"])
         
-        default_sem_type = "BOTH" if c_type == "Regular + Arrear (Concurrent)" else "EVEN"
-        c_sem_type = col3.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"], index=["ODD", "EVEN", "BOTH"].index(default_sem_type)) 
+        c_sem_type = st.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"], index=2 if c_type == "Regular + Arrear (Concurrent)" else 1) 
         
         if c_sem_type == "ODD": sem_options = [1, 3, 5, 7, 9]
         elif c_sem_type == "EVEN": sem_options = [2, 4, 6, 8, 10]
         else: sem_options = list(range(1, 11))
             
+        # Dynamically limit PG semesters to 4
+        if c_prog_type == "PG":
+            sem_options = [s for s in sem_options if s <= 4]
+
         c_target_sems = st.multiselect("Select Target Semesters", options=sem_options, default=[1, 2] if c_type == "Regular + Arrear (Concurrent)" else sem_options)
         
         parent_cycle_id = None
@@ -232,13 +237,14 @@ with tabs[1]:
                 new_cycle = {
                     "cycle_name": c_name, "academic_year": c_ay, "exam_type": c_type,
                     "semester_type": c_sem_type, "target_semesters": c_target_sems,
+                    "program_type": c_prog_type, # 🟢 NEW: Saves program type to DB
                     "status_code": 1, "is_active": True, 
                     "is_brs_active": False,
                     "parent_cycle_id": parent_cycle_id
                 }
                 try:
                     supabase.table("exam_cycles").insert(new_cycle).execute()
-                    st.success(f"Standard Cycle '{c_name}' initiated!")
+                    st.success(f"Standard Cycle '{c_name}' ({c_prog_type}) initiated!")
                     st.rerun()
                 except Exception as e: st.error(f"Database Error: {e}")
 
@@ -248,12 +254,15 @@ with tabs[1]:
         
         e_name = st.text_input("Event Name", placeholder="e.g., Summer Semester 2026")
         
-        col_e1, col_e2, col_e3 = st.columns(3)
+        # 🟢 NEW: Added Program Type Selector
+        col_e1, col_e2, col_e3, col_e4 = st.columns(4)
         e_ay = col_e1.text_input("Academic Year", value="2025-26", key="e_ay")
-        e_type = col_e2.selectbox("Event Type", ["Summer", "Make-up"])
-        e_sem_type = col_e3.selectbox("Semester Type", ["SUMMER", "ODD", "EVEN", "BOTH"])
+        e_prog_type = col_e2.selectbox("Program", ["UG", "PG", "BOTH"], key="e_prog")
+        e_type = col_e3.selectbox("Event Type", ["Summer", "Make-up"])
+        e_sem_type = col_e4.selectbox("Semester Type", ["SUMMER", "ODD", "EVEN", "BOTH"])
         
-        e_target_sems = st.multiselect("Select Target Semesters", options=list(range(1, 11)), default=list(range(1, 11)), key="e_sems")
+        e_sem_options = list(range(1, 11)) if e_prog_type != "PG" else list(range(1, 5))
+        e_target_sems = st.multiselect("Select Target Semesters", options=e_sem_options, default=e_sem_options, key="e_sems")
         
         parent_cycle_id = None
         if e_type == "Make-up":
@@ -277,13 +286,14 @@ with tabs[1]:
                 new_event = {
                     "cycle_name": e_name, "academic_year": e_ay, "exam_type": e_type,
                     "semester_type": e_sem_type, "target_semesters": e_target_sems,
+                    "program_type": e_prog_type, # 🟢 NEW: Saves program type to DB
                     "status_code": 1, "is_active": True, 
                     "is_brs_active": push_to_brs,
                     "parent_cycle_id": parent_cycle_id
                 }
                 try:
                     supabase.table("exam_cycles").insert(new_event).execute()
-                    st.success(f"{e_type} Event '{e_name}' initiated! (BRS Portal Active: {push_to_brs})")
+                    st.success(f"{e_type} Event '{e_name}' ({e_prog_type}) initiated! (BRS Portal Active: {push_to_brs})")
                     st.rerun()
                 except Exception as e: st.error(f"Database Error: {e}")
                 
