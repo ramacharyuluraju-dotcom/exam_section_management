@@ -187,75 +187,70 @@ with tabs[0]:
 with tabs[1]:
     st.markdown("### 🆕 Initiate New Exam Session")
     
-    c_name = st.text_input("Cycle Name", placeholder="e.g., Even Sem + Odd Arrears July 2026")
-    
-    col1, col2, col3 = st.columns(3)
-    c_ay = col1.text_input("Academic Year", value="2025-26")
-    
-    c_type = col2.selectbox("Exam Type", [
-        "Regular", 
-        "Regular + Arrear (Concurrent)", 
-        "Supplementary (Arrear Only)", 
-        "Make-up", 
-        "Summer"
-    ])
-    
-    default_sem_type = "BOTH" if c_type == "Regular + Arrear (Concurrent)" else "EVEN"
-    c_sem_type = col3.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"], index=["ODD", "EVEN", "BOTH"].index(default_sem_type)) 
-    
-    if c_type == "Regular + Arrear (Concurrent)":
-        st.success("💡 **Concurrent Mode:** This cycle will process both current semester subjects and backlog subjects at the same time. Please ensure you select **BOTH** as the Semester Type, and select the specific target semesters below (e.g., Semester 1 and 2).")
-
-    if c_sem_type == "ODD":
-        sem_options = [1, 3, 5, 7, 9]
-    elif c_sem_type == "EVEN":
-        sem_options = [2, 4, 6, 8, 10]
-    else:
-        sem_options = list(range(1, 11))
-        
-    c_target_sems = st.multiselect(
-        "Select Target Semesters for this Cycle", 
-        options=sem_options, 
-        default=[1, 2] if c_type == "Regular + Arrear (Concurrent)" else sem_options, 
-        help="Choose the specific semesters that will have exams in this cycle."
+    cycle_category = st.radio(
+        "Select Cycle Category", 
+        ["Standard Academic Cycle", "Special Event Cycle (Summer / Make-up)"],
+        horizontal=True
     )
     
-    parent_cycle_id = None
-    if c_type in ["Supplementary (Arrear Only)", "Make-up"]:
-        st.markdown("🔗 **Link to Parent Exam Cycle**")
-        try:
-            existing_cycles = supabase.table("exam_cycles").select("cycle_id, cycle_name").execute().data
-            if existing_cycles:
-                cycle_dict = {f"{c['cycle_name']} (ID: {c['cycle_id']})": int(c['cycle_id']) for c in existing_cycles}
-                selected_parent = st.selectbox("Select Parent Cycle", options=["None"] + list(cycle_dict.keys()))
-                
-                if selected_parent != "None":
-                    parent_cycle_id = cycle_dict[selected_parent]
-        except Exception as e:
-            st.error("Could not load existing cycles for linking.")
-
-    if st.button("🚀 Start Exam Lifecycle", type="primary"):
-        if not c_name:
-            st.error("Please provide a name for the new cycle.")
-        elif not c_target_sems:
-            st.error("Please select at least one target semester.")
-        else:
-            new_cycle = {
-                "cycle_name": c_name,
-                "academic_year": c_ay,
-                "exam_type": c_type,
-                "semester_type": c_sem_type,
-                "target_semesters": c_target_sems,
-                "status_code": 1,
-                "is_active": True,
-                "parent_cycle_id": parent_cycle_id 
-            }
-            try:
+    st.divider()
+    
+    # --- STANDARD ACADEMIC CYCLE ---
+    if cycle_category == "Standard Academic Cycle":
+        st.info("Use this for standard End-of-Semester examinations.")
+        c_name = st.text_input("Cycle Name", placeholder="e.g., Even Sem + Odd Arrears July 2026")
+        
+        col1, col2, col3 = st.columns(3)
+        c_ay = col1.text_input("Academic Year", value="2025-26")
+        c_type = col2.selectbox("Exam Type", ["Regular", "Regular + Arrear (Concurrent)", "Supplementary (Arrear Only)"])
+        
+        default_sem_type = "BOTH" if c_type == "Regular + Arrear (Concurrent)" else "EVEN"
+        c_sem_type = col3.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"], index=["ODD", "EVEN", "BOTH"].index(default_sem_type)) 
+        
+        c_target_sems = st.multiselect("Select Target Semesters", options=list(range(1, 11)), default=[2, 4, 6, 8])
+        
+        if st.button("🚀 Start Standard Cycle", type="primary"):
+            if not c_name or not c_target_sems:
+                st.error("Please provide a name and select target semesters.")
+            else:
+                new_cycle = {
+                    "cycle_name": c_name, "academic_year": c_ay, "exam_type": c_type,
+                    "semester_type": c_sem_type, "target_semesters": c_target_sems,
+                    "status_code": 1, "is_active": True, "is_brs_active": False # Standard cycles don't use BRS initially
+                }
                 supabase.table("exam_cycles").insert(new_cycle).execute()
-                st.success(f"Exam Cycle '{c_name}' initiated successfully!")
+                st.success(f"Standard Cycle '{c_name}' initiated!")
                 st.rerun()
-            except Exception as e:
-                st.error(f"Could not create cycle: {e}")
+
+    # --- SPECIAL EVENT CYCLE (SUMMER / MAKE-UP) ---
+    elif cycle_category == "Special Event Cycle (Summer / Make-up)":
+        st.info("Use this for ad-hoc events. You can instantly push these to the BRS portal for Department Online Registrations.")
+        
+        e_name = st.text_input("Event Name", placeholder="e.g., Summer Semester 2026")
+        
+        col_e1, col_e2, col_e3 = st.columns(3)
+        e_ay = col_e1.text_input("Academic Year", value="2025-26", key="e_ay")
+        e_type = col_e2.selectbox("Event Type", ["Summer", "Make-up"])
+        e_sem_type = col_e3.selectbox("Semester Type", ["SUMMER", "ODD", "EVEN", "BOTH"])
+        
+        e_target_sems = st.multiselect("Select Target Semesters", options=list(range(1, 11)), default=list(range(1, 11)), key="e_sems")
+        
+        st.markdown("### 🌐 Department Portal Integration")
+        push_to_brs = st.toggle(f"Push {e_type} Event to BRS Portal?", value=True, help="If toggled ON, departments will immediately be able to register students for this event online.")
+        
+        if st.button(f"🚀 Start {e_type} Event", type="primary"):
+            if not e_name or not e_target_sems:
+                st.error("Please provide an event name and select target semesters.")
+            else:
+                new_event = {
+                    "cycle_name": e_name, "academic_year": e_ay, "exam_type": e_type,
+                    "semester_type": e_sem_type, "target_semesters": e_target_sems,
+                    "status_code": 1, "is_active": True, 
+                    "is_brs_active": push_to_brs # 🟢 Explicitly telling BRS to open!
+                }
+                supabase.table("exam_cycles").insert(new_event).execute()
+                st.success(f"{e_type} Event '{e_name}' initiated! (BRS Portal Active: {push_to_brs})")
+                st.rerun()
                 
 # ==========================================
 # 3. CYCLE HISTORY & RESTORE
