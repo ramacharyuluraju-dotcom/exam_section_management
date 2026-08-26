@@ -187,6 +187,11 @@ with tabs[0]:
 with tabs[1]:
     st.markdown("### 🆕 Initiate New Exam Session")
     
+    # 🟢 THE FIX: Catch the success message AFTER the page reloads
+    if 'success_message' in st.session_state:
+        st.success(st.session_state['success_message'])
+        del st.session_state['success_message']
+        
     cycle_category = st.radio(
         "Select Cycle Category", 
         ["Standard Academic Cycle", "Special Event Cycle (Summer / Make-up)"],
@@ -200,7 +205,6 @@ with tabs[1]:
         st.info("Use this for standard End-of-Semester examinations.")
         c_name = st.text_input("Cycle Name", placeholder="e.g., Even Sem + Odd Arrears July 2026")
         
-        # 🟢 NEW: Added Program Type Selector
         col_p1, col_p2, col_p3 = st.columns([1, 1, 2])
         c_ay = col_p1.text_input("Academic Year", value="2025-26")
         c_prog_type = col_p2.selectbox("Program", ["UG", "PG", "BOTH"])
@@ -212,7 +216,6 @@ with tabs[1]:
         elif c_sem_type == "EVEN": sem_options = [2, 4, 6, 8, 10]
         else: sem_options = list(range(1, 11))
             
-        # Dynamically limit PG semesters to 4
         if c_prog_type == "PG":
             sem_options = [s for s in sem_options if s <= 4]
 
@@ -234,19 +237,25 @@ with tabs[1]:
             if not c_name or not c_target_sems:
                 st.error("Please provide a name and select target semesters.")
             else:
-                new_cycle = {
-                    "cycle_name": c_name, "academic_year": c_ay, "exam_type": c_type,
-                    "semester_type": c_sem_type, "target_semesters": c_target_sems,
-                    "program_type": c_prog_type, # 🟢 NEW: Saves program type to DB
-                    "status_code": 1, "is_active": True, 
-                    "is_brs_active": False,
-                    "parent_cycle_id": parent_cycle_id
-                }
-                try:
-                    supabase.table("exam_cycles").insert(new_cycle).execute()
-                    st.success(f"Standard Cycle '{c_name}' ({c_prog_type}) initiated!")
-                    st.rerun()
-                except Exception as e: st.error(f"Database Error: {e}")
+                # 🟢 THE FIX: Check for duplicates before inserting
+                dup_check = supabase.table("exam_cycles").select("cycle_id").eq("cycle_name", c_name.strip()).execute()
+                if dup_check.data:
+                    st.error(f"❌ A cycle named '{c_name}' already exists! Please use a unique name.")
+                else:
+                    new_cycle = {
+                        "cycle_name": c_name.strip(), "academic_year": c_ay, "exam_type": c_type,
+                        "semester_type": c_sem_type, "target_semesters": c_target_sems,
+                        "program_type": c_prog_type,
+                        "status_code": 1, "is_active": True, 
+                        "is_brs_active": False,
+                        "parent_cycle_id": parent_cycle_id
+                    }
+                    try:
+                        supabase.table("exam_cycles").insert(new_cycle).execute()
+                        # Save message to session state to survive the rerun
+                        st.session_state['success_message'] = f"✅ Standard Cycle '{c_name}' ({c_prog_type}) initiated successfully!"
+                        st.rerun()
+                    except Exception as e: st.error(f"Database Error: {e}")
 
     # --- SPECIAL EVENT CYCLE (SUMMER / MAKE-UP) ---
     elif cycle_category == "Special Event Cycle (Summer / Make-up)":
@@ -254,7 +263,6 @@ with tabs[1]:
         
         e_name = st.text_input("Event Name", placeholder="e.g., Summer Semester 2026")
         
-        # 🟢 NEW: Added Program Type Selector
         col_e1, col_e2, col_e3, col_e4 = st.columns(4)
         e_ay = col_e1.text_input("Academic Year", value="2025-26", key="e_ay")
         e_prog_type = col_e2.selectbox("Program", ["UG", "PG", "BOTH"], key="e_prog")
@@ -283,19 +291,25 @@ with tabs[1]:
             if not e_name or not e_target_sems:
                 st.error("Please provide an event name and select target semesters.")
             else:
-                new_event = {
-                    "cycle_name": e_name, "academic_year": e_ay, "exam_type": e_type,
-                    "semester_type": e_sem_type, "target_semesters": e_target_sems,
-                    "program_type": e_prog_type, # 🟢 NEW: Saves program type to DB
-                    "status_code": 1, "is_active": True, 
-                    "is_brs_active": push_to_brs,
-                    "parent_cycle_id": parent_cycle_id
-                }
-                try:
-                    supabase.table("exam_cycles").insert(new_event).execute()
-                    st.success(f"{e_type} Event '{e_name}' ({e_prog_type}) initiated! (BRS Portal Active: {push_to_brs})")
-                    st.rerun()
-                except Exception as e: st.error(f"Database Error: {e}")
+                # 🟢 THE FIX: Check for duplicates before inserting
+                dup_check = supabase.table("exam_cycles").select("cycle_id").eq("cycle_name", e_name.strip()).execute()
+                if dup_check.data:
+                    st.error(f"❌ An event named '{e_name}' already exists! Please use a unique name.")
+                else:
+                    new_event = {
+                        "cycle_name": e_name.strip(), "academic_year": e_ay, "exam_type": e_type,
+                        "semester_type": e_sem_type, "target_semesters": e_target_sems,
+                        "program_type": e_prog_type,
+                        "status_code": 1, "is_active": True, 
+                        "is_brs_active": push_to_brs,
+                        "parent_cycle_id": parent_cycle_id
+                    }
+                    try:
+                        supabase.table("exam_cycles").insert(new_event).execute()
+                        # Save message to session state to survive the rerun
+                        st.session_state['success_message'] = f"✅ {e_type} Event '{e_name}' ({e_prog_type}) initiated! (BRS Portal Active: {push_to_brs})"
+                        st.rerun()
+                    except Exception as e: st.error(f"Database Error: {e}")
                 
 # ==========================================
 # 3. CYCLE HISTORY & RESTORE
