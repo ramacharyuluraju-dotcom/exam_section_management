@@ -294,7 +294,8 @@ reg_tabs = st.tabs([
     "🔍 View Registrations", 
     "📸 Photo Backup", 
     "📥 Arrear Extractor",
-    "🚑 Make-up Extractor" 
+    "🚑 Make-up Extractor",
+    "☀️ Summer Extractor"
 ])
 
 # ==========================================
@@ -828,3 +829,111 @@ with reg_tabs[6]:
                     )
             except Exception as e:
                 st.error(f"Error processing make-up candidates: {e}")
+
+# ==========================================
+# 8. SUMMER EXAM EXTRACTOR
+# ==========================================
+with reg_tabs[7]:
+    st.header("☀️ Extract Summer Semester Candidates")
+    st.info("Extracts students eligible for Summer Classes & Exams based on CIE failure, Absenteeism, and SEE failure. Use this CSV to populate your Online Application Portal.")
+
+    col1, col2 = st.columns(2)
+    s_target_prog = col1.selectbox("Target Program", ["UG", "PG"], key="summer_prog")
+    s_target_sems = col2.multiselect("Target Semesters", list(range(1, 11)), default=[1, 2], key="summer_sems")
+
+    if st.button("🔍 Generate Summer Data", type="primary"):
+        with st.spinner("Analyzing historical exam data for summer eligibility..."):
+            try:
+                branches_res = fetch_all_records("master_branches", "branch_code, program_type")
+                prog_map = {b['branch_code']: b['program_type'] for b in branches_res}
+
+                raw_students = fetch_all_records("master_students", "usn, branch_code, status")
+                # Exclude discontinued students
+                valid_students = {s['usn']: prog_map.get(s['branch_code'], 'Unknown') for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() != 'DISCONTINUED'}
+
+                courses_res = fetch_all_records("master_courses", "course_code, title, semester_id, credits")
+                course_map = {c['course_code']: {"title": c.get('title', 'Unknown'), "sem": int(c.get('semester_id', 0)), "credits": safe_float(c.get('credits'), 0.0)} for c in courses_res}
+
+                results_res = fetch_all_records("student_results", "usn, course_code, grade, cie_marks, is_pass, cycle_id")
+                results_res.sort(key=lambda x: int(x.get('cycle_id', 0)))
+
+                latest_results = {}
+                for r in results_res:
+                    u = r['usn']
+                    if u not in valid_students: continue
+                    cc = r['course_code']
+                    if u not in latest_results: latest_results[u] = {}
+                    latest_results[u][cc] = {
+                        "grade": str(r.get('grade', '')).strip().upper(),
+                        "cie_marks": safe_float(r.get('cie_marks'), 0.0),
+                        "is_pass": r.get('is_pass', False)
+                    }
+
+                summer_list = []
+                for usn, courses in latest_results.items():
+                    prog_type = valid_students.get(usn)
+                    
+                    if prog_type == s_target_prog:
+                        cie_threshold = 20 if prog_type == "UG" else 25
+
+                        for cc, data in courses.items():
+                            grade = data['grade']
+                            cie_marks = data['cie_marks']
+                            is_pass = data['is_pass']
+
+                            c_info = course_map.get(cc, {"sem": 0, "title": "Unknown", "credits": 0.0})
+                            c_sem = c_info['sem']
+
+                            # Process only if it's a failed subject in the targeted semester
+                            if c_sem in s_target_sems and not is_pass and grade not in ['PND', 'PENDING', 'FROZEN', '']:
+                                category = None
+                                
+                                # Evaluate based on raw marks (bypassing the need for an NE status)
+                                if cie_marks < cie_threshold:
+                                    category = "Rule 1: Mandatory Classes (CIE Fail)"
+                                elif grade == 'AB' and cie_marks >= cie_threshold:
+                                    category = "Rule 2: Exam Only (Absent)"
+                                elif grade == 'F' and cie_marks >= cie_threshold:
+                                    category = "Rule 3: Exam Only (SEE Fail)"
+
+                                if category:
+                                    summer_list.append({
+                                        "usn": usn,
+                                        "semester": c_sem,
+                                        "course_code": cc,
+                                        "course_title": c_info['title'],
+                                        "credits": c_info['credits'],
+                                        "previous_grade": grade,
+                                        "cie_marks": cie_marks,
+                                        "summer_category": category,
+                                        "academic_year": st.session_state.get('active_academic_year', '2025-26'),
+                                        "semester_type": "SUMMER"
+                                    })
+
+                if not summer_list:
+                    st.success(f"No active {s_target_prog} summer eligible courses found for semesters {s_target_sems}.")
+                else:
+                    df_summer = pd.DataFrame(summer_list)
+                    df_summer = df_summer[['usn', 'semester', 'course_code', 'course_title', 'credits', 'previous_grade', 'cie_marks', 'summer_category', 'academic_year', 'semester_type']]
+                    df_summer = df_summer.sort_values(by=['summer_category', 'semester', 'course_code', 'usn'])
+                    
+                    st.success(f"✅ Found {len(df_summer)} eligible summer registrations.")
+                    
+                    # Highlight rows for better visual tracking in the COE dashboard
+                    def highlight_summer(val):
+                        if 'Rule 1' in str(val): return 'color: #D32F2F; font-weight: bold' 
+                        elif 'Rule 2' in str(val): return 'color: #F57C00; font-weight: bold' 
+                        elif 'Rule 3' in str(val): return 'color: #1976D2; font-weight: bold' 
+                        return ''
+                        
+                    st.dataframe(df_summer.style.map(highlight_summer, subset=['summer_category']), use_container_width=True)
+                    
+                    csv = df_summer.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label=f"📥 Download {s_target_prog} Summer Candidates (CSV)", 
+                        data=csv, 
+                        file_name=f"{s_target_prog}_Summer_Candidates.csv", 
+                        mime="text/csv"
+                    )
+            except Exception as e:
+                st.error(f"Error generating summer list: {e}")
