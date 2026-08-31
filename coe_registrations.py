@@ -430,7 +430,6 @@ with reg_tabs[1]:
     st.info("This engine securely imports ALL approved ('PAID') applications from the Department Staging area into the official COE database. It handles both Regular Academic terms and Summer Event cycles automatically.")
     
     try:
-        # 🟢 FIX: Removed the ODD/EVEN filter to capture SUMMER automatically!
         staging_res = supabase.table("course_registration_online").select("*").eq("payment_status", "PAID").execute()
         staged_data = staging_res.data if staging_res.data else []
         
@@ -442,27 +441,37 @@ with reg_tabs[1]:
             
             if st.button("🚀 Execute Master Sync", type="primary"):
                 with st.spinner("Importing department records into official COE database..."):
+                    
                     official_payload = [{
                         "usn": r['usn'],
                         "course_code": r['course_code'],
                         "semester": r['semester'],
-                        "academic_year": r['academic_year'],
-                        "semester_type": r['semester_type'],
-                        "registration_type": r['registration_type'],
-                        "cycle_id": r.get('cycle_id') # 🟢 Preserves the direct link for Summer!
+                        "academic_year": r.get('academic_year', active_ay),
+                        "semester_type": r.get('semester_type', 'ODD'),
+                        "registration_type": r.get('registration_type', 'REGULAR'),
+                        "cycle_id": r.get('cycle_id') 
                     } for r in staged_data]
                     
-                    unique_ay_terms = list(set([(r['academic_year'], r['semester_type']) for r in staged_data]))
+                    # 🟢 SAFELY CLEAR DUPLICATES BEFORE INSERTING
+                    # Group 1: Summer students are cleared by their active cycle_id
+                    summer_cycles = list(set([r['cycle_id'] for r in official_payload if r['registration_type'] == 'SUMMER' and r['cycle_id']]))
+                    for cid in summer_cycles:
+                        usns = list(set([r['usn'] for r in official_payload if r['cycle_id'] == cid]))
+                        for i in range(0, len(usns), 100):
+                            supabase.table("course_registrations").delete().eq("cycle_id", cid).in_("usn", usns[i:i+100]).execute()
+                            
+                    # Group 2: Regular students are cleared by their academic year/term
+                    unique_terms = list(set([(r['academic_year'], r['semester_type']) for r in official_payload if r['registration_type'] == 'REGULAR']))
+                    for ay, term in unique_terms:
+                        usns = list(set([r['usn'] for r in official_payload if r['academic_year'] == ay and r['semester_type'] == term]))
+                        for i in range(0, len(usns), 100):
+                            supabase.table("course_registrations").delete().eq("academic_year", ay).eq("semester_type", term).in_("usn", usns[i:i+100]).execute()
                     
-                    for ay, term in unique_ay_terms:
-                        usns_in_term = list(set([r['usn'] for r in staged_data if r['academic_year'] == ay and r['semester_type'] == term]))
-                        for i in range(0, len(usns_in_term), 100):
-                            supabase.table("course_registrations").delete().eq("academic_year", ay).eq("semester_type", term).in_("usn", usns_in_term[i:i+100]).execute()
-                    
+                    # 🟢 BULK INSERT
                     for i in range(0, len(official_payload), 500):
                         supabase.table("course_registrations").insert(official_payload[i:i+500]).execute()
                         
-                    # Clear staging
+                    # 🟢 CLEAR STAGING
                     for i in range(0, len(unique_staged_usns), 100):
                         supabase.table("course_registration_online").delete().in_("usn", unique_staged_usns[i:i+100]).execute()
                         
