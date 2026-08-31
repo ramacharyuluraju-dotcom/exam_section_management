@@ -91,7 +91,6 @@ with tabs[2]:
         st.subheader("Student Database Enrollment")
         col_s1, col_s2 = st.columns(2)
         with col_s1:
-            # 🟢 UPDATED: Swapped batch_year for scheme_batch
             f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, scheme_batch)", type='csv')
             if f_stu and st.button("Upload Students"):
                 df = pd.read_csv(f_stu)
@@ -278,10 +277,16 @@ with tabs[3]:
         c_m1, c_m2 = st.columns(2)
         
         with c_m1:
-            # 🟢 UPDATED: Added course_type and scheme_batch to CSV processor
             f_crs = st.file_uploader("Upload Scheme CSV (course_code, title, branch_code, semester_id, credits, max_cie, max_see, total_marks, course_type, scheme_batch)", type='csv')
             if f_crs and st.button("Upload Scheme"):
                 df = pd.read_csv(f_crs)
+                
+                # Automatically clean and format comma-separated branch codes from the CSV
+                if 'branch_code' in df.columns:
+                    df['branch_code'] = df['branch_code'].astype(str).apply(
+                        lambda x: ", ".join([b.strip().upper() for b in x.split(",")])
+                    )
+                
                 expected = ['course_code', 'title', 'branch_code', 'semester_id', 'credits', 'max_cie', 'max_see', 'total_marks', 'course_type', 'scheme_batch']
                 data = clean_data_for_db(df, expected)
                 try:
@@ -296,18 +301,15 @@ with tabs[3]:
                 cc = col1.text_input("Course Code")
                 ct = col2.text_input("Title")
                 
-                # 🟢 UPDATED: Explaining the Comma Separated arrays for shared subjects
                 cbc = col1.text_input("Branch Code(s)", help="Use comma separation for shared subjects (e.g., 'CS, IS, AI'). Use 'ALL' for universal subjects.")
                 cs = col2.number_input("Semester ID", 1, 10, 1)
                 ccr = col1.number_input("Credits", 0, 5, 4)
                 
-                # 🟢 UPDATED: Core / PE / OE selector and Scheme Batch
                 ctype = col2.selectbox("Course Type", ["CORE", "PE", "OE"])
                 c_scheme = col1.number_input("Scheme Batch (Year)", 20, 99, 25, help="Enter the 2-digit batch year this syllabus applies to (e.g., 25, 26).")
                 
                 if st.form_submit_button("💾 Add/Update Course"):
                     try:
-                        # Ensures branch codes are capitalized and stripped of weird spaces
                         clean_branches = ", ".join([b.strip().upper() for b in cbc.split(",")])
                         
                         payload = {
@@ -328,7 +330,6 @@ with tabs[3]:
                     except Exception as e:
                         st.error(f"🚨 RAW DATABASE ERROR: {e}")
         
-        # 🟢 UPDATED: Re-added the Export Engine for Department Portals
         st.divider()
         st.markdown("### 📥 Export Master Syllabus for Department Reference")
         st.caption("Download the complete schema for offline review or distribution.")
