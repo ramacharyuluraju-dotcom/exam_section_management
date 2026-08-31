@@ -40,16 +40,33 @@ with tabs[0]:
         c1, c2 = st.columns(2)
         name = c1.text_input("Institution Name", value=curr.get('college_name', ''))
         univ = c1.text_input("University", value=curr.get('university', ''))
-        scheme = c2.selectbox("Syllabus Scheme", ["2022 Scheme (NEP)", "2021 Scheme (CBCS)", "2018 Scheme"])
         
-        if st.form_submit_button("Save Global Settings"):
+        # Keep existing scheme selector for legacy defaults
+        schemes = ["2022 Scheme (NEP)", "2021 Scheme (CBCS)", "2018 Scheme"]
+        curr_scheme = curr.get('current_scheme', '2022 Scheme (NEP)')
+        scheme = c2.selectbox("Syllabus Scheme", schemes, index=schemes.index(curr_scheme) if curr_scheme in schemes else 0)
+        
+        st.divider()
+        st.markdown("### 📅 Active Academic Term (For Regular Course Registrations)")
+        st.info("Set the current academic session. Departments will register students into this term, completely independent of when exams actually happen.")
+        
+        col_t1, col_t2 = st.columns(2)
+        active_ay = col_t1.text_input("Active Academic Year", value=curr.get('active_academic_year', '2026-27'), help="e.g., 2026-27")
+        active_term = col_t2.selectbox("Active Semester Type", ["ODD", "EVEN"], index=0 if curr.get('active_term', 'ODD') == 'ODD' else 1)
+        
+        if st.form_submit_button("💾 Save Global Settings", type="primary"):
             data = [
                 {"setting_key": "college_name", "setting_value": name},
                 {"setting_key": "university", "setting_value": univ},
-                {"setting_key": "current_scheme", "setting_value": scheme}
+                {"setting_key": "current_scheme", "setting_value": scheme},
+                {"setting_key": "active_academic_year", "setting_value": active_ay},
+                {"setting_key": "active_term", "setting_value": active_term}
             ]
-            supabase.table("global_settings").upsert(data).execute()
-            st.success("Global Settings Updated!")
+            try:
+                supabase.table("global_settings").upsert(data).execute()
+                st.success("✅ Global Settings Updated! The Department Portal is now anchored to this Academic Term.")
+            except Exception as e:
+                st.error(f"Database Error: {e}")
 
 # ==========================================
 # 1. INFRASTRUCTURE (ROOMS)
