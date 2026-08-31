@@ -25,8 +25,9 @@ supabase = init_db()
 
 st.title("🖨️ Pre-Exam Operations & Hall Tickets")
 
-# --- GLOBAL CONTEXT ---
-selected_cycle_id = st.session_state.get('active_cycle_id')
+# --- GLOBAL CONTEXT & INTEGER FIX ---
+raw_cycle_id = st.session_state.get('active_cycle_id')
+selected_cycle_id = int(raw_cycle_id) if raw_cycle_id else None
 active_cycle_name = st.session_state.get('active_cycle_name', 'Unknown Cycle')
 
 if not selected_cycle_id:
@@ -577,7 +578,6 @@ with tabs[1]:
             raw_students = fetch_all_records("master_students", columns="*")
             all_students = [s for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE']
             
-            # 🟢 🟢 DUAL ENGINE LOGIC: Regular vs Summer
             cycle_res = supabase.table("exam_cycles").select("*").eq("cycle_id", selected_cycle_id).single().execute()
             curr_cycle = cycle_res.data
             c_ay = curr_cycle.get('academic_year')
@@ -587,7 +587,6 @@ with tabs[1]:
             course_map = {}
             
             if "Summer" in c_type or "Make-up" in c_type:
-                # Event-based (reads cycle_id directly)
                 all_regs = fetch_all_records("course_registrations", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
                 for r in all_regs:
                     usn = r['usn']
@@ -597,7 +596,6 @@ with tabs[1]:
                     sem = r.get('semester') or mc.get('semester_id', '-')
                     course_map[usn].append({"code": r['course_code'], "title": title, "sem": sem})
             else:
-                # Regular Academic (reads exam_applications bridge)
                 apps = fetch_all_records("exam_applications", "usn", "cycle_id", selected_cycle_id)
                 valid_usns = set([a['usn'] for a in apps])
                 
@@ -707,7 +705,6 @@ with tabs[2]:
                 c_sem_type = curr_cycle.get('semester_type')
                 c_type = curr_cycle.get('exam_type', '')
 
-                # 🟢 DUAL ENGINE LOGIC: Single Student
                 if "Summer" in c_type or "Make-up" in c_type:
                     sub_res = supabase.table("course_registrations")\
                         .select("course_code, semester, master_courses(title, semester_id)")\
