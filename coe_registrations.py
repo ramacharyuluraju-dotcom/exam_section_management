@@ -426,11 +426,12 @@ with reg_tabs[0]:
 # 2. MASTER SYNC (FROM DEPARTMENTS)
 # ==========================================
 with reg_tabs[1]:
-    st.header("Step 2: 📥 Sync from Department Portal")
-    st.info(f"This is the primary registration engine. It securely imports all 'PAID' applications submitted by the Departments into the official COE database for **{active_term} {active_ay}**.")
+    st.header("Step 2: 📥 Master Sync (Department Portal)")
+    st.info("This engine securely imports ALL approved ('PAID') applications from the Department Staging area into the official COE database. It handles both Regular Academic terms and Summer Event cycles automatically.")
     
     try:
-        staging_res = supabase.table("course_registration_online").select("*").eq("academic_year", active_ay).eq("semester_type", active_term).eq("payment_status", "PAID").execute()
+        # 🟢 FIX: Removed the ODD/EVEN filter to capture SUMMER automatically!
+        staging_res = supabase.table("course_registration_online").select("*").eq("payment_status", "PAID").execute()
         staged_data = staging_res.data if staging_res.data else []
         
         if not staged_data:
@@ -447,17 +448,23 @@ with reg_tabs[1]:
                         "semester": r['semester'],
                         "academic_year": r['academic_year'],
                         "semester_type": r['semester_type'],
-                        "registration_type": r['registration_type']
+                        "registration_type": r['registration_type'],
+                        "cycle_id": r.get('cycle_id') # 🟢 Preserves the direct link for Summer!
                     } for r in staged_data]
                     
-                    for i in range(0, len(unique_staged_usns), 100):
-                        supabase.table("course_registrations").delete().eq("academic_year", active_ay).eq("semester_type", active_term).in_("usn", unique_staged_usns[i:i+100]).execute()
+                    unique_ay_terms = list(set([(r['academic_year'], r['semester_type']) for r in staged_data]))
+                    
+                    for ay, term in unique_ay_terms:
+                        usns_in_term = list(set([r['usn'] for r in staged_data if r['academic_year'] == ay and r['semester_type'] == term]))
+                        for i in range(0, len(usns_in_term), 100):
+                            supabase.table("course_registrations").delete().eq("academic_year", ay).eq("semester_type", term).in_("usn", usns_in_term[i:i+100]).execute()
                     
                     for i in range(0, len(official_payload), 500):
                         supabase.table("course_registrations").insert(official_payload[i:i+500]).execute()
                         
+                    # Clear staging
                     for i in range(0, len(unique_staged_usns), 100):
-                        supabase.table("course_registration_online").delete().eq("academic_year", active_ay).eq("semester_type", active_term).in_("usn", unique_staged_usns[i:i+100]).execute()
+                        supabase.table("course_registration_online").delete().in_("usn", unique_staged_usns[i:i+100]).execute()
                         
                     st.success(f"✅ Successfully synced {len(unique_staged_usns)} students into the COE Master Database!")
                     st.rerun()
