@@ -26,6 +26,18 @@ supabase = init_db()
 st.title("📝 Semester Course Registration")
 st.sidebar.markdown("### Operational Phase")
 
+# --- GLOBAL CONTEXT (DECOUPLED ARCHITECTURE) ---
+try:
+    gs_res = supabase.table("global_settings").select("*").execute()
+    global_settings = {r['setting_key']: r['setting_value'] for r in gs_res.data}
+except:
+    global_settings = {}
+    
+active_ay = global_settings.get('active_academic_year', '2026-27')
+active_term = global_settings.get('active_term', 'ODD')
+
+st.info(f"📅 **Currently Managing Registrations For:** {active_ay} | {active_term} Semester")
+
 # --- HELPER FUNCTIONS ---
 def fetch_all_records(table_name, select_query="*", filters=None):
     all_data = []
@@ -58,13 +70,8 @@ def get_checkbox():
     return t
 
 def course_sort_key(s):
-    """
-    Extracts the main 3-digit course number (e.g., 201, 202) for perfect numeric sorting.
-    It finds all numbers in the string and uses the last one as the primary sort key.
-    """
     code_str = str(s).strip().upper()
     numbers = re.findall(r'\d+', code_str)
-    # The course number is almost always the last set of digits in the code (e.g. '1BESC204C' -> 204)
     main_num = int(numbers[-1]) if numbers else 9999
     return (main_num, code_str)
 
@@ -279,14 +286,9 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, form_tit
     _, sig_h = t_sig.wrap(content_w, 50)
     t_sig.drawOn(c, margin, y - sig_h)
 
-# --- GLOBAL CONTEXT ---
-selected_cycle_id = st.session_state.get('active_cycle_id')
-if not selected_cycle_id:
-    st.warning("⚠️ Please select an Active Exam Cycle in the Sidebar to proceed.")
-    st.stop()
-
-st.info(f"🔵 Currently Managing Registrations for Cycle: **{st.session_state.get('active_cycle_name')}**")
-
+# ==========================================
+# APP MAIN LOGIC
+# ==========================================
 reg_tabs = st.tabs([
     "📄 Generate Forms",
     "📤 Bulk Upload", 
@@ -306,7 +308,7 @@ with reg_tabs[0]:
     st.info("Generates a single, bulk PDF containing registration forms for the entire branch. Automatically maps Logos, Watermarks, and Student Photos from the cloud.")
     
     col_f1, col_f2, col_f3 = st.columns(3)
-    f_title = col_f1.text_input("Form Header Title", value="Course Registration - Second Semester 2025-26")
+    f_title = col_f1.text_input("Form Header Title", value=f"Course Registration - {active_term} Semester {active_ay}")
     
     branches_data = fetch_all_records("master_branches", "branch_code, branch_name, program_type")
     branch_prog_map = {b['branch_code']: b.get('program_type', 'UG') for b in branches_data}
@@ -329,7 +331,6 @@ with reg_tabs[0]:
                     else:
                         raw_st = fetch_all_records("master_students", "*", {"branch_code": f_branch, "current_sem": str(f_sem)})
                     
-                    # 🟢 PYTHON GUARDRAIL: Filter 'ACTIVE' safely
                     students = [s for s in raw_st if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE']
                     
                     if not students:
@@ -389,7 +390,13 @@ with reg_tabs[0]:
                             s_br = str(stu['branch_code']).upper()
                             prog_type = branch_prog_map.get(s_br, "UG")
                             
-                            raw_courses = branch_courses_dict.get(s_br, []) + branch_courses_dict.get("COMMON", [])
+                            # 🟢 DECOUPLED FIX: Arrays for courses
+                            raw_courses = []
+                            for branch_key, course_list in branch_courses_dict.items():
+                                allowed = [b.strip() for b in branch_key.split(',')]
+                                if s_br in allowed or "COMMON" in allowed or "ALL" in allowed:
+                                    raw_courses.extend(course_list)
+                                    
                             raw_courses = sorted(raw_courses, key=lambda x: course_sort_key(x['course_code']))
                             
                             seen = set()
@@ -433,8 +440,6 @@ with reg_tabs[1]:
         st.info("Upload your syllabus CSV here. We will generate ONE massive template containing ALL students mapped to their respective subjects based on the 'Streams' column!")
         
         t_sem = st.number_input("Target Semester", min_value=1, max_value=10, value=1, key="t_sem_tmpl")
-        t_ay = st.text_input("Academic Year", value=st.session_state.get('active_academic_year', '2025-26'), key="t_ay_tmpl")
-        t_type = st.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"], key="t_type_tmpl")
         t_csv = st.file_uploader("Upload Universal Syllabus (CSV)", type="csv", key="t_csv_tmpl")
         
         if st.button("📥 Generate Universal CSV Template", type="secondary"):
@@ -443,7 +448,6 @@ with reg_tabs[1]:
             else:
                 with st.spinner("Building universal template for all students..."):
                     raw_stu = fetch_all_records("master_students", "usn, branch_code, status", {"current_sem": str(t_sem)})
-                    # 🟢 PYTHON GUARDRAIL
                     stu_data = [s for s in raw_stu if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE']
                     
                     df_crs = pd.read_csv(t_csv)
@@ -458,20 +462,21 @@ with reg_tabs[1]:
                     else:
                         branch_courses = {}
                         for _, r in df_crs.iterrows():
-                            br = str(r[stream_col]).strip().upper()
+                            brs_string = str(r[stream_col]).strip().upper()
                             cc = str(r[code_col]).strip()
-                            if br not in branch_courses: branch_courses[br] = []
-                            branch_courses[br].append(cc)
+                            for b in [b.strip() for b in brs_string.split(',')]:
+                                if b not in branch_courses: branch_courses[b] = []
+                                branch_courses[b].append(cc)
                             
                         template_rows = []
                         for s in stu_data:
                             s_branch = str(s['branch_code']).upper()
                             
-                            my_courses = branch_courses.get(s_branch, []) + branch_courses.get("COMMON", []) + branch_courses.get("FIRST_YEAR", [])
+                            my_courses = branch_courses.get(s_branch, []) + branch_courses.get("COMMON", []) + branch_courses.get("ALL", [])
                             my_courses = sorted(list(set(my_courses)), key=course_sort_key)
                             
                             for c in my_courses:
-                                template_rows.append({"usn": s['usn'], "course_code": c, "academic_year": t_ay, "semester_type": t_type, "semester": t_sem})
+                                template_rows.append({"usn": s['usn'], "course_code": c, "academic_year": active_ay, "semester_type": active_term, "semester": t_sem})
                         
                         if template_rows:
                             df_tmpl = pd.DataFrame(template_rows)
@@ -482,12 +487,12 @@ with reg_tabs[1]:
 
     with col_b2:
         st.subheader("B. Upload Finalized Registrations")
-        st.markdown("⚠️ **Expected Columns:** `usn`, `course_code`, `academic_year`, `semester_type`, `semester`")
+        st.markdown("⚠️ **Expected Columns:** `usn`, `course_code`, `semester`")
         f_reg = st.file_uploader("Upload Edited CSV", type='csv', key="reg_bulk_upload")
         
         if f_reg and st.button("🚀 Execute Bulk Registration", type="primary"):
             df = pd.read_csv(f_reg)
-            data = clean_data_for_db(df, ['usn', 'course_code', 'academic_year', 'semester_type', 'semester'])
+            data = clean_data_for_db(df, ['usn', 'course_code', 'semester'])
             
             if data:
                 with st.spinner("Processing registrations and validating subjects..."):
@@ -504,7 +509,10 @@ with reg_tabs[1]:
                             row['course_code'] = clean_code
                             
                         row['usn'] = str(row['usn']).strip().upper()
-                        row['cycle_id'] = selected_cycle_id
+                        # 🟢 DECOUPLED FIX: Assign to Academic Term, not cycle_id
+                        row['academic_year'] = active_ay
+                        row['semester_type'] = active_term
+                        row['registration_type'] = "REGULAR"
                         uploaded_courses.add(row['course_code'])
                         
                     valid_courses_strict = {str(c['course_code']) for c in valid_courses_db}
@@ -513,17 +521,16 @@ with reg_tabs[1]:
                     if invalid_courses:
                         st.error("❌ **Upload Failed: Invalid Course Codes Detected!**")
                         st.warning(f"The following course codes from your CSV are entirely missing from the Master Courses database:\n\n**{', '.join(invalid_courses)}**")
-                        st.info("Please fix these typos in your Excel file or add the missing subjects in the Course Master before continuing.")
                     else:
                         try:
                             uploaded_usns = list(set([r['usn'] for r in data]))
                             for i in range(0, len(uploaded_usns), 100):
-                                supabase.table("course_registrations").delete().eq("cycle_id", selected_cycle_id).in_("usn", uploaded_usns[i:i+100]).execute()
+                                supabase.table("course_registrations").delete().eq("academic_year", active_ay).eq("semester_type", active_term).in_("usn", uploaded_usns[i:i+100]).execute()
                             
                             for i in range(0, len(data), 500):
                                 supabase.table("course_registrations").insert(data[i:i+500]).execute()
                                 
-                            st.success(f"✅ Successfully registered {len(data)} student-course mappings! Invisible DB spaces were safely bypassed.")
+                            st.success(f"✅ Successfully registered {len(data)} student-course mappings for {active_term} {active_ay}!")
                         except Exception as e: 
                             st.error(f"Registration failed: {e}")
 
@@ -544,7 +551,6 @@ with reg_tabs[2]:
     
     if selected_branch != "-- Select --":
         raw_stu = fetch_all_records("master_students", "usn, full_name, status", {"branch_code": selected_branch})
-        # 🟢 PYTHON GUARDRAIL
         students_data = [s for s in raw_stu if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE']
         
         if not students_data: st.warning(f"No active students found in {selected_branch}")
@@ -554,19 +560,25 @@ with reg_tabs[2]:
             
             if selected_student_label != "-- Select --":
                 selected_usn = student_options[selected_student_label]
-                applicable_courses = [c for c in fetch_all_records("master_courses", "course_code, title, branch_code") if c['branch_code'] in [selected_branch, 'COMMON']]
+                
+                # 🟢 DECOUPLED FIX: Array branch match for interactive list
+                all_raw_courses = fetch_all_records("master_courses", "course_code, title, branch_code")
+                applicable_courses = []
+                for c in all_raw_courses:
+                    br_str = str(c.get('branch_code', ''))
+                    allowed = [b.strip().upper() for b in br_str.split(',')]
+                    if selected_branch in allowed or 'COMMON' in allowed or 'ALL' in allowed:
+                        applicable_courses.append(c)
+                        
                 applicable_courses = sorted(applicable_courses, key=lambda x: course_sort_key(x['course_code']))
                 
                 if not applicable_courses: st.warning("No courses mapped to this branch.")
                 else:
                     st.markdown("### 3. Select Subjects to Register")
-                    already_registered = [r['course_code'] for r in fetch_all_records("course_registrations", "course_code", {"cycle_id": selected_cycle_id, "usn": selected_usn})]
+                    already_registered = [r['course_code'] for r in fetch_all_records("course_registrations", "course_code", {"academic_year": active_ay, "semester_type": active_term, "usn": selected_usn})]
                     
                     with st.form("dynamic_registration_form"):
-                        c1, c2 = st.columns(2)
-                        r_ay = c1.text_input("Academic Year", value=st.session_state.get('active_academic_year', '2025-26'), key="int_ay")
-                        r_sem_type = c2.selectbox("Semester Type", ["ODD", "EVEN", "BOTH"], key="int_type")
-                        r_semester = c1.number_input("Semester (for these subjects)", min_value=1, max_value=10, value=1, key="int_sem")
+                        r_semester = st.number_input("Semester (for these subjects)", min_value=1, max_value=10, value=1, key="int_sem")
                         st.divider()
                         
                         selected_course_codes = []
@@ -577,9 +589,9 @@ with reg_tabs[2]:
                         if st.form_submit_button("💾 Save Registrations", type="primary"):
                             with st.spinner("Updating records..."):
                                 try:
-                                    supabase.table("course_registrations").delete().match({"cycle_id": selected_cycle_id, "usn": selected_usn}).execute()
+                                    supabase.table("course_registrations").delete().match({"academic_year": active_ay, "semester_type": active_term, "usn": selected_usn}).execute()
                                     if selected_course_codes:
-                                        payload = [{"cycle_id": selected_cycle_id, "usn": selected_usn, "course_code": cc, "academic_year": r_ay, "semester_type": r_sem_type, "semester": r_semester} for cc in selected_course_codes]
+                                        payload = [{"usn": selected_usn, "course_code": cc, "academic_year": active_ay, "semester_type": active_term, "semester": r_semester, "registration_type": "REGULAR"} for cc in selected_course_codes]
                                         supabase.table("course_registrations").insert(payload).execute()
                                     st.success(f"✅ Successfully updated {len(selected_course_codes)} registrations for {selected_usn}!")
                                 except Exception as e: st.error(f"Database Error: {e}")
@@ -588,10 +600,10 @@ with reg_tabs[2]:
 # 4. VIEW REGISTRATIONS
 # ==========================================
 with reg_tabs[3]:
-    st.header(f"🔍 Current Course Mappings for {st.session_state.get('active_cycle_name')}")
+    st.header(f"🔍 Current Course Mappings for {active_term} {active_ay}")
     search_usn = st.text_input("Filter by USN (Optional)", key="view_usn")
     if st.button("Fetch Registration Data", key="view_btn"):
-        query = supabase.table("course_registrations").select("*").eq("cycle_id", selected_cycle_id)
+        query = supabase.table("course_registrations").select("*").eq("academic_year", active_ay).eq("semester_type", active_term)
         if search_usn: query = query.eq("usn", search_usn.strip().upper())
         res = query.execute()
         if res.data: st.dataframe(pd.DataFrame(res.data), use_container_width=True)
@@ -612,10 +624,8 @@ with reg_tabs[4]:
         
         try:
             import requests
-            
             supabase_url = supabase.supabase_url
             supabase_key = supabase.supabase_key
-            
             base_url_string = str(supabase_url).rstrip('/')
             api_url = f"{base_url_string}/storage/v1/object/list/{BUCKET_NAME}"
             
@@ -673,14 +683,10 @@ with reg_tabs[5]:
         with st.spinner("Analyzing historical exam data to find active backlogs..."):
             try:
                 branches_res = fetch_all_records("master_branches", "branch_code, program_type")
-                
-                # 🟢 GUARDRAIL: Fetch all students, but explicitly BLOCK 'DISCONTINUED'
-                # Detained students CAN write arrears, so we purposely leave them in!
                 raw_students = fetch_all_records("master_students", "usn, branch_code, status")
                 students_res = [s for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() != 'DISCONTINUED']
                 
                 courses_res = fetch_all_records("master_courses", "course_code, title, semester_id")
-                
                 prog_map = {b['branch_code']: b['program_type'] for b in branches_res}
                 usn_to_prog = {s['usn']: prog_map.get(s['branch_code'], 'Unknown') for s in students_res}
                 course_map = {c['course_code']: {"title": c.get('title', 'Unknown'), "sem": int(c.get('semester_id', 0))} for c in courses_res}
@@ -707,7 +713,7 @@ with reg_tabs[5]:
                                     arrear_list.append({
                                         "usn": usn, "semester": c_sem, "course_code": cc,
                                         "course_title": c_info.get("title", "Unknown"), "grade": data['grade'],
-                                        "academic_year": st.session_state.get('active_academic_year', '2025-26'), "semester_type": "BOTH"
+                                        "academic_year": active_ay, "semester_type": active_term
                                     })
 
                 if not arrear_list:
@@ -739,8 +745,6 @@ with reg_tabs[6]:
                 courses_res = fetch_all_records("master_courses", "course_code, title, semester_id, max_cie")
                 results_res = fetch_all_records("student_results", "usn, course_code, grade, cie_marks, cycle_id")
                 
-                # 🟢 GUARDRAIL: Fetch all students to build a valid USN checklist
-                # Completely block DISCONTINUED students from Make-up exams
                 raw_students = fetch_all_records("master_students", "usn, status")
                 valid_usns = {s['usn'] for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() != 'DISCONTINUED'}
                 
@@ -757,31 +761,21 @@ with reg_tabs[6]:
                 latest_results = {}
                 for r in results_res:
                     usn = r['usn']
-                    
-                    if usn not in valid_usns:
-                        continue
-                        
+                    if usn not in valid_usns: continue
                     cc = r['course_code']
-                    if usn not in latest_results:
-                        latest_results[usn] = {}
-                    latest_results[usn][cc] = {
-                        "grade": str(r.get('grade', '')).strip().upper(),
-                        "cie_marks": safe_float(r.get('cie_marks'), 0.0)
-                    }
+                    if usn not in latest_results: latest_results[usn] = {}
+                    latest_results[usn][cc] = {"grade": str(r.get('grade', '')).strip().upper(), "cie_marks": safe_float(r.get('cie_marks'), 0.0)}
 
                 makeup_candidates = []
-                
                 for usn, courses in latest_results.items():
                     for cc, data in courses.items():
                         grade = data['grade']
-                        
                         if grade in ['AB', 'F']:
                             c_info = course_map.get(cc, {"max_cie": 50.0, "title": "Unknown", "sem": 0})
                             max_cie = c_info['max_cie']
                             cie_obtained = data['cie_marks']
                             
                             cie_percentage = (cie_obtained / max_cie) * 100 if max_cie > 0 else 0
-                            
                             eligibility_category = None
                             
                             if grade == 'F' and cie_percentage >= x_grade_thresh:
@@ -791,17 +785,11 @@ with reg_tabs[6]:
                             
                             if eligibility_category:
                                 makeup_candidates.append({
-                                    "usn": usn,
-                                    "semester": c_info['sem'],
-                                    "course_code": cc,
-                                    "course_title": c_info['title'],
-                                    "previous_grade": grade,
-                                    "cie_marks_obtained": cie_obtained,
-                                    "max_cie": max_cie,
-                                    "cie_percentage": f"{cie_percentage:.1f}%",
-                                    "eligibility_category": eligibility_category,
-                                    "academic_year": st.session_state.get('active_academic_year', '2025-26'),
-                                    "semester_type": "BOTH"
+                                    "usn": usn, "semester": c_info['sem'], "course_code": cc,
+                                    "course_title": c_info['title'], "previous_grade": grade,
+                                    "cie_marks_obtained": cie_obtained, "max_cie": max_cie,
+                                    "cie_percentage": f"{cie_percentage:.1f}%", "eligibility_category": eligibility_category,
+                                    "academic_year": active_ay, "semester_type": "BOTH"
                                 })
                 
                 if not makeup_candidates:
@@ -810,7 +798,6 @@ with reg_tabs[6]:
                     df_makeup = pd.DataFrame(makeup_candidates)
                     df_makeup = df_makeup[['usn', 'semester', 'course_code', 'course_title', 'previous_grade', 'cie_marks_obtained', 'cie_percentage', 'eligibility_category', 'academic_year', 'semester_type']]
                     df_makeup = df_makeup.sort_values(by=['eligibility_category', 'semester', 'course_code', 'usn'])
-                    
                     st.success(f"✅ Found {len(df_makeup)} eligible candidates for Make-up exams.")
                     
                     def highlight_categories(val):
@@ -819,14 +806,8 @@ with reg_tabs[6]:
                         return ''
                         
                     st.dataframe(df_makeup.style.map(highlight_categories, subset=['eligibility_category']), use_container_width=True)
-                    
                     csv = df_makeup.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Download Make-up Registrations (CSV)", 
-                        data=csv, 
-                        file_name="Makeup_Eligible_Candidates.csv", 
-                        mime="text/csv"
-                    )
+                    st.download_button("📥 Download Make-up Registrations (CSV)", csv, "Makeup_Eligible_Candidates.csv", "text/csv")
             except Exception as e:
                 st.error(f"Error processing make-up candidates: {e}")
 
@@ -848,7 +829,6 @@ with reg_tabs[7]:
                 prog_map = {b['branch_code']: b['program_type'] for b in branches_res}
 
                 raw_students = fetch_all_records("master_students", "usn, branch_code, status")
-                # Exclude discontinued students
                 valid_students = {s['usn']: prog_map.get(s['branch_code'], 'Unknown') for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() != 'DISCONTINUED'}
 
                 courses_res = fetch_all_records("master_courses", "course_code, title, semester_id, credits")
@@ -884,11 +864,8 @@ with reg_tabs[7]:
                             c_info = course_map.get(cc, {"sem": 0, "title": "Unknown", "credits": 0.0})
                             c_sem = c_info['sem']
 
-                            # Process only if it's a failed subject in the targeted semester
                             if c_sem in s_target_sems and not is_pass and grade not in ['PND', 'PENDING', 'FROZEN', '']:
                                 category = None
-                                
-                                # Evaluate based on raw marks (bypassing the need for an NE status)
                                 if cie_marks < cie_threshold:
                                     category = "Rule 1: Mandatory Classes (CIE Fail)"
                                 elif grade == 'AB' and cie_marks >= cie_threshold:
@@ -898,28 +875,19 @@ with reg_tabs[7]:
 
                                 if category:
                                     summer_list.append({
-                                        "usn": usn,
-                                        "semester": c_sem,
-                                        "course_code": cc,
-                                        "course_title": c_info['title'],
-                                        "credits": c_info['credits'],
-                                        "previous_grade": grade,
-                                        "cie_marks": cie_marks,
-                                        "summer_category": category,
-                                        "academic_year": st.session_state.get('active_academic_year', '2025-26'),
-                                        "semester_type": "SUMMER"
+                                        "usn": usn, "semester": c_sem, "course_code": cc,
+                                        "course_title": c_info['title'], "credits": c_info['credits'],
+                                        "previous_grade": grade, "cie_marks": cie_marks,
+                                        "summer_category": category, "academic_year": active_ay, "semester_type": "SUMMER"
                                     })
 
                 if not summer_list:
                     st.success(f"No active {s_target_prog} summer eligible courses found for semesters {s_target_sems}.")
                 else:
-                    df_summer = pd.DataFrame(summer_list)
-                    df_summer = df_summer[['usn', 'semester', 'course_code', 'course_title', 'credits', 'previous_grade', 'cie_marks', 'summer_category', 'academic_year', 'semester_type']]
+                    df_summer = pd.DataFrame(summer_list)[['usn', 'semester', 'course_code', 'course_title', 'credits', 'previous_grade', 'cie_marks', 'summer_category', 'academic_year', 'semester_type']]
                     df_summer = df_summer.sort_values(by=['summer_category', 'semester', 'course_code', 'usn'])
-                    
                     st.success(f"✅ Found {len(df_summer)} eligible summer registrations.")
                     
-                    # Highlight rows for better visual tracking in the COE dashboard
                     def highlight_summer(val):
                         if 'Rule 1' in str(val): return 'color: #D32F2F; font-weight: bold' 
                         elif 'Rule 2' in str(val): return 'color: #F57C00; font-weight: bold' 
@@ -927,13 +895,7 @@ with reg_tabs[7]:
                         return ''
                         
                     st.dataframe(df_summer.style.map(highlight_summer, subset=['summer_category']), use_container_width=True)
-                    
                     csv = df_summer.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label=f"📥 Download {s_target_prog} Summer Candidates (CSV)", 
-                        data=csv, 
-                        file_name=f"{s_target_prog}_Summer_Candidates.csv", 
-                        mime="text/csv"
-                    )
+                    st.download_button(f"📥 Download {s_target_prog} Summer Candidates (CSV)", csv, f"{s_target_prog}_Summer_Candidates.csv", "text/csv")
             except Exception as e:
                 st.error(f"Error generating summer list: {e}")
