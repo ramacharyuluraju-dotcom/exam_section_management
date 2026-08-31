@@ -91,10 +91,11 @@ with tabs[2]:
         st.subheader("Student Database Enrollment")
         col_s1, col_s2 = st.columns(2)
         with col_s1:
-            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, batch_year)", type='csv')
+            # 🟢 UPDATED: Swapped batch_year for scheme_batch
+            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, scheme_batch)", type='csv')
             if f_stu and st.button("Upload Students"):
                 df = pd.read_csv(f_stu)
-                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'batch_year']
+                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'scheme_batch']
                 data = clean_data_for_db(df, expected)
                 try:
                     supabase.table("master_students").upsert(data).execute()
@@ -188,7 +189,6 @@ with tabs[2]:
                         with st.expander("View Error Logs"):
                             for err in error_logs: st.write(err)
 
-    # 🟢 THE NEW STATUS MANAGER ENGINE
     with st_tabs[3]:
         st.subheader("Student Status Management")
         st.warning("Marking a student as 'DETAINED' or 'DISCONTINUED' will freeze their profile and prevent them from appearing in future registrations, OMR generation, and seating allotments.")
@@ -200,23 +200,18 @@ with tabs[2]:
             search_usn = st.text_input("Enter USN").strip().upper()
             
             if search_usn:
-                # Fetch their current status
                 stu_res = supabase.table("master_students").select("usn, full_name, status").eq("usn", search_usn).execute()
                 
                 if stu_res.data:
                     student = stu_res.data[0]
-                    
-                    # 🟢 FIX: Handle NULL or empty statuses safely from existing database records
                     raw_status = student.get('status')
                     current_status = str(raw_status).strip().upper() if raw_status else "ACTIVE"
                     
-                    # Double-check safety fallback
                     if current_status not in ["ACTIVE", "DETAINED", "DISCONTINUED"]:
                         current_status = "ACTIVE"
                         
                     st.info(f"👤 **{student['full_name']}** | Current Status: **{current_status}**")
                     
-                    # Form to update status
                     with st.form("status_update_form"):
                         valid_options = ["ACTIVE", "DETAINED", "DISCONTINUED"]
                         new_status = st.selectbox("Update Status To:", valid_options, index=valid_options.index(current_status))
@@ -283,10 +278,11 @@ with tabs[3]:
         c_m1, c_m2 = st.columns(2)
         
         with c_m1:
-            f_crs = st.file_uploader("Upload Scheme CSV (course_code, title, branch_code, semester_id, credits, max_cie, max_see, total_marks)", type='csv')
+            # 🟢 UPDATED: Added course_type and scheme_batch to CSV processor
+            f_crs = st.file_uploader("Upload Scheme CSV (course_code, title, branch_code, semester_id, credits, max_cie, max_see, total_marks, course_type, scheme_batch)", type='csv')
             if f_crs and st.button("Upload Scheme"):
                 df = pd.read_csv(f_crs)
-                expected = ['course_code', 'title', 'branch_code', 'semester_id', 'credits', 'max_cie', 'max_see', 'total_marks']
+                expected = ['course_code', 'title', 'branch_code', 'semester_id', 'credits', 'max_cie', 'max_see', 'total_marks', 'course_type', 'scheme_batch']
                 data = clean_data_for_db(df, expected)
                 try:
                     supabase.table("master_courses").upsert(data).execute()
@@ -299,13 +295,28 @@ with tabs[3]:
                 col1, col2 = st.columns(2)
                 cc = col1.text_input("Course Code")
                 ct = col2.text_input("Title")
-                cbc = col1.text_input("Branch Code")
-                cs = col2.number_input("Semester ID", 1, 8, 1)
+                
+                # 🟢 UPDATED: Explaining the Comma Separated arrays for shared subjects
+                cbc = col1.text_input("Branch Code(s)", help="Use comma separation for shared subjects (e.g., 'CS, IS, AI'). Use 'ALL' for universal subjects.")
+                cs = col2.number_input("Semester ID", 1, 10, 1)
                 ccr = col1.number_input("Credits", 0, 5, 4)
+                
+                # 🟢 UPDATED: Core / PE / OE selector and Scheme Batch
+                ctype = col2.selectbox("Course Type", ["CORE", "PE", "OE"])
+                c_scheme = col1.number_input("Scheme Batch (Year)", 20, 99, 25, help="Enter the 2-digit batch year this syllabus applies to (e.g., 25, 26).")
                 
                 if st.form_submit_button("💾 Add/Update Course"):
                     try:
-                        supabase.table("master_courses").upsert({"course_code": cc, "title": ct, "branch_code": cbc, "semester_id": cs, "credits": ccr}).execute()
+                        # Ensures branch codes are capitalized and stripped of weird spaces
+                        clean_branches = ", ".join([b.strip().upper() for b in cbc.split(",")])
+                        
+                        payload = {
+                            "course_code": cc, "title": ct, 
+                            "branch_code": clean_branches, "semester_id": cs, 
+                            "credits": ccr, "course_type": ctype, 
+                            "scheme_batch": c_scheme
+                        }
+                        supabase.table("master_courses").upsert(payload).execute()
                         st.success("✅ Course saved.")
                     except Exception as e:
                         st.error(f"🚨 RAW DATABASE ERROR: {e}")
@@ -316,6 +327,31 @@ with tabs[3]:
                         st.warning("Course removed.")
                     except Exception as e:
                         st.error(f"🚨 RAW DATABASE ERROR: {e}")
+        
+        # 🟢 UPDATED: Re-added the Export Engine for Department Portals
+        st.divider()
+        st.markdown("### 📥 Export Master Syllabus for Department Reference")
+        st.caption("Download the complete schema for offline review or distribution.")
+        
+        if st.button("🚀 Generate Master Syllabus CSV", type="primary"):
+            with st.spinner("Fetching comprehensive curriculum..."):
+                try:
+                    res = supabase.table("master_courses").select("*").execute()
+                    if res.data:
+                        df_export = pd.DataFrame(res.data)
+                        cols = ['course_code', 'title', 'branch_code', 'semester_id', 'credits', 'course_type', 'scheme_batch', 'max_cie', 'max_see', 'total_marks']
+                        df_export = df_export[[c for c in cols if c in df_export.columns]]
+                        csv = df_export.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="⬇️ Download Master_Courses_Schema.csv",
+                            data=csv,
+                            file_name=f"Master_Courses_Schema_{datetime.date.today()}.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.warning("No courses found in the database.")
+                except Exception as e:
+                    st.error(f"Failed to export data: {e}")
 
 # ==========================================
 # 4. MASTER BACKUP & DISASTER RECOVERY
