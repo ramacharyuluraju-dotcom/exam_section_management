@@ -61,7 +61,6 @@ def safe_float(val, default=0.0):
     except: return default
 
 def get_checkbox():
-    """Generates a perfect square box for the table cells"""
     t = Table([[""]], colWidths=[12], rowHeights=[12])
     t.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.8, colors.black),
@@ -291,8 +290,9 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, form_tit
 # ==========================================
 reg_tabs = st.tabs([
     "📄 Generate Forms",
-    "📤 Bulk Upload", 
-    "📝 Interactive Mapping", 
+    "📥 Master Sync", 
+    "📤 Plan B: Bulk Upload", 
+    "📝 Plan B: Interactive", 
     "🔍 View Registrations", 
     "📸 Photo Backup", 
     "📥 Arrear Extractor",
@@ -358,9 +358,10 @@ with reg_tabs[0]:
                         else:
                             all_courses = fetch_all_records("master_courses", "course_code, title, branch_code, credits", {"semester_id": str(f_sem)})
                             for c in all_courses:
-                                br = str(c['branch_code']).strip().upper()
-                                if br not in branch_courses_dict: branch_courses_dict[br] = []
-                                branch_courses_dict[br].append(c)
+                                brs_string = str(c.get('branch_code', '')).strip().upper()
+                                for b in [b.strip() for b in brs_string.split(',')]:
+                                    if b not in branch_courses_dict: branch_courses_dict[b] = []
+                                    branch_courses_dict[b].append(c)
 
                         system_assets = {"logo": None, "naac": None, "watermark": None}
                         sys_map = {"logo": LOGO_FILENAME, "naac": NAAC_FILENAME, "watermark": WATERMARK_FILENAME}
@@ -390,13 +391,7 @@ with reg_tabs[0]:
                             s_br = str(stu['branch_code']).upper()
                             prog_type = branch_prog_map.get(s_br, "UG")
                             
-                            # 🟢 DECOUPLED FIX: Arrays for courses
-                            raw_courses = []
-                            for branch_key, course_list in branch_courses_dict.items():
-                                allowed = [b.strip() for b in branch_key.split(',')]
-                                if s_br in allowed or "COMMON" in allowed or "ALL" in allowed:
-                                    raw_courses.extend(course_list)
-                                    
+                            raw_courses = branch_courses_dict.get(s_br, []) + branch_courses_dict.get("COMMON", []) + branch_courses_dict.get("ALL", [])
                             raw_courses = sorted(raw_courses, key=lambda x: course_sort_key(x['course_code']))
                             
                             seen = set()
@@ -428,10 +423,52 @@ with reg_tabs[0]:
                     st.error(f"Generation Error: {e}")
 
 # ==========================================
-# 2. BULK REGISTRATION (CSV)
+# 2. MASTER SYNC (FROM DEPARTMENTS)
 # ==========================================
 with reg_tabs[1]:
-    st.header("Step 2.1: Bulk Course Mapping")
+    st.header("Step 2: 📥 Sync from Department Portal")
+    st.info(f"This is the primary registration engine. It securely imports all 'PAID' applications submitted by the Departments into the official COE database for **{active_term} {active_ay}**.")
+    
+    try:
+        staging_res = supabase.table("course_registration_online").select("*").eq("academic_year", active_ay).eq("semester_type", active_term).eq("payment_status", "PAID").execute()
+        staged_data = staging_res.data if staging_res.data else []
+        
+        if not staged_data:
+            st.success("All department applications are currently synced! No pending records found.")
+        else:
+            unique_staged_usns = list(set([r['usn'] for r in staged_data]))
+            st.warning(f"🔔 **{len(unique_staged_usns)} Students** ({len(staged_data)} total subjects) have been approved by Departments and are waiting to be imported.")
+            
+            if st.button("🚀 Execute Master Sync", type="primary"):
+                with st.spinner("Importing department records into official COE database..."):
+                    official_payload = [{
+                        "usn": r['usn'],
+                        "course_code": r['course_code'],
+                        "semester": r['semester'],
+                        "academic_year": r['academic_year'],
+                        "semester_type": r['semester_type'],
+                        "registration_type": r['registration_type']
+                    } for r in staged_data]
+                    
+                    for i in range(0, len(unique_staged_usns), 100):
+                        supabase.table("course_registrations").delete().eq("academic_year", active_ay).eq("semester_type", active_term).in_("usn", unique_staged_usns[i:i+100]).execute()
+                    
+                    for i in range(0, len(official_payload), 500):
+                        supabase.table("course_registrations").insert(official_payload[i:i+500]).execute()
+                        
+                    for i in range(0, len(unique_staged_usns), 100):
+                        supabase.table("course_registration_online").delete().eq("academic_year", active_ay).eq("semester_type", active_term).in_("usn", unique_staged_usns[i:i+100]).execute()
+                        
+                    st.success(f"✅ Successfully synced {len(unique_staged_usns)} students into the COE Master Database!")
+                    st.rerun()
+    except Exception as e:
+        st.error(f"Error checking staging area: {e}")
+
+# ==========================================
+# 3. PLAN B: BULK UPLOAD (OFFLINE MODE)
+# ==========================================
+with reg_tabs[2]:
+    st.header("Plan B: Bulk Course Mapping")
     
     col_b1, col_b2 = st.columns(2)
     
@@ -509,7 +546,6 @@ with reg_tabs[1]:
                             row['course_code'] = clean_code
                             
                         row['usn'] = str(row['usn']).strip().upper()
-                        # 🟢 DECOUPLED FIX: Assign to Academic Term, not cycle_id
                         row['academic_year'] = active_ay
                         row['semester_type'] = active_term
                         row['registration_type'] = "REGULAR"
@@ -535,11 +571,11 @@ with reg_tabs[1]:
                             st.error(f"Registration failed: {e}")
 
 # ==========================================
-# 3. INTERACTIVE INDIVIDUAL MAPPING
+# 4. PLAN B: INTERACTIVE MAPPING
 # ==========================================
-with reg_tabs[2]:
-    st.header("Step 2.2: Interactive Individual Registration")
-    st.info("Select a branch and student to dynamically load applicable courses based on the syllabus.")
+with reg_tabs[3]:
+    st.header("Plan B: Interactive Individual Override")
+    st.info("Emergency tool for the COE. Use this to force-register a single student who missed all deadlines.")
     
     col1, col2 = st.columns(2)
     try:
@@ -561,7 +597,6 @@ with reg_tabs[2]:
             if selected_student_label != "-- Select --":
                 selected_usn = student_options[selected_student_label]
                 
-                # 🟢 DECOUPLED FIX: Array branch match for interactive list
                 all_raw_courses = fetch_all_records("master_courses", "course_code, title, branch_code")
                 applicable_courses = []
                 for c in all_raw_courses:
@@ -574,7 +609,6 @@ with reg_tabs[2]:
                 
                 if not applicable_courses: st.warning("No courses mapped to this branch.")
                 else:
-                    st.markdown("### 3. Select Subjects to Register")
                     already_registered = [r['course_code'] for r in fetch_all_records("course_registrations", "course_code", {"academic_year": active_ay, "semester_type": active_term, "usn": selected_usn})]
                     
                     with st.form("dynamic_registration_form"):
@@ -586,20 +620,19 @@ with reg_tabs[2]:
                             if st.checkbox(f"{course['course_code']} - {course['title']}", value=(course['course_code'] in already_registered)):
                                 selected_course_codes.append(course['course_code'])
                         
-                        if st.form_submit_button("💾 Save Registrations", type="primary"):
-                            with st.spinner("Updating records..."):
-                                try:
-                                    supabase.table("course_registrations").delete().match({"academic_year": active_ay, "semester_type": active_term, "usn": selected_usn}).execute()
-                                    if selected_course_codes:
-                                        payload = [{"usn": selected_usn, "course_code": cc, "academic_year": active_ay, "semester_type": active_term, "semester": r_semester, "registration_type": "REGULAR"} for cc in selected_course_codes]
-                                        supabase.table("course_registrations").insert(payload).execute()
-                                    st.success(f"✅ Successfully updated {len(selected_course_codes)} registrations for {selected_usn}!")
-                                except Exception as e: st.error(f"Database Error: {e}")
+                        if st.form_submit_button("💾 Force Save Registration", type="primary"):
+                            try:
+                                supabase.table("course_registrations").delete().match({"academic_year": active_ay, "semester_type": active_term, "usn": selected_usn}).execute()
+                                if selected_course_codes:
+                                    payload = [{"usn": selected_usn, "course_code": cc, "academic_year": active_ay, "semester_type": active_term, "semester": r_semester, "registration_type": "REGULAR"} for cc in selected_course_codes]
+                                    supabase.table("course_registrations").insert(payload).execute()
+                                st.success(f"✅ Emergency override successful for {selected_usn}!")
+                            except Exception as e: st.error(f"Database Error: {e}")
 
 # ==========================================
-# 4. VIEW REGISTRATIONS
+# 5. VIEW REGISTRATIONS
 # ==========================================
-with reg_tabs[3]:
+with reg_tabs[4]:
     st.header(f"🔍 Current Course Mappings for {active_term} {active_ay}")
     search_usn = st.text_input("Filter by USN (Optional)", key="view_usn")
     if st.button("Fetch Registration Data", key="view_btn"):
@@ -610,9 +643,9 @@ with reg_tabs[3]:
         else: st.write("No records found.")
 
 # ==========================================
-# 5. PHOTO BACKUP UTILITY
+# 6. PHOTO BACKUP UTILITY
 # ==========================================
-with reg_tabs[4]:
+with reg_tabs[5]:
     st.header("📸 Student Photo Server Backup")
     st.info("Grabs all student photos from your Supabase cloud and packages them into a single ZIP file.")
     BUCKET_NAME = "StakeHolders_Photos"
@@ -669,9 +702,9 @@ with reg_tabs[4]:
             status_text.error(f"🚨 Critical Error: {e}")
 
 # ==========================================
-# 6. ARREAR EXTRACTOR
+# 7. ARREAR EXTRACTOR
 # ==========================================
-with reg_tabs[5]:
+with reg_tabs[6]:
     st.header("📥 Extract Active Arrear Courses")
     st.info("Generates a CSV of pending subjects for students based on their latest exam results.")
 
@@ -729,9 +762,9 @@ with reg_tabs[5]:
                 st.error(f"Error generating arrear list: {e}")
 
 # ==========================================
-# 7. MAKE-UP EXAM EXTRACTOR
+# 8. MAKE-UP EXAM EXTRACTOR
 # ==========================================
-with reg_tabs[6]:
+with reg_tabs[7]:
     st.header("🚑 Extract Eligible Make-up Candidates")
     st.info("Hunts for two scenarios: 1. Absent students with valid internals (Medical). 2. Failed students with >= 90% internals (X-Grade).")
 
@@ -812,9 +845,9 @@ with reg_tabs[6]:
                 st.error(f"Error processing make-up candidates: {e}")
 
 # ==========================================
-# 8. SUMMER EXAM EXTRACTOR
+# 9. SUMMER EXAM EXTRACTOR
 # ==========================================
-with reg_tabs[7]:
+with reg_tabs[8]:
     st.header("☀️ Extract Summer Semester Candidates")
     st.info("Extracts students eligible for Summer Classes & Exams based on CIE failure, Absenteeism, and SEE failure. Use this CSV to populate your Online Application Portal.")
 
@@ -842,7 +875,7 @@ with reg_tabs[7]:
                     u = r['usn']
                     if u not in valid_students: continue
                     cc = r['course_code']
-                    if u not in latest_results: latest_results[u] = {}
+                    if u not in latest_results: latest_results[usn] = {}
                     latest_results[u][cc] = {
                         "grade": str(r.get('grade', '')).strip().upper(),
                         "cie_marks": safe_float(r.get('cie_marks'), 0.0),
