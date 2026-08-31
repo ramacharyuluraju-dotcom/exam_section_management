@@ -37,8 +37,7 @@ def get_branch_code(usn):
     try:
         if len(usn) > 5:
             match = re.search(r'[A-Za-z]+', usn[5:])
-            if match:
-                return match.group(0).upper()
+            if match: return match.group(0).upper()
     except: pass
     return "GEN"
 
@@ -47,10 +46,8 @@ def generate_app_id(usn, cycle_id):
     return f"AMC-26-{h}"
 
 def get_sem_num(sem_val):
-    try:
-        return int(re.search(r'\d+', str(sem_val)).group())
-    except:
-        return 99
+    try: return int(re.search(r'\d+', str(sem_val)).group())
+    except: return 99
 
 def fetch_all_records(table, columns="*", filter_col=None, filter_val=None):
     rows = []
@@ -59,7 +56,6 @@ def fetch_all_records(table, columns="*", filter_col=None, filter_val=None):
         query = supabase.table(table).select(columns)
         if filter_col and filter_val:
             query = query.eq(filter_col, filter_val)
-            
         res = query.range(start, start+step-1).execute()
         if not res.data: break
         rows.extend(res.data)
@@ -77,16 +73,12 @@ def fetch_complete_bucket_map(bucket_name):
         try:
             files = supabase.storage.from_(bucket_name).list("", options={"limit": limit, "offset": offset})
             if not files: break
-            
             for f in files:
                 fname = f.get('name', '')
-                if not fname or fname == '.emptyFolderPlaceholder': 
-                    continue
-                
+                if not fname or fname == '.emptyFolderPlaceholder': continue
                 basename = os.path.basename(fname)
                 key = re.sub(r'[^A-Z0-9]', '', os.path.splitext(basename)[0].upper())
                 file_map[key] = fname
-                
             if len(files) < limit: break
             offset += limit
         except: break
@@ -129,8 +121,7 @@ def fetch_branches_map():
     branch_map = {}
     try:
         res = supabase.table("master_branches").select("branch_code, program_type, degree_type, branch_name").execute()
-        for r in res.data:
-            branch_map[r['branch_code']] = r
+        for r in res.data: branch_map[r['branch_code']] = r
     except: pass
     return branch_map
 
@@ -173,12 +164,9 @@ def fetch_course_eligibility_map():
 def sort_subjects_by_timetable(subs, timetable_map):
     def get_date(sub):
         date_str = timetable_map.get(sub['code'], {}).get('date', 'TBD')
-        if date_str == 'TBD' or not date_str:
-            return datetime.datetime(2099, 1, 1)
-        try:
-            return datetime.datetime.strptime(date_str, "%d-%m-%Y")
-        except:
-            return datetime.datetime(2099, 1, 1)
+        if date_str == 'TBD' or not date_str: return datetime.datetime(2099, 1, 1)
+        try: return datetime.datetime.strptime(date_str, "%d-%m-%Y")
+        except: return datetime.datetime(2099, 1, 1)
     return sorted(subs, key=get_date)
 
 def draw_header(c, w, y_start, assets, is_hall_ticket=False):
@@ -507,10 +495,8 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
                 grid_data.append(["", "", "", "", ""])
 
         total_rows = len(grid_data)
-        if total_rows <= 8:
-            row_h = 18   
-        else:
-            row_h = 15   
+        if total_rows <= 8: row_h = 18   
+        else: row_h = 15   
 
         tg = Table(grid_data, colWidths=[75, 120, 35, 85, 220], rowHeights=row_h)
         tg.setStyle(TableStyle([
@@ -588,30 +574,48 @@ with tabs[1]:
             fee_res = supabase.table("master_fees").select("*").execute()
             fees = {f['fee_type']: f['amount'] for f in fee_res.data}
 
-            # 🟢 PYTHON GUARDRAIL APPLIED
             raw_students = fetch_all_records("master_students", columns="*")
             all_students = [s for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE']
             
-            all_regs = fetch_all_records("course_registrations", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
+            # 🟢 🟢 DUAL ENGINE LOGIC: Regular vs Summer
+            cycle_res = supabase.table("exam_cycles").select("*").eq("cycle_id", selected_cycle_id).single().execute()
+            curr_cycle = cycle_res.data
+            c_ay = curr_cycle.get('academic_year')
+            c_sem_type = curr_cycle.get('semester_type')
+            c_type = curr_cycle.get('exam_type', '')
             
             course_map = {}
-            for r in all_regs:
-                usn = r['usn']
-                if usn not in course_map: course_map[usn] = []
+            
+            if "Summer" in c_type or "Make-up" in c_type:
+                # Event-based (reads cycle_id directly)
+                all_regs = fetch_all_records("course_registrations", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
+                for r in all_regs:
+                    usn = r['usn']
+                    if usn not in course_map: course_map[usn] = []
+                    mc = r.get('master_courses') or {}
+                    title = mc.get('title', "Unknown Title")
+                    sem = r.get('semester') or mc.get('semester_id', '-')
+                    course_map[usn].append({"code": r['course_code'], "title": title, "sem": sem})
+            else:
+                # Regular Academic (reads exam_applications bridge)
+                apps = fetch_all_records("exam_applications", "usn", "cycle_id", selected_cycle_id)
+                valid_usns = set([a['usn'] for a in apps])
                 
-                mc = r.get('master_courses') or {}
-                title = mc.get('title', "Unknown Title")
-                
-                sem = r.get('semester')
-                if not sem:
-                    sem = mc.get('semester_id', '-')
-                    
-                course_map[usn].append({"code": r['course_code'], "title": title, "sem": sem})
-                
+                if valid_usns:
+                    all_term_regs = fetch_all_records("course_registrations", "usn, course_code, semester, semester_type, master_courses(title, semester_id)", "academic_year", c_ay)
+                    for r in all_term_regs:
+                        if r.get('semester_type') == c_sem_type and r['usn'] in valid_usns:
+                            usn = r['usn']
+                            if usn not in course_map: course_map[usn] = []
+                            mc = r.get('master_courses') or {}
+                            title = mc.get('title', "Unknown Title")
+                            sem = r.get('semester') or mc.get('semester_id', '-')
+                            course_map[usn].append({"code": r['course_code'], "title": title, "sem": sem})
+                            
             usns = list(course_map.keys())
 
         if not usns:
-            st.warning("No student registrations found for this cycle.")
+            st.warning(f"No valid student registrations found for {active_cycle_name}. Make sure you have clicked 'Import Registrations' in the Exam Lifecycle module!")
         else:
             progress_bar = st.progress(0); status = st.empty()
             final_pdf_buffer = io.BytesIO(); c = canvas.Canvas(final_pdf_buffer, pagesize=A4)
@@ -643,7 +647,6 @@ with tabs[1]:
                             seen_codes.add(sub['code'])
                     
                     subs = sort_subjects_by_timetable(unique_subs, timetable_map)
-                    
                     db_branch_code = stu.get('branch_code', get_branch_code(u))
                     
                     b_info = branch_map.get(db_branch_code, {"program_type": "UG", "branch_name": db_branch_code})
@@ -673,7 +676,6 @@ with tabs[1]:
 
 with tabs[2]:
     st.write("### Single Student Generator")
-    
     col1, col2 = st.columns([3, 1])
     target_usn = col1.text_input("Enter USN to Generate:").strip().upper()
     
@@ -699,17 +701,32 @@ with tabs[2]:
                     st.stop()
                 stu = stu_res.data[0]
 
-                sub_res = supabase.table("course_registrations")\
-                    .select("course_code, semester, master_courses(title, semester_id)")\
-                    .eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
+                cycle_res = supabase.table("exam_cycles").select("*").eq("cycle_id", selected_cycle_id).single().execute()
+                curr_cycle = cycle_res.data
+                c_ay = curr_cycle.get('academic_year')
+                c_sem_type = curr_cycle.get('semester_type')
+                c_type = curr_cycle.get('exam_type', '')
+
+                # 🟢 DUAL ENGINE LOGIC: Single Student
+                if "Summer" in c_type or "Make-up" in c_type:
+                    sub_res = supabase.table("course_registrations")\
+                        .select("course_code, semester, master_courses(title, semester_id)")\
+                        .eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
+                else:
+                    app_check = supabase.table("exam_applications").select("usn").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
+                    if not app_check.data:
+                        st.error(f"❌ Student {target_usn} has not been imported into this Exam Cycle yet.")
+                        st.stop()
+                        
+                    sub_res = supabase.table("course_registrations")\
+                        .select("course_code, semester, master_courses(title, semester_id)")\
+                        .eq("usn", target_usn).eq("academic_year", c_ay).eq("semester_type", c_sem_type).execute()
                 
                 raw_subs = []
                 for r in sub_res.data:
                     mc = r.get('master_courses') or {}
                     title = mc.get('title', "Unknown Title")
-                    sem = r.get('semester')
-                    if not sem:
-                        sem = mc.get('semester_id', '-')
+                    sem = r.get('semester') or mc.get('semester_id', '-')
                     raw_subs.append({"code": r['course_code'], "title": title, "sem": sem})
                     
                 unique_subs = []
@@ -720,7 +737,6 @@ with tabs[2]:
                         seen_codes.add(sub['code'])
                         
                 subs = sort_subjects_by_timetable(unique_subs, timetable_map)
-                
                 db_branch_code = stu.get('branch_code', get_branch_code(target_usn))
                 
                 b_info = branch_map.get(db_branch_code, {"program_type": "UG", "branch_name": db_branch_code})
@@ -740,13 +756,10 @@ with tabs[2]:
                     c.showPage()
                     
                     HALF_A4 = 841.89 / 2
-                    
                     draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
-                    
                     c.setDash(4, 4)
                     c.line(20, HALF_A4, A4[0]-20, HALF_A4)
                     c.setDash([])
-                    
                     draw_hall_ticket_half(c, A4[0], 0, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     c.showPage(); c.save()
                     
