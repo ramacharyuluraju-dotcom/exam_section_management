@@ -427,59 +427,82 @@ with reg_tabs[0]:
 # ==========================================
 with reg_tabs[1]:
     st.header("Step 2: 📥 Master Sync (Department Portal)")
-    st.info("This engine securely imports ALL approved ('PAID') applications from the Department Staging area into the official COE database. It handles both Regular Academic terms and Summer Event cycles automatically.")
+    st.info("View and import applications from the Department Staging area into the official COE database.")
     
     try:
-        staging_res = supabase.table("course_registration_online").select("*").eq("payment_status", "PAID").execute()
+        # 1. Fetch EVERYTHING to expose hidden/stuck data
+        staging_res = supabase.table("course_registration_online").select("*").execute()
         staged_data = staging_res.data if staging_res.data else []
         
         if not staged_data:
-            st.success("All department applications are currently synced! No pending records found.")
+            st.success("✅ The staging area is completely empty. No applications exist.")
         else:
-            unique_staged_usns = list(set([r['usn'] for r in staged_data]))
-            st.warning(f"🔔 **{len(unique_staged_usns)} Students** ({len(staged_data)} total subjects) have been approved by Departments and are waiting to be imported.")
+            st.warning(f"🔍 Found {len(staged_data)} subjects currently sitting in the Staging Area.")
             
-            if st.button("🚀 Execute Master Sync", type="primary"):
-                with st.spinner("Importing department records into official COE database..."):
-                    
+            # Show the raw data so you can visually confirm your test USN is there
+            st.dataframe(pd.DataFrame(staged_data), use_container_width=True)
+            
+            col_s1, col_s2 = st.columns(2)
+            
+            # OPTION A: SYNC EVERYTHING
+            if col_s1.button("🚀 Sync ALL Data", type="primary"):
+                target_data = staged_data
+                
+                with st.spinner("Importing into COE Master..."):
                     official_payload = [{
-                        "usn": r['usn'],
-                        "course_code": r['course_code'],
-                        "semester": r['semester'],
-                        "academic_year": r.get('academic_year', active_ay),
-                        "semester_type": r.get('semester_type', 'ODD'),
-                        "registration_type": r.get('registration_type', 'REGULAR'),
-                        "cycle_id": r.get('cycle_id') 
-                    } for r in staged_data]
+                        "usn": r.get('usn'), "course_code": r.get('course_code'), "semester": r.get('semester'),
+                        "academic_year": r.get('academic_year', active_ay), "semester_type": r.get('semester_type', active_term),
+                        "registration_type": r.get('registration_type', 'REGULAR'), "cycle_id": r.get('cycle_id') 
+                    } for r in target_data]
                     
-                    # 🟢 SAFELY CLEAR DUPLICATES BEFORE INSERTING
-                    # Group 1: Summer students are cleared by their active cycle_id
-                    summer_cycles = list(set([r['cycle_id'] for r in official_payload if r['registration_type'] == 'SUMMER' and r['cycle_id']]))
+                    # 1. Clear duplicates for Summer
+                    summer_cycles = list(set([r['cycle_id'] for r in official_payload if r['registration_type'] == 'SUMMER' and r.get('cycle_id')]))
                     for cid in summer_cycles:
-                        usns = list(set([r['usn'] for r in official_payload if r['cycle_id'] == cid]))
-                        for i in range(0, len(usns), 100):
-                            supabase.table("course_registrations").delete().eq("cycle_id", cid).in_("usn", usns[i:i+100]).execute()
+                        usns = list(set([r['usn'] for r in official_payload if r.get('cycle_id') == cid]))
+                        if usns: supabase.table("course_registrations").delete().eq("cycle_id", cid).in_("usn", usns).execute()
                             
-                    # Group 2: Regular students are cleared by their academic year/term
+                    # 2. Clear duplicates for Regular
                     unique_terms = list(set([(r['academic_year'], r['semester_type']) for r in official_payload if r['registration_type'] == 'REGULAR']))
                     for ay, term in unique_terms:
                         usns = list(set([r['usn'] for r in official_payload if r['academic_year'] == ay and r['semester_type'] == term]))
-                        for i in range(0, len(usns), 100):
-                            supabase.table("course_registrations").delete().eq("academic_year", ay).eq("semester_type", term).in_("usn", usns[i:i+100]).execute()
+                        if usns: supabase.table("course_registrations").delete().eq("academic_year", ay).eq("semester_type", term).in_("usn", usns).execute()
                     
-                    # 🟢 BULK INSERT
-                    for i in range(0, len(official_payload), 500):
-                        supabase.table("course_registrations").insert(official_payload[i:i+500]).execute()
-                        
-                    # 🟢 CLEAR STAGING
-                    for i in range(0, len(unique_staged_usns), 100):
-                        supabase.table("course_registration_online").delete().in_("usn", unique_staged_usns[i:i+100]).execute()
-                        
-                    st.success(f"✅ Successfully synced {len(unique_staged_usns)} students into the COE Master Database!")
+                    # 3. Insert and Clean up
+                    supabase.table("course_registrations").insert(official_payload).execute()
+                    usns_to_clear = list(set([r['usn'] for r in official_payload]))
+                    supabase.table("course_registration_online").delete().in_("usn", usns_to_clear).execute()
+                    
+                    st.success(f"✅ Successfully synced {len(usns_to_clear)} students!")
                     st.rerun()
+
+            # OPTION B: SYNC ONE TEST USN
+            target_usn = col_s2.text_input("Enter a specific USN to sync:")
+            if col_s2.button("Sync Single USN"):
+                clean_target = target_usn.strip().upper()
+                target_data = [r for r in staged_data if r.get('usn') == clean_target]
+                
+                if not target_data:
+                    st.error("USN not found in the staging table above.")
+                else:
+                    with st.spinner(f"Importing {clean_target} into COE Master..."):
+                        official_payload = [{
+                            "usn": r.get('usn'), "course_code": r.get('course_code'), "semester": r.get('semester'),
+                            "academic_year": r.get('academic_year', active_ay), "semester_type": r.get('semester_type', active_term),
+                            "registration_type": r.get('registration_type', 'REGULAR'), "cycle_id": r.get('cycle_id') 
+                        } for r in target_data]
+                        
+                        if official_payload[0]['registration_type'] == 'SUMMER' and official_payload[0].get('cycle_id'):
+                            supabase.table("course_registrations").delete().eq("cycle_id", official_payload[0]['cycle_id']).eq("usn", clean_target).execute()
+                        else:
+                            supabase.table("course_registrations").delete().eq("academic_year", official_payload[0]['academic_year']).eq("semester_type", official_payload[0]['semester_type']).eq("usn", clean_target).execute()
+                            
+                        supabase.table("course_registrations").insert(official_payload).execute()
+                        supabase.table("course_registration_online").delete().eq("usn", clean_target).execute()
+                        
+                        st.success(f"✅ Successfully synced test student {clean_target}!")
+                        st.rerun()
     except Exception as e:
         st.error(f"Error checking staging area: {e}")
-
 # ==========================================
 # 3. PLAN B: BULK UPLOAD (OFFLINE MODE)
 # ==========================================
