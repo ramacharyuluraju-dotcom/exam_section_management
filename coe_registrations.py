@@ -469,7 +469,7 @@ with reg_tabs[1]:
         st.error(f"Error checking staging area: {e}")
 
 # ==========================================
-# 3. BULK UPLOAD (TARGET DESTINATION ROUTING)
+# 3. BULK UPLOAD (TARGET DESTINATION ROUTING & UPSERT)
 # ==========================================
 with reg_tabs[2]:
     st.header("Bulk Course Mapping")
@@ -590,19 +590,30 @@ with reg_tabs[2]:
                         st.warning(f"The following course codes from your CSV are entirely missing from the Master Courses database:\n\n**{', '.join(invalid_courses)}**")
                     else:
                         try:
-                            uploaded_usns = list(set([r['usn'] for r in data]))
-                            
-                            if upload_category == "Regular Academic Term":
-                                for i in range(0, len(uploaded_usns), 100):
-                                    supabase.table("course_registrations").delete().eq("academic_year", active_ay).eq("semester_type", active_term).in_("usn", uploaded_usns[i:i+100]).execute()
-                            else:
-                                for i in range(0, len(uploaded_usns), 100):
-                                    supabase.table("course_registrations").delete().eq("cycle_id", target_offline_cycle_id).in_("usn", uploaded_usns[i:i+100]).execute()
-                            
-                            for i in range(0, len(data), 500):
-                                supabase.table("course_registrations").insert(data[i:i+500]).execute()
+                            # 🟢 THE UPSERT FIX: Smart Merge Logic
+                            # Delete ONLY the exact USN + Course Code combinations we are uploading.
+                            # This preserves any other subjects the student is already registered for!
+                            with st.spinner("Running smart merge (upserting) records..."):
+                                for row in data:
+                                    if upload_category == "Regular Academic Term":
+                                        supabase.table("course_registrations").delete().match({
+                                            "usn": row['usn'], 
+                                            "course_code": row['course_code'], 
+                                            "academic_year": active_ay, 
+                                            "semester_type": active_term
+                                        }).execute()
+                                    else:
+                                        supabase.table("course_registrations").delete().match({
+                                            "usn": row['usn'], 
+                                            "course_code": row['course_code'], 
+                                            "cycle_id": target_offline_cycle_id
+                                        }).execute()
                                 
-                            st.success(f"✅ Successfully registered {len(data)} student-course mappings!")
+                                # Insert the fresh updated data
+                                for i in range(0, len(data), 500):
+                                    supabase.table("course_registrations").insert(data[i:i+500]).execute()
+                                    
+                            st.success(f"✅ Successfully merged/upserted {len(data)} student-course mappings!")
                         except Exception as e: 
                             st.error(f"Registration failed: {e}")
 
@@ -675,6 +686,7 @@ with reg_tabs[3]:
                         
                         selected_course_codes = []
                         for course in applicable_courses:
+                            # 🟢 Checkboxes reflect actual DB state
                             if st.checkbox(f"{course['course_code']} - {course['title']}", value=(course['course_code'] in already_registered)):
                                 selected_course_codes.append(course['course_code'])
                         
@@ -683,6 +695,8 @@ with reg_tabs[3]:
                                 st.error("❌ Please select a Target Cycle above.")
                             else:
                                 try:
+                                    # For interactive UI, we completely wipe their term registration and replace it with 
+                                    # exactly what checkboxes are checked (This allows "un-checking" a box to delete it).
                                     if i_upload_category == "Regular Academic Term":
                                         supabase.table("course_registrations").delete().match({"academic_year": active_ay, "semester_type": active_term, "usn": selected_usn}).execute()
                                         payload = [{"usn": selected_usn, "course_code": cc, "academic_year": active_ay, "semester_type": active_term, "semester": r_semester, "registration_type": "REGULAR"} for cc in selected_course_codes]
