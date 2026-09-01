@@ -126,7 +126,7 @@ def download_photo_worker(args):
     return usn, None
 
 # ==========================================
-# 🟢 EXACT REPLICA PDF GENERATOR ENGINE
+# EXACT REPLICA PDF GENERATOR ENGINE
 # ==========================================
 def draw_header(c, w, y_start, assets):
     margin = 35
@@ -290,9 +290,9 @@ def draw_registration_page(c, w, h, student, courses, assets, photo_io, form_tit
 # ==========================================
 reg_tabs = st.tabs([
     "📄 Generate Forms",
-    "📥 Master Sync", 
-    "📤 Plan B: Bulk Upload", 
-    "📝 Plan B: Interactive", 
+    "📥 Export Staged Data", 
+    "📤 Bulk Upload", 
+    "📝 Interactive Override", 
     "🔍 View Registrations", 
     "📸 Photo Backup", 
     "📥 Arrear Extractor",
@@ -430,7 +430,6 @@ with reg_tabs[1]:
     st.info("Download the approved online registrations from the Department Portal as a CSV. You can then upload this exact file into the 'Bulk Upload' tab to place them in the official COE database.")
     
     try:
-        # Fetch only paid/approved applications
         staging_res = supabase.table("course_registration_online").select("*").eq("payment_status", "PAID").execute()
         staged_data = staging_res.data if staging_res.data else []
         
@@ -439,11 +438,9 @@ with reg_tabs[1]:
         else:
             st.warning(f"🔍 Found {len(staged_data)} pending subject registrations.")
             
-            # Show raw data for visual verification
             df_staged = pd.DataFrame(staged_data)
             st.dataframe(df_staged, use_container_width=True)
             
-            # Format strictly for the Bulk Upload tool requirements
             df_export = df_staged[['usn', 'course_code', 'semester']].copy()
             csv_data = df_export.to_csv(index=False).encode('utf-8')
             
@@ -469,12 +466,33 @@ with reg_tabs[1]:
                     st.rerun()
                     
     except Exception as e:
-        st.error(f"Error checking staging area: {e}")# ==========================================
-# 3. PLAN B: BULK UPLOAD (OFFLINE MODE)
+        st.error(f"Error checking staging area: {e}")
+
+# ==========================================
+# 3. BULK UPLOAD (TARGET DESTINATION ROUTING)
 # ==========================================
 with reg_tabs[2]:
-    st.header("Plan B: Bulk Course Mapping")
+    st.header("Bulk Course Mapping")
     
+    st.markdown("### Target Destination")
+    upload_category = st.radio("What are you uploading?", ["Regular Academic Term", "Special Event (Summer / Make-up)"], horizontal=True)
+    
+    target_offline_cycle_id = None
+    target_offline_type = "SUMMER"
+    
+    if upload_category == "Special Event (Summer / Make-up)":
+        try:
+            cycles_res = supabase.table("exam_cycles").select("cycle_id, cycle_name, exam_type").in_("exam_type", ["Summer", "Make-up"]).eq("is_active", True).execute()
+            if cycles_res.data:
+                cycle_dict = {c['cycle_name']: c for c in cycles_res.data}
+                selected_c_name = st.selectbox("Select Target Cycle", list(cycle_dict.keys()))
+                target_offline_cycle_id = cycle_dict[selected_c_name]['cycle_id']
+                target_offline_type = str(cycle_dict[selected_c_name]['exam_type']).upper()
+            else:
+                st.warning("No active Summer/Make-up cycles found.")
+        except: pass
+        
+    st.divider()
     col_b1, col_b2 = st.columns(2)
     
     with col_b1:
@@ -513,12 +531,11 @@ with reg_tabs[2]:
                         template_rows = []
                         for s in stu_data:
                             s_branch = str(s['branch_code']).upper()
-                            
                             my_courses = branch_courses.get(s_branch, []) + branch_courses.get("COMMON", []) + branch_courses.get("ALL", [])
                             my_courses = sorted(list(set(my_courses)), key=course_sort_key)
                             
                             for c in my_courses:
-                                template_rows.append({"usn": s['usn'], "course_code": c, "academic_year": active_ay, "semester_type": active_term, "semester": t_sem})
+                                template_rows.append({"usn": s['usn'], "course_code": c, "semester": t_sem})
                         
                         if template_rows:
                             df_tmpl = pd.DataFrame(template_rows)
@@ -533,6 +550,10 @@ with reg_tabs[2]:
         f_reg = st.file_uploader("Upload Edited CSV", type='csv', key="reg_bulk_upload")
         
         if f_reg and st.button("🚀 Execute Bulk Registration", type="primary"):
+            if upload_category == "Special Event (Summer / Make-up)" and not target_offline_cycle_id:
+                st.error("❌ Please select a Target Cycle above before uploading.")
+                st.stop()
+                
             df = pd.read_csv(f_reg)
             data = clean_data_for_db(df, ['usn', 'course_code', 'semester'])
             
@@ -544,16 +565,21 @@ with reg_tabs[2]:
                     uploaded_courses = set()
                     for row in data:
                         clean_code = str(row['course_code']).strip().upper()
-                        
-                        if clean_code in db_mapping:
-                            row['course_code'] = db_mapping[clean_code]
-                        else:
-                            row['course_code'] = clean_code
+                        if clean_code in db_mapping: row['course_code'] = db_mapping[clean_code]
+                        else: row['course_code'] = clean_code
                             
                         row['usn'] = str(row['usn']).strip().upper()
                         row['academic_year'] = active_ay
-                        row['semester_type'] = active_term
-                        row['registration_type'] = "REGULAR"
+                        
+                        if upload_category == "Regular Academic Term":
+                            row['semester_type'] = active_term
+                            row['registration_type'] = "REGULAR"
+                            row['cycle_id'] = None
+                        else:
+                            row['semester_type'] = target_offline_type
+                            row['registration_type'] = target_offline_type
+                            row['cycle_id'] = target_offline_cycle_id
+                            
                         uploaded_courses.add(row['course_code'])
                         
                     valid_courses_strict = {str(c['course_code']) for c in valid_courses_db}
@@ -565,23 +591,47 @@ with reg_tabs[2]:
                     else:
                         try:
                             uploaded_usns = list(set([r['usn'] for r in data]))
-                            for i in range(0, len(uploaded_usns), 100):
-                                supabase.table("course_registrations").delete().eq("academic_year", active_ay).eq("semester_type", active_term).in_("usn", uploaded_usns[i:i+100]).execute()
+                            
+                            if upload_category == "Regular Academic Term":
+                                for i in range(0, len(uploaded_usns), 100):
+                                    supabase.table("course_registrations").delete().eq("academic_year", active_ay).eq("semester_type", active_term).in_("usn", uploaded_usns[i:i+100]).execute()
+                            else:
+                                for i in range(0, len(uploaded_usns), 100):
+                                    supabase.table("course_registrations").delete().eq("cycle_id", target_offline_cycle_id).in_("usn", uploaded_usns[i:i+100]).execute()
                             
                             for i in range(0, len(data), 500):
                                 supabase.table("course_registrations").insert(data[i:i+500]).execute()
                                 
-                            st.success(f"✅ Successfully registered {len(data)} student-course mappings for {active_term} {active_ay}!")
+                            st.success(f"✅ Successfully registered {len(data)} student-course mappings!")
                         except Exception as e: 
                             st.error(f"Registration failed: {e}")
 
 # ==========================================
-# 4. PLAN B: INTERACTIVE MAPPING
+# 4. INTERACTIVE INDIVIDUAL OVERRIDE
 # ==========================================
 with reg_tabs[3]:
-    st.header("Plan B: Interactive Individual Override")
+    st.header("Interactive Individual Override")
     st.info("Emergency tool for the COE. Use this to force-register a single student who missed all deadlines.")
     
+    st.markdown("### Target Destination")
+    i_upload_category = st.radio("What are you overriding?", ["Regular Academic Term", "Special Event (Summer / Make-up)"], horizontal=True, key="i_rad")
+    
+    i_target_offline_cycle_id = None
+    i_target_offline_type = "SUMMER"
+    
+    if i_upload_category == "Special Event (Summer / Make-up)":
+        try:
+            i_cycles_res = supabase.table("exam_cycles").select("cycle_id, cycle_name, exam_type").in_("exam_type", ["Summer", "Make-up"]).eq("is_active", True).execute()
+            if i_cycles_res.data:
+                i_cycle_dict = {c['cycle_name']: c for c in i_cycles_res.data}
+                i_selected_c_name = st.selectbox("Select Target Cycle", list(i_cycle_dict.keys()), key="i_sel")
+                i_target_offline_cycle_id = i_cycle_dict[i_selected_c_name]['cycle_id']
+                i_target_offline_type = str(i_cycle_dict[i_selected_c_name]['exam_type']).upper()
+            else:
+                st.warning("No active Summer/Make-up cycles found.")
+        except: pass
+    st.divider()
+
     col1, col2 = st.columns(2)
     try:
         branches_data_int = fetch_all_records("master_branches", "branch_code")
@@ -614,7 +664,10 @@ with reg_tabs[3]:
                 
                 if not applicable_courses: st.warning("No courses mapped to this branch.")
                 else:
-                    already_registered = [r['course_code'] for r in fetch_all_records("course_registrations", "course_code", {"academic_year": active_ay, "semester_type": active_term, "usn": selected_usn})]
+                    if i_upload_category == "Regular Academic Term":
+                        already_registered = [r['course_code'] for r in fetch_all_records("course_registrations", "course_code", {"academic_year": active_ay, "semester_type": active_term, "usn": selected_usn})]
+                    else:
+                        already_registered = [r['course_code'] for r in fetch_all_records("course_registrations", "course_code", {"cycle_id": i_target_offline_cycle_id, "usn": selected_usn})]
                     
                     with st.form("dynamic_registration_form"):
                         r_semester = st.number_input("Semester (for these subjects)", min_value=1, max_value=10, value=1, key="int_sem")
@@ -626,13 +679,21 @@ with reg_tabs[3]:
                                 selected_course_codes.append(course['course_code'])
                         
                         if st.form_submit_button("💾 Force Save Registration", type="primary"):
-                            try:
-                                supabase.table("course_registrations").delete().match({"academic_year": active_ay, "semester_type": active_term, "usn": selected_usn}).execute()
-                                if selected_course_codes:
-                                    payload = [{"usn": selected_usn, "course_code": cc, "academic_year": active_ay, "semester_type": active_term, "semester": r_semester, "registration_type": "REGULAR"} for cc in selected_course_codes]
-                                    supabase.table("course_registrations").insert(payload).execute()
-                                st.success(f"✅ Emergency override successful for {selected_usn}!")
-                            except Exception as e: st.error(f"Database Error: {e}")
+                            if i_upload_category == "Special Event (Summer / Make-up)" and not i_target_offline_cycle_id:
+                                st.error("❌ Please select a Target Cycle above.")
+                            else:
+                                try:
+                                    if i_upload_category == "Regular Academic Term":
+                                        supabase.table("course_registrations").delete().match({"academic_year": active_ay, "semester_type": active_term, "usn": selected_usn}).execute()
+                                        payload = [{"usn": selected_usn, "course_code": cc, "academic_year": active_ay, "semester_type": active_term, "semester": r_semester, "registration_type": "REGULAR"} for cc in selected_course_codes]
+                                    else:
+                                        supabase.table("course_registrations").delete().match({"cycle_id": i_target_offline_cycle_id, "usn": selected_usn}).execute()
+                                        payload = [{"usn": selected_usn, "course_code": cc, "academic_year": active_ay, "semester_type": i_target_offline_type, "semester": r_semester, "registration_type": i_target_offline_type, "cycle_id": i_target_offline_cycle_id} for cc in selected_course_codes]
+                                        
+                                    if selected_course_codes:
+                                        supabase.table("course_registrations").insert(payload).execute()
+                                    st.success(f"✅ Emergency override successful for {selected_usn}!")
+                                except Exception as e: st.error(f"Database Error: {e}")
 
 # ==========================================
 # 5. VIEW REGISTRATIONS
