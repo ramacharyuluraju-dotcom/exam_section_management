@@ -583,10 +583,11 @@ with tabs[1]:
             c_ay = curr_cycle.get('academic_year')
             c_sem_type = curr_cycle.get('semester_type')
             c_type = curr_cycle.get('exam_type', '')
+            is_special_cycle = ("Summer" in c_type or "Make-up" in c_type)
             
             course_map = {}
             
-            if "Summer" in c_type or "Make-up" in c_type:
+            if is_special_cycle:
                 all_regs = fetch_all_records("course_registrations", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
                 for r in all_regs:
                     usn = r['usn']
@@ -613,7 +614,7 @@ with tabs[1]:
             usns = list(course_map.keys())
 
         if not usns:
-            st.warning(f"No valid student registrations found for {active_cycle_name}. Make sure you have clicked 'Import Registrations' in the Exam Lifecycle module!")
+            st.warning(f"No valid student registrations found for {active_cycle_name}.")
         else:
             progress_bar = st.progress(0); status = st.empty()
             final_pdf_buffer = io.BytesIO(); c = canvas.Canvas(final_pdf_buffer, pagesize=A4)
@@ -652,8 +653,11 @@ with tabs[1]:
                     b_name_str = b_info.get("branch_name", db_branch_code)
                     
                     app_id = generate_app_id(u, selected_cycle_id)
-                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
-                    c.showPage()
+                    
+                    # 🟢 Skip Application Page for Summer & Make-up Cycles
+                    if not is_special_cycle:
+                        draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
+                        c.showPage()
                     
                     HALF_A4 = 841.89 / 2
                     draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
@@ -670,7 +674,7 @@ with tabs[1]:
                 batch_photos.clear() 
 
             c.save(); status.text("Bulk Generation Complete.")
-            st.download_button("📥 Download PDF Bundle", final_pdf_buffer.getvalue(), f"Bulk_Docs_{active_cycle_name}.pdf", "application/pdf")
+            st.download_button("📥 Download PDF Bundle", final_pdf_buffer.getvalue(), f"Bulk_HallTickets_{active_cycle_name}.pdf", "application/pdf")
 
 with tabs[2]:
     st.write("### Single Student Generator")
@@ -704,8 +708,9 @@ with tabs[2]:
                 c_ay = curr_cycle.get('academic_year')
                 c_sem_type = curr_cycle.get('semester_type')
                 c_type = curr_cycle.get('exam_type', '')
+                is_special_cycle = ("Summer" in c_type or "Make-up" in c_type)
 
-                if "Summer" in c_type or "Make-up" in c_type:
+                if is_special_cycle:
                     sub_res = supabase.table("course_registrations")\
                         .select("course_code, semester, master_courses(title, semester_id)")\
                         .eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
@@ -749,8 +754,10 @@ with tabs[2]:
                     buf = io.BytesIO(); c = canvas.Canvas(buf, pagesize=A4)
                     app_id = generate_app_id(target_usn, selected_cycle_id)
                     
-                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
-                    c.showPage()
+                    # 🟢 Skip Application Page for Summer & Make-up Cycles
+                    if not is_special_cycle:
+                        draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
+                        c.showPage()
                     
                     HALF_A4 = 841.89 / 2
                     draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
@@ -760,6 +767,6 @@ with tabs[2]:
                     draw_hall_ticket_half(c, A4[0], 0, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     c.showPage(); c.save()
                     
-                    st.download_button(f"📥 Download Docs for {target_usn}", buf.getvalue(), f"{target_usn}_ExamDocs.pdf")
+                    st.download_button(f"📥 Download Hall Ticket for {target_usn}", buf.getvalue(), f"{target_usn}_HallTicket.pdf")
             except Exception as e:
                 st.error(f"Error: {e}")
