@@ -423,87 +423,53 @@ with reg_tabs[0]:
                     st.error(f"Generation Error: {e}")
 
 # ==========================================
-# 2. MASTER SYNC (FROM DEPARTMENTS)
+# 2. EXPORT STAGED REGISTRATIONS (THE BRIDGE)
 # ==========================================
 with reg_tabs[1]:
-    st.header("Step 2: 📥 Master Sync (Department Portal)")
-    st.info("View and import applications from the Department Staging area into the official COE database.")
+    st.header("Step 2: 📥 Export Department Registrations")
+    st.info("Download the approved online registrations from the Department Portal as a CSV. You can then upload this exact file into the 'Bulk Upload' tab to place them in the official COE database.")
     
     try:
-        # 1. Fetch EVERYTHING to expose hidden/stuck data
-        staging_res = supabase.table("course_registration_online").select("*").execute()
+        # Fetch only paid/approved applications
+        staging_res = supabase.table("course_registration_online").select("*").eq("payment_status", "PAID").execute()
         staged_data = staging_res.data if staging_res.data else []
         
         if not staged_data:
-            st.success("✅ The staging area is completely empty. No applications exist.")
+            st.success("✅ The staging area is completely empty. No new applications exist.")
         else:
-            st.warning(f"🔍 Found {len(staged_data)} subjects currently sitting in the Staging Area.")
+            st.warning(f"🔍 Found {len(staged_data)} pending subject registrations.")
             
-            # Show the raw data so you can visually confirm your test USN is there
-            st.dataframe(pd.DataFrame(staged_data), use_container_width=True)
+            # Show raw data for visual verification
+            df_staged = pd.DataFrame(staged_data)
+            st.dataframe(df_staged, use_container_width=True)
             
-            col_s1, col_s2 = st.columns(2)
+            # Format strictly for the Bulk Upload tool requirements
+            df_export = df_staged[['usn', 'course_code', 'semester']].copy()
+            csv_data = df_export.to_csv(index=False).encode('utf-8')
             
-            # OPTION A: SYNC EVERYTHING
-            if col_s1.button("🚀 Sync ALL Data", type="primary"):
-                target_data = staged_data
-                
-                with st.spinner("Importing into COE Master..."):
-                    official_payload = [{
-                        "usn": r.get('usn'), "course_code": r.get('course_code'), "semester": r.get('semester'),
-                        "academic_year": r.get('academic_year', active_ay), "semester_type": r.get('semester_type', active_term),
-                        "registration_type": r.get('registration_type', 'REGULAR'), "cycle_id": r.get('cycle_id') 
-                    } for r in target_data]
-                    
-                    # 1. Clear duplicates for Summer
-                    summer_cycles = list(set([r['cycle_id'] for r in official_payload if r['registration_type'] == 'SUMMER' and r.get('cycle_id')]))
-                    for cid in summer_cycles:
-                        usns = list(set([r['usn'] for r in official_payload if r.get('cycle_id') == cid]))
-                        if usns: supabase.table("course_registrations").delete().eq("cycle_id", cid).in_("usn", usns).execute()
-                            
-                    # 2. Clear duplicates for Regular
-                    unique_terms = list(set([(r['academic_year'], r['semester_type']) for r in official_payload if r['registration_type'] == 'REGULAR']))
-                    for ay, term in unique_terms:
-                        usns = list(set([r['usn'] for r in official_payload if r['academic_year'] == ay and r['semester_type'] == term]))
-                        if usns: supabase.table("course_registrations").delete().eq("academic_year", ay).eq("semester_type", term).in_("usn", usns).execute()
-                    
-                    # 3. Insert and Clean up
-                    supabase.table("course_registrations").insert(official_payload).execute()
-                    usns_to_clear = list(set([r['usn'] for r in official_payload]))
-                    supabase.table("course_registration_online").delete().in_("usn", usns_to_clear).execute()
-                    
-                    st.success(f"✅ Successfully synced {len(usns_to_clear)} students!")
+            col_e1, col_e2 = st.columns(2)
+            
+            col_e1.download_button(
+                label="📥 Download CSV for Bulk Upload",
+                data=csv_data,
+                file_name=f"Staged_Registrations_{datetime.date.today()}.csv",
+                mime="text/csv",
+                type="primary"
+            )
+            
+            st.divider()
+            st.markdown("⚠️ **Cleanup:** Only click this *after* you have successfully downloaded the CSV above.")
+            
+            if st.button("🗑️ Clear Staged Records"):
+                with st.spinner("Clearing staging area..."):
+                    usns_to_clear = list(set(df_staged['usn']))
+                    for i in range(0, len(usns_to_clear), 100):
+                        supabase.table("course_registration_online").delete().in_("usn", usns_to_clear[i:i+100]).execute()
+                    st.success("✅ Staging area cleared!")
                     st.rerun()
-
-            # OPTION B: SYNC ONE TEST USN
-            target_usn = col_s2.text_input("Enter a specific USN to sync:")
-            if col_s2.button("Sync Single USN"):
-                clean_target = target_usn.strip().upper()
-                target_data = [r for r in staged_data if r.get('usn') == clean_target]
-                
-                if not target_data:
-                    st.error("USN not found in the staging table above.")
-                else:
-                    with st.spinner(f"Importing {clean_target} into COE Master..."):
-                        official_payload = [{
-                            "usn": r.get('usn'), "course_code": r.get('course_code'), "semester": r.get('semester'),
-                            "academic_year": r.get('academic_year', active_ay), "semester_type": r.get('semester_type', active_term),
-                            "registration_type": r.get('registration_type', 'REGULAR'), "cycle_id": r.get('cycle_id') 
-                        } for r in target_data]
-                        
-                        if official_payload[0]['registration_type'] == 'SUMMER' and official_payload[0].get('cycle_id'):
-                            supabase.table("course_registrations").delete().eq("cycle_id", official_payload[0]['cycle_id']).eq("usn", clean_target).execute()
-                        else:
-                            supabase.table("course_registrations").delete().eq("academic_year", official_payload[0]['academic_year']).eq("semester_type", official_payload[0]['semester_type']).eq("usn", clean_target).execute()
-                            
-                        supabase.table("course_registrations").insert(official_payload).execute()
-                        supabase.table("course_registration_online").delete().eq("usn", clean_target).execute()
-                        
-                        st.success(f"✅ Successfully synced test student {clean_target}!")
-                        st.rerun()
+                    
     except Exception as e:
-        st.error(f"Error checking staging area: {e}")
-# ==========================================
+        st.error(f"Error checking staging area: {e}")# ==========================================
 # 3. PLAN B: BULK UPLOAD (OFFLINE MODE)
 # ==========================================
 with reg_tabs[2]:
