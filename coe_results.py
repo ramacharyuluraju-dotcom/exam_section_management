@@ -1163,6 +1163,9 @@ if show_ledgers:
         st.subheader("Generate Ledgers & Marks Cards")
         st.info("VTU Compliance Mode Active: Subjects are dynamically bucketed by Semester. Regular and Supplementary Marks Cards/Ledgers are generated separately.")
         
+        # 🟢 NEW: Override toggle for past cycles
+        force_regular_calc = st.checkbox("✅ Force Full Calculations (Treat as Regular Semester)", value=False, help="Overrides the active semester check to calculate Grand Totals, %, and SGPA for past semesters.")
+        
         if st.button("🖨️ Generate Master Ledgers & PDFs"):
             with st.spinner("Compiling institutional ledgers..."):
                 try:
@@ -1272,6 +1275,10 @@ if show_ledgers:
                                 is_regular_cycle = exam_type in ['Regular', 'Regular + Arrear (Concurrent)']
                                 is_regular = is_regular_cycle and (c_sem == student_cur_sem)
                                 
+                                # 🟢 FIX: Apply the manual override
+                                if force_regular_calc:
+                                    is_regular = True
+                                    
                                 reg_type_str = "REGULAR" if is_regular else "ARREAR"
                                 
                                 # Track courses for the Excel Ledger headers
