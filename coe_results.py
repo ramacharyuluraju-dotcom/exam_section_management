@@ -497,59 +497,28 @@ if show_cie:
 # ----------------------------------------------------
 if show_makeup:
     with t_mu:
-        st.subheader("🔄 Auto-Sync Parent CIEs")
-        st.info("Make-up and Supplementary exams carry forward the student's Continuous Internal Evaluation (CIE) marks from their original regular semester.")
+        st.subheader("🔄 Synchronize CIE Marks")
+        st.info(
+            "**Intelligent Sync Active:**\n"
+            "* **Rule 2 & Rule 3:** CIE marks will be automatically pulled from the student's latest historical attempt.\n"
+            "* **Rule 1:** Students are intentionally skipped so faculty can enter fresh marks.\n"
+            "* **Safety Lock:** Existing CIE marks in the database will not be overwritten."
+        )
         
-        if not parent_id:
-            st.error("🚨 Configuration Error: This cycle does not have a Parent Cycle linked. You cannot auto-sync CIEs without a parent cycle.")
-            st.info("If this is intentional, you must manually upload the CIEs using the database.")
-        else:
-            st.write(f"**Linked Parent Cycle ID:** {parent_id}")
-            
-            if st.button("📥 Sync CIEs from Parent Cycle", type="primary"):
-                with st.spinner("Fetching registrations and syncing historical CIE marks..."):
-                    try:
-                        curr_regs = fetch_all_records("course_registrations", "usn, course_code", filters={"cycle_id": selected_cycle_id})
-                        if not curr_regs:
-                            st.warning("No students registered for this cycle yet. Go to the Registrations module first.")
-                        else:
-                            parent_results = fetch_all_records("student_results", "usn, course_code, cie_marks", filters={"cycle_id": parent_id})
-                            
-                            parent_map = {(str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()): safe_float(r.get('cie_marks'), 0.0) for r in parent_results}
-                            
-                            sync_count = 0
-                            missing_count = 0
-                            payload = []
-                            
-                            for reg in curr_regs:
-                                u = str(reg['usn']).strip().upper()
-                                c = str(reg['course_code']).strip().upper()
-                                
-                                if (u, c) in parent_map:
-                                    payload.append({
-                                        "cycle_id": selected_cycle_id,
-                                        "usn": u,
-                                        "course_code": c,
-                                        "cie_marks": parent_map[(u, c)],
-                                        "exam_status": "PENDING", 
-                                        "grade": "PND"
-                                    })
-                                    sync_count += 1
-                                else:
-                                    missing_count += 1
-                                    
-                            if payload:
-                                for i in range(0, len(payload), 500):
-                                    supabase.table("student_results").upsert(payload[i:i+500]).execute()
-                                
-                                st.success(f"✅ Successfully synced {sync_count} CIE records from the Parent Cycle!")
-                                if missing_count > 0:
-                                    st.warning(f"⚠️ {missing_count} registered subjects had no CIE marks in the Parent Cycle.")
-                            else:
-                                st.error("No matching CIE records found in the Parent Cycle for these registrations.")
-                                
-                    except Exception as e:
-                        st.error(f"Sync failed: {e}")
+        if st.button("⚡ Auto-Sync Historical CIEs", type="primary", use_container_width=True):
+            with st.spinner(f"Scanning database and syncing CIEs for Cycle {selected_cycle_id}..."):
+                try:
+                    # Call the custom PostgreSQL function in Supabase
+                    response = supabase.rpc(
+                        "sync_historical_cie", 
+                        {"p_target_cycle_id": selected_cycle_id}
+                    ).execute()
+                    
+                    st.success(f"✅ CIE marks successfully synced for Cycle {selected_cycle_id}!")
+                    st.balloons()
+                    
+                except Exception as e:
+                    st.error(f"❌ Error syncing CIEs: {e}")
 
 # ----------------------------------------------------
 # TAB BLOCK: BUNDLE DECODER
