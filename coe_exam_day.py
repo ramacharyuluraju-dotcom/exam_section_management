@@ -138,7 +138,7 @@ def fetch_rooms():
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
 # ==========================================
-# 3. ALLOCATION ENGINE
+# 3. ALLOCATION ENGINE (Fixed OMR Logic)
 # ==========================================
 
 def run_allocation(df_students, df_rooms):
@@ -169,37 +169,41 @@ def run_allocation(df_students, df_rooms):
         return None, 0
 
     current_room_no, current_capacity = get_next_room()
-
+    
+    # ==========================================
+    # FIXED OMR ALLOCATION LOGIC
+    # ==========================================
     df_omr = df_students[df_students['AllocCode'].isin(OMR_SUBJECTS)]
     if not df_omr.empty:
-        for code in sorted(df_omr['AllocCode'].unique()):
-            code_df = df_omr[df_omr['AllocCode'] == code]
-            current_seat = 1
+        # Group all OMR students into a single continuous queue to mix them in the same room
+        students = df_omr.to_dict('records')
+        current_seat = 1
+        
+        while students:
+            if not current_room_no: break
             
-            if (allotment_rows and allotment_rows[-1]['RoomNo'] == current_room_no) or current_seat > 1:
+            # If the current room is full, fetch the next one
+            if current_seat > current_capacity:
                 current_room_no, current_capacity = get_next_room()
                 current_seat = 1
-
-            students = code_df.to_dict('records')
-            while students:
                 if not current_room_no: break
-                if current_seat > current_capacity:
-                    current_room_no, current_capacity = get_next_room()
-                    current_seat = 1
-                    if not current_room_no: break
 
-                s = students.pop(0)
-                allotment_rows.append({
-                    'RoomNo': current_room_no, 'SeatNo': current_seat,
-                    'USN': s['USN'], 'Student Name': s['Student Name'],
-                    'Branch': s['Branch'], 'Subject Code': s['Subject Code'],
-                    'Subject Name': s['Subject Name']
-                })
-                current_seat += 1
+            s = students.pop(0)
+            allotment_rows.append({
+                'RoomNo': current_room_no, 'SeatNo': current_seat,
+                'USN': s['USN'], 'Student Name': s['Student Name'],
+                'Branch': s['Branch'], 'Subject Code': s['Subject Code'],
+                'Subject Name': s['Subject Name']
+            })
+            current_seat += 1
 
+        # Prevent OMR students from sharing a room with Regular (Subjective) exams
         if current_seat > 1:
             current_room_no, current_capacity = get_next_room()
 
+    # ==========================================
+    # REGULAR ALLOCATION LOGIC
+    # ==========================================
     df_reg = df_students[~df_students['AllocCode'].isin(OMR_SUBJECTS)]
     if not df_reg.empty:
         subj_queues = {}
