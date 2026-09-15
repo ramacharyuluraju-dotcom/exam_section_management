@@ -396,10 +396,10 @@ if exam_type in ['Regular', 'Regular + Arrear (Concurrent)']:
 
 elif exam_type in ['Make-up', 'Supplementary', 'Supplementary (Arrear Only)', 'Summer']:
     if status_code >= 11:
-        t_mu, t3, t4, t6, t7, t_rev = st.tabs(["1. Auto-Sync Parent CIEs", "2. Upload Make-up SEEs", "3. Grading Engine", "4. Publish Ledgers", "5. CoE Dashboard", "6. Revaluation Engine"])
+        t_mu, t3, t4, t6, t7, t_rev = st.tabs(["1. CIE Sync & Upload", "2. Upload Make-up SEEs", "3. Grading Engine", "4. Publish Ledgers", "5. CoE Dashboard", "6. Revaluation Engine"])
         show_reval = True
     else:
-        t_mu, t3, t4, t6, t7 = st.tabs(["1. Auto-Sync Parent CIEs", "2. Upload Make-up SEEs", "3. Grading Engine", "4. Publish Ledgers", "5. CoE Dashboard"])
+        t_mu, t3, t4, t6, t7 = st.tabs(["1. CIE Sync & Upload", "2. Upload Make-up SEEs", "3. Grading Engine", "4. Publish Ledgers", "5. CoE Dashboard"])
         
     show_makeup, show_see, show_grading, show_ledgers, show_dashboard = True, True, True, True, True
 
@@ -493,11 +493,13 @@ if show_cie:
                         st.success("✅ Saved.")
 
 # ----------------------------------------------------
-# TAB BLOCK: MAKE-UP / ARREAR CIE SYNC
+# TAB BLOCK: MAKE-UP / ARREAR / SUMMER CIE SYNC
 # ----------------------------------------------------
 if show_makeup:
     with t_mu:
-        st.subheader("🔄 Synchronize CIE Marks")
+        st.subheader("🔄 Synchronize & Upload CIE Marks")
+        
+        # --- SECTION 1: AUTO-SYNC (For Rule 2 & 3) ---
         st.info(
             "**Intelligent Sync Active:**\n"
             "* **Rule 2 & Rule 3:** CIE marks will be automatically pulled from the student's latest historical attempt.\n"
@@ -519,6 +521,59 @@ if show_makeup:
                     
                 except Exception as e:
                     st.error(f"❌ Error syncing CIEs: {e}")
+                    
+        st.divider()
+
+        # --- SECTION 2: FRESH UPLOAD (For Rule 1) ---
+        st.subheader("📤 Upload Fresh CIE Marks (Rule 1)")
+        st.write("Upload brand-new internal marks for students who attended Summer classes (Rule 1).")
+        
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            f_cie = st.file_uploader("Upload CSV (Required: usn, course_code, cie_marks)", type='csv', key="mu_cie_up")
+            if f_cie and st.button("🚀 Process Bulk Rule 1 CIE"):
+                df_cie = pd.read_csv(f_cie)
+                usn_col = find_column(df_cie, ['usn', 'student id'])
+                cc_col = find_column(df_cie, ['course_code', 'course code', 'subject code'])
+                m_col = find_column(df_cie, ['cie_marks', 'cie', 'ia marks', 'internals'])
+                
+                if not (usn_col and cc_col and m_col):
+                    st.error("Missing standard columns.")
+                else:
+                    with st.spinner("Validating against registrations..."):
+                        regs = fetch_all_records("course_registrations", "usn, course_code", {"cycle_id": selected_cycle_id})
+                        valid_pairs = set((str(r['usn']).strip().upper(), str(r['course_code']).strip().upper()) for r in regs)
+                        
+                        records, ignored_count = [], 0
+                        for _, r in df_cie.iterrows():
+                            usn, cc = clean_str(r[usn_col]), clean_str(r[cc_col])
+                            if (usn, cc) in valid_pairs:
+                                records.append({"cycle_id": selected_cycle_id, "usn": usn, "course_code": cc, "cie_marks": safe_float(r[m_col], None)})
+                            else:
+                                ignored_count += 1
+                                
+                        if not records:
+                            st.error("No matching registered students found.")
+                        else:
+                            for i in range(0, len(records), 500):
+                                supabase.table("student_results").upsert(records[i:i + 500]).execute()
+                            st.success(f"✅ Successfully uploaded {len(records)} fresh CIE records.")
+                            if ignored_count > 0:
+                                st.warning(f"⚠️ Blocked {ignored_count} records (Not registered).")
+
+        with col_m2:
+            with st.form("manual_mu_cie"):
+                st.write("**Manual Individual Entry**")
+                m_usn = st.text_input("USN").strip().upper()
+                m_cc = st.text_input("Course Code").strip().upper()
+                m_marks = st.number_input("Fresh CIE Mark", min_value=0.0, max_value=100.0, value=0.0, step=0.5)
+                if st.form_submit_button("Save Rule 1 CIE"):
+                    regs = supabase.table("course_registrations").select("*").eq("cycle_id", selected_cycle_id).eq("usn", m_usn).eq("course_code", m_cc).execute().data
+                    if not regs:
+                        st.error(f"❌ Student {m_usn} is NOT registered for {m_cc} in this cycle.")
+                    else:
+                        supabase.table("student_results").upsert({"cycle_id": selected_cycle_id, "usn": m_usn, "course_code": m_cc, "cie_marks": m_marks}).execute()
+                        st.success("✅ Saved fresh CIE mark.")
 
 # ----------------------------------------------------
 # TAB BLOCK: BUNDLE DECODER
