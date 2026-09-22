@@ -233,6 +233,7 @@ with t3:
                         latest_attempts[r.get('course_code')] = r
                 
                 total_credits_attempted = 0.0
+                total_credits_earned = 0.0
                 total_grade_points_earned = 0.0
                 active_backlogs = 0
                 
@@ -241,7 +242,9 @@ with t3:
                     gp = safe_float(r.get('grade_points', 0))
                     total_credits_attempted += cred
                     total_grade_points_earned += (gp * cred)
-                    if not r.get('is_pass', False):
+                    if r.get('is_pass', False):
+                        total_credits_earned += cred
+                    else:
                         active_backlogs += 1
 
                 cgpa = (total_grade_points_earned / total_credits_attempted) if total_credits_attempted > 0 else 0.0
@@ -285,7 +288,7 @@ with t3:
                 
                 with col_met:
                     st.metric("Cumulative GPA (CGPA)", f"{cgpa:.2f}")
-                    st.metric("Total Credits Attempted", f"{total_credits_attempted}")
+                    st.metric("Credits Earned / Attempted", f"{total_credits_earned:g} / {total_credits_attempted:g}")
                     st.metric("Active Backlogs", f"{active_backlogs}", delta_color="inverse")
 
                 st.markdown("### 📚 Semester-wise Academic Transcript")
@@ -322,7 +325,8 @@ with t3:
                     
                     for sem, group in sorted(df_res.groupby('Course Sem')):
                         with st.expander(f"🎓 Semester {int(sem)} History", expanded=True):
-                            group = group.sort_values(by='cycle_id')
+                            # 🟢 FIX: Sort strictly by cycle_id chronologically, then course_code alphabetically
+                            group = group.sort_values(by=['cycle_id', 'course_code'])
                             
                             latest_sem_attempts = group.drop_duplicates(subset=['course_code'], keep='last')
                             sem_cr = latest_sem_attempts['Credits'].sum()
@@ -333,7 +337,7 @@ with t3:
                             
                             display_cols = ['Cycle Name', 'Attempt Type', 'course_code', 'Subject Title', 'Credits', 'cie_marks', 'see_scaled', 'total_marks', 'grade', 'exam_status']
                             clean_df = group[display_cols].rename(columns={
-                                'Cycle Name': 'Exam Cycle', 'Attempt Type': 'Attempt', 'course_code': 'Course', 
+                                'Cycle Name': 'Exam Cycle', 'Attempt Type': 'Attempt', 'course_code': 'Course Code', 
                                 'Subject Title': 'Title', 'cie_marks': 'CIE', 'see_scaled': 'SEE', 
                                 'total_marks': 'Total', 'grade': 'Grade', 'exam_status': 'Status'
                             })
