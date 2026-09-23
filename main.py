@@ -115,15 +115,31 @@ with tabs[2]:
                 help="Safe mode prevents accidental overwrites of existing student records and statuses."
             )
             
-            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, scheme_batch)", type='csv')
+            # 🟢 UPDATED: Included phone, email, and dob in the prompt
+            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, scheme_batch, phone, email, dob)", type='csv')
             
             if f_stu and st.button("Upload Students", type="primary"):
                 df = pd.read_csv(f_stu)
-                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'scheme_batch']
+                
+                # 🟢 NEW: Automatic safety mapping if the user names the columns slightly wrong
+                df.rename(columns={'email_id': 'email', 'contact': 'phone'}, inplace=True)
+                
+                # 🟢 UPDATED: Added the new columns to the expected extraction list
+                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'scheme_batch', 'phone', 'email', 'dob']
                 data = clean_data_for_db(df, expected)
                 
                 for d in data:
                     d['usn'] = str(d['usn']).strip().upper()
+                    
+                    # 🟢 NEW: Strip trailing .0 from pandas formatting so 2FA matches perfectly
+                    if 'phone' in d and pd.notna(d.get('phone')) and str(d['phone']).strip() != '':
+                        d['phone'] = str(d['phone']).split('.')[0].strip()
+                        
+                    if 'email' in d and pd.notna(d.get('email')):
+                        d['email'] = str(d['email']).strip().lower()
+                        
+                    if 'dob' in d and pd.notna(d.get('dob')):
+                        d['dob'] = str(d['dob']).strip()
                 
                 uploaded_usns = [d['usn'] for d in data]
                 
