@@ -116,7 +116,7 @@ with tabs[2]:
             )
             
             # 🟢 UPDATED: Included phone, email, and dob in the prompt
-            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, scheme_batch, phone, email, dob)", type='csv')
+            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, scheme_batch, contact, email, dob)", type='csv')
             
             if f_stu and st.button("Upload Students", type="primary"):
                 df = pd.read_csv(f_stu)
