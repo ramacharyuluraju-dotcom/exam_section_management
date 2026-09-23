@@ -108,15 +108,49 @@ with tabs[2]:
         st.subheader("Student Database Enrollment")
         col_s1, col_s2 = st.columns(2)
         with col_s1:
+            upload_mode = st.radio(
+                "Select Upload Behavior:", 
+                ["🟢 Safe Mode: Only insert NEW students (Ignore existing)", 
+                 "🔴 Overwrite Mode: Update EXISTING students (Danger)"],
+                help="Safe mode prevents accidental overwrites of existing student records and statuses."
+            )
+            
             f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, scheme_batch)", type='csv')
-            if f_stu and st.button("Upload Students"):
+            
+            if f_stu and st.button("Upload Students", type="primary"):
                 df = pd.read_csv(f_stu)
                 expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'scheme_batch']
                 data = clean_data_for_db(df, expected)
-                try:
-                    supabase.table("master_students").upsert(data).execute()
-                    st.success(f"Enrolled {len(data)} students.")
-                except Exception as e: st.error(f"Error: {e}")
+                
+                for d in data:
+                    d['usn'] = str(d['usn']).strip().upper()
+                
+                uploaded_usns = [d['usn'] for d in data]
+                
+                with st.spinner("Analyzing database..."):
+                    try:
+                        existing_res = supabase.table("master_students").select("usn").in_("usn", uploaded_usns).execute()
+                        existing_usns = [r['usn'] for r in (existing_res.data or [])]
+                        
+                        new_records = [d for d in data if d['usn'] not in existing_usns]
+                        existing_records = [d for d in data if d['usn'] in existing_usns]
+                        
+                        if "Safe Mode" in upload_mode:
+                            if new_records:
+                                supabase.table("master_students").insert(new_records).execute()
+                                st.success(f"✅ Successfully enrolled {len(new_records)} NEW students.")
+                            else:
+                                st.info("No new students to add.")
+                                
+                            if existing_records:
+                                st.warning(f"🛡️ Safely ignored {len(existing_records)} students who were already in the database.")
+                        
+                        elif "Overwrite Mode" in upload_mode:
+                            supabase.table("master_students").upsert(data).execute()
+                            st.success(f"⚠️ Overwrite Complete! {len(data)} students processed (New and Updated).")
+                            
+                    except Exception as e:
+                        st.error(f"Database Error: {e}")
         
         with col_s2:
             st.info("Uploading Photos? Go to the 'Pre-Exam Docs' module for the bulk photo uploader.")
