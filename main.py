@@ -3,6 +3,7 @@ import pandas as pd
 import io
 import zipfile
 import datetime
+from collections import defaultdict
 from utils import init_db, clean_data_for_db
 
 # --- CONFIGURATION ---
@@ -115,38 +116,77 @@ with tabs[2]:
                 help="Safe mode prevents accidental overwrites of existing student records and statuses."
             )
             
-            # 🟢 UPDATED: Included phone, email, and dob in the prompt
+            st.info("💡 **Pro Tip for 1st Years:** Leave the 'usn' column blank in your CSV. The system will auto-sort names alphabetically by branch and generate sequential Temp IDs (e.g., TMP-CSE-001).")
             f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, scheme_batch, contact, email, dob)", type='csv')
             
             if f_stu and st.button("Upload Students", type="primary"):
+                import random  
+                
                 df = pd.read_csv(f_stu)
+                df.rename(columns={'email_id': 'email', 'phone': 'contact'}, inplace=True)
                 
-                # 🟢 NEW: Automatic safety mapping if the user names the columns slightly wrong
-                df.rename(columns={'email_id': 'email', 'contact': 'phone'}, inplace=True)
+                if 'usn' not in df.columns:
+                    df['usn'] = ''
                 
-                # 🟢 UPDATED: Added the new columns to the expected extraction list
-                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'scheme_batch', 'phone', 'email', 'dob']
+                # 🟢 NEW: Pre-Sort Alphabetically Branch-wise before doing anything else
+                df['full_name'] = df['full_name'].fillna('')
+                df['branch_code'] = df['branch_code'].fillna('GEN')
+                df = df.sort_values(by=['branch_code', 'full_name'], ascending=[True, True]).reset_index(drop=True)
+                
+                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'scheme_batch', 'contact', 'email', 'dob']
                 data = clean_data_for_db(df, expected)
                 
-                for d in data:
-                    d['usn'] = str(d['usn']).strip().upper()
-                    
-                    # 🟢 NEW: Strip trailing .0 from pandas formatting so 2FA matches perfectly
-                    if 'phone' in d and pd.notna(d.get('phone')) and str(d['phone']).strip() != '':
-                        d['phone'] = str(d['phone']).split('.')[0].strip()
-                        
-                    if 'email' in d and pd.notna(d.get('email')):
-                        d['email'] = str(d['email']).strip().lower()
-                        
-                    if 'dob' in d and pd.notna(d.get('dob')):
-                        d['dob'] = str(d['dob']).strip()
-                
-                uploaded_usns = [d['usn'] for d in data]
-                
-                with st.spinner("Analyzing database..."):
+                with st.spinner("Analyzing database and generating sequences..."):
                     try:
-                        existing_res = supabase.table("master_students").select("usn").in_("usn", uploaded_usns).execute()
-                        existing_usns = [r['usn'] for r in (existing_res.data or [])]
+                        # 🟢 Fetch existing Temp USNs from the DB to find the highest sequence number
+                        temp_usns_res = supabase.table("master_students").select("usn").like("usn", "TMP-%").execute()
+                        existing_temp_usns = [r['usn'] for r in (temp_usns_res.data or [])]
+                        
+                        branch_max_seq = defaultdict(int)
+                        for existing_u in existing_temp_usns:
+                            parts = existing_u.split('-')
+                            # Parses TMP-CSE-AIML-042 correctly by grabbing the last part
+                            if len(parts) >= 3:
+                                try:
+                                    seq = int(parts[-1])
+                                    br = '-'.join(parts[1:-1]) 
+                                    if seq > branch_max_seq[br]:
+                                        branch_max_seq[br] = seq
+                                except ValueError: pass
+                                
+                        for d in data:
+                            raw_usn = str(d.get('usn', '')).strip().upper()
+                            branch = str(d.get('branch_code', 'GEN')).strip().upper()
+                            
+                            # 🟢 Assign Sequential Temp ID based on alphabetical list
+                            if raw_usn in ['', 'NAN', 'NONE', 'NULL']:
+                                branch_max_seq[branch] += 1
+                                d['usn'] = f"TMP-{branch}-{branch_max_seq[branch]:03d}" 
+                            else:
+                                d['usn'] = raw_usn
+                            
+                            if 'contact' in d and pd.notna(d.get('contact')) and str(d['contact']).strip() != '':
+                                d['contact'] = str(d['contact']).split('.')[0].strip()
+                                
+                            if 'email' in d and pd.notna(d.get('email')):
+                                d['email'] = str(d['email']).strip().lower()
+                                
+                            if 'dob' in d and pd.notna(d.get('dob')):
+                                d['dob'] = str(d['dob']).strip()
+                        
+                        uploaded_usns = [d['usn'] for d in data]
+                        
+                        # Fetch existing USNs and their PINs so we don't overwrite them
+                        existing_res = supabase.table("master_students").select("usn, photo_pin").in_("usn", uploaded_usns).execute()
+                        existing_data = {r['usn']: r.get('photo_pin') for r in (existing_res.data or [])}
+                        existing_usns = list(existing_data.keys())
+                        
+                        # Assign a random 4-digit PIN to everyone who DOESN'T already have one
+                        for d in data:
+                            if d['usn'] in existing_data and existing_data[d['usn']]:
+                                d['photo_pin'] = existing_data[d['usn']] # Keep existing PIN safe
+                            else:
+                                d['photo_pin'] = str(random.randint(1000, 9999)) # Assign new PIN
                         
                         new_records = [d for d in data if d['usn'] not in existing_usns]
                         existing_records = [d for d in data if d['usn'] in existing_usns]
@@ -154,7 +194,7 @@ with tabs[2]:
                         if "Safe Mode" in upload_mode:
                             if new_records:
                                 supabase.table("master_students").insert(new_records).execute()
-                                st.success(f"✅ Successfully enrolled {len(new_records)} NEW students.")
+                                st.success(f"✅ Successfully enrolled {len(new_records)} NEW students with generated PINs & Temp IDs.")
                             else:
                                 st.info("No new students to add.")
                                 
@@ -163,7 +203,7 @@ with tabs[2]:
                         
                         elif "Overwrite Mode" in upload_mode:
                             supabase.table("master_students").upsert(data).execute()
-                            st.success(f"⚠️ Overwrite Complete! {len(data)} students processed (New and Updated).")
+                            st.success(f"⚠️ Overwrite Complete! {len(data)} students processed. Existing PINs were protected.")
                             
                     except Exception as e:
                         st.error(f"Database Error: {e}")
@@ -198,7 +238,7 @@ with tabs[2]:
         st.info("When VTU releases official USNs, upload a CSV mapping the Temporary Admission Numbers to the Official USNs.")
         
         with st.expander("View CSV Template Guide"):
-            st.code("temp_usn,official_usn\nTMP-ADM4059,1AM26CS001\nLAT-ADM9021,1AM26CS002")
+            st.code("temp_usn,official_usn\nTMP-CSE-001,1AM26CS001\nTMP-CSE-002,1AM26CS002")
             
         f_mig = st.file_uploader("Upload Migration CSV (temp_usn, official_usn)", type='csv')
         
