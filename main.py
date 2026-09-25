@@ -42,7 +42,6 @@ with tabs[0]:
         name = c1.text_input("Institution Name", value=curr.get('college_name', ''))
         univ = c1.text_input("University", value=curr.get('university', ''))
         
-        # Keep existing scheme selector for legacy defaults
         schemes = ["2022 Scheme (NEP)", "2021 Scheme (CBCS)", "2018 Scheme"]
         curr_scheme = curr.get('current_scheme', '2022 Scheme (NEP)')
         scheme = c2.selectbox("Syllabus Scheme", schemes, index=schemes.index(curr_scheme) if curr_scheme in schemes else 0)
@@ -117,7 +116,7 @@ with tabs[2]:
             )
             
             st.info("💡 **Pro Tip for 1st Years:** Leave the 'usn' column blank in your CSV. The system will auto-sort names alphabetically by branch and generate sequential Temp IDs (e.g., TMP-CSE-001).")
-            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, scheme_batch, contact, email, dob)", type='csv')
+            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob)", type='csv')
             
             if f_stu and st.button("Upload Students", type="primary"):
                 import random  
@@ -128,24 +127,21 @@ with tabs[2]:
                 if 'usn' not in df.columns:
                     df['usn'] = ''
                 
-                # 🟢 NEW: Pre-Sort Alphabetically Branch-wise before doing anything else
                 df['full_name'] = df['full_name'].fillna('')
                 df['branch_code'] = df['branch_code'].fillna('GEN')
                 df = df.sort_values(by=['branch_code', 'full_name'], ascending=[True, True]).reset_index(drop=True)
                 
-                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'scheme_batch', 'contact', 'email', 'dob']
+                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'section', 'scheme_batch', 'contact', 'email', 'dob']
                 data = clean_data_for_db(df, expected)
                 
                 with st.spinner("Analyzing database and generating sequences..."):
                     try:
-                        # 🟢 Fetch existing Temp USNs from the DB to find the highest sequence number
                         temp_usns_res = supabase.table("master_students").select("usn").like("usn", "TMP-%").execute()
                         existing_temp_usns = [r['usn'] for r in (temp_usns_res.data or [])]
                         
                         branch_max_seq = defaultdict(int)
                         for existing_u in existing_temp_usns:
                             parts = existing_u.split('-')
-                            # Parses TMP-CSE-AIML-042 correctly by grabbing the last part
                             if len(parts) >= 3:
                                 try:
                                     seq = int(parts[-1])
@@ -158,12 +154,16 @@ with tabs[2]:
                             raw_usn = str(d.get('usn', '')).strip().upper()
                             branch = str(d.get('branch_code', 'GEN')).strip().upper()
                             
-                            # 🟢 Assign Sequential Temp ID based on alphabetical list
                             if raw_usn in ['', 'NAN', 'NONE', 'NULL']:
                                 branch_max_seq[branch] += 1
                                 d['usn'] = f"TMP-{branch}-{branch_max_seq[branch]:03d}" 
                             else:
                                 d['usn'] = raw_usn
+
+                            if 'section' in d and pd.notna(d.get('section')):
+                                d['section'] = str(d['section']).strip().upper()
+                            else:
+                                d['section'] = None
                             
                             if 'contact' in d and pd.notna(d.get('contact')) and str(d['contact']).strip() != '':
                                 d['contact'] = str(d['contact']).split('.')[0].strip()
@@ -176,17 +176,15 @@ with tabs[2]:
                         
                         uploaded_usns = [d['usn'] for d in data]
                         
-                        # Fetch existing USNs and their PINs so we don't overwrite them
                         existing_res = supabase.table("master_students").select("usn, photo_pin").in_("usn", uploaded_usns).execute()
                         existing_data = {r['usn']: r.get('photo_pin') for r in (existing_res.data or [])}
                         existing_usns = list(existing_data.keys())
                         
-                        # Assign a random 4-digit PIN to everyone who DOESN'T already have one
                         for d in data:
                             if d['usn'] in existing_data and existing_data[d['usn']]:
-                                d['photo_pin'] = existing_data[d['usn']] # Keep existing PIN safe
+                                d['photo_pin'] = existing_data[d['usn']] 
                             else:
-                                d['photo_pin'] = str(random.randint(1000, 9999)) # Assign new PIN
+                                d['photo_pin'] = str(random.randint(1000, 9999)) 
                         
                         new_records = [d for d in data if d['usn'] not in existing_usns]
                         existing_records = [d for d in data if d['usn'] in existing_usns]
@@ -388,7 +386,6 @@ with tabs[3]:
             if f_crs and st.button("Upload Scheme"):
                 df = pd.read_csv(f_crs)
                 
-                # Automatically clean and format comma-separated branch codes from the CSV
                 if 'branch_code' in df.columns:
                     df['branch_code'] = df['branch_code'].astype(str).apply(
                         lambda x: ", ".join([b.strip().upper() for b in x.split(",")])
