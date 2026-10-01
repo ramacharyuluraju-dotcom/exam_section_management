@@ -510,15 +510,67 @@ if show_makeup:
         if st.button("⚡ Auto-Sync Historical CIEs", type="primary", use_container_width=True):
             with st.spinner(f"Scanning database and syncing CIEs for Cycle {selected_cycle_id}..."):
                 try:
-                    # Call the custom PostgreSQL function in Supabase
-                    response = supabase.rpc(
-                        "sync_historical_cie", 
-                        {"p_target_cycle_id": selected_cycle_id}
-                    ).execute()
+                    # 1. Fetch all course registrations for the current summer/makeup cycle
+                    curr_regs = fetch_all_records("course_registrations", "usn, course_code", filters={"cycle_id": selected_cycle_id})
                     
-                    st.success(f"✅ CIE marks successfully synced for Cycle {selected_cycle_id}!")
-                    st.balloons()
-                    
+                    if not curr_regs:
+                        st.warning("No course registrations found for this cycle.")
+                    else:
+                        # 2. Fetch all historical student results
+                        all_results = fetch_all_records("student_results", "cycle_id, usn, course_code, cie_marks")
+                        
+                        # 3. Find the LATEST historical CIE mark for each USN + Course Code
+                        historical_map = {}
+                        
+                        # Sort by cycle_id descending so the first record we hit is the absolute latest attempt
+                        all_results_sorted = sorted(all_results, key=lambda x: int(x['cycle_id']), reverse=True)
+                        
+                        for r in all_results_sorted:
+                            # Skip the current active cycle itself
+                            if int(r['cycle_id']) == int(selected_cycle_id):
+                                continue
+                                
+                            key = (str(r['usn']).strip().upper(), str(r['course_code']).strip().upper())
+                            
+                            # Only capture if we haven't seen it yet (latest attempt) and it has a valid mark
+                            if key not in historical_map and r.get('cie_marks') is not None:
+                                historical_map[key] = float(r['cie_marks'])
+                        
+                        # 4. Map the latest CIE marks to the current registrations
+                        payload = []
+                        sync_count = 0
+                        missing_count = 0
+                        
+                        for reg in curr_regs:
+                            u = str(reg['usn']).strip().upper()
+                            c = str(reg['course_code']).strip().upper()
+                            
+                            if (u, c) in historical_map:
+                                payload.append({
+                                    "cycle_id": selected_cycle_id,
+                                    "usn": u,
+                                    "course_code": c,
+                                    "cie_marks": historical_map[(u, c)],
+                                    "exam_status": "PENDING",
+                                    "grade": "PND"
+                                })
+                                sync_count += 1
+                            else:
+                                missing_count += 1
+
+                        # 5. Execute the Upsert Batch
+                        if payload:
+                            for i in range(0, len(payload), 500):
+                                supabase.table("student_results").upsert(payload[i:i+500]).execute()
+                                
+                            st.success(f"✅ Successfully synced {sync_count} historical CIE marks for Cycle {selected_cycle_id}!")
+                            st.balloons()
+                            
+                            if missing_count > 0:
+                                st.info(f"ℹ️ {missing_count} registrations did not have historical CIE marks. (These are likely Rule 1 students who need fresh marks uploaded).")
+                        else:
+                            st.warning("No historical CIE marks found for any registered students in this cycle.")
+                            
                 except Exception as e:
                     st.error(f"❌ Error syncing CIEs: {e}")
                     
