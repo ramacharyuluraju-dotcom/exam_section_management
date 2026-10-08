@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
+  workflow_dispatch: 
 
 jobs:
   build-windows:
@@ -12,10 +12,10 @@ jobs:
     
     steps:
     - name: Checkout Code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: '3.10'
 
@@ -26,7 +26,6 @@ jobs:
         pip install pyinstaller
 
     - name: Compile EXE via PyInstaller
-      # Note: We must explicitly copy Streamlit's static frontend files into the build
       run: |
         pyinstaller --noconfirm --onedir --windowed `
         --add-data "app.py;." `
@@ -34,7 +33,7 @@ jobs:
         run_app.py
         
     - name: Upload EXE Artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: Exam_Section_Windows_App
         path: dist/run_app/
