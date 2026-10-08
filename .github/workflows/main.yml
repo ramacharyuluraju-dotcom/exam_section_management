@@ -1,0 +1,40 @@
+name: Build Streamlit EXE
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Compile EXE via PyInstaller
+      # Note: We must explicitly copy Streamlit's static frontend files into the build
+      run: |
+        pyinstaller --noconfirm --onedir --windowed `
+        --add-data "app.py;." `
+        --copy-metadata streamlit `
+        run_app.py
+        
+    - name: Upload EXE Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: Exam_Section_Windows_App
+        path: dist/run_app/
