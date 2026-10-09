@@ -389,12 +389,12 @@ with tabs[3]:
         c_m1, c_m2 = st.columns(2)
         
         with c_m1:
-            # Clear UI instructions for proper course types
             st.markdown("""
             ### 📝 CSV Upload Guidelines
             For the Auto-Registration engine to work perfectly, please ensure the **`course_type`** column in your CSV strictly uses these terms:
             *   **`CORE`** (Regular Theory subjects)
             *   **`LAB`** (Practical Sessions)
+            *   **`PROJECT`** (Project-based learning & Internships)
             *   **`NON CREDIT`** (Mandatory zero-credit subjects)
             *   **`LATERAL`** (Additional Math for diploma entry students)
             *   **`PE`** (Professional Electives)
@@ -428,7 +428,7 @@ with tabs[3]:
                 cs = col2.number_input("Semester ID", 1, 10, 1)
                 ccr = col1.number_input("Credits", 0, 5, 4)
                 
-                ctype = col2.selectbox("Course Type", ["CORE", "LAB", "NON CREDIT", "LATERAL", "PE", "OE"])
+                ctype = col2.selectbox("Course Type", ["CORE", "LAB", "PROJECT", "NON CREDIT", "LATERAL", "PE", "OE"])
                 c_scheme = col1.number_input("Scheme Batch (Year)", 20, 99, 25, help="Enter the 2-digit batch year this syllabus applies to (e.g., 25, 26).")
                 
                 if st.form_submit_button("💾 Add/Update Course"):
