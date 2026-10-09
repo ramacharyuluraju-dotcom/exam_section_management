@@ -115,23 +115,26 @@ with tabs[2]:
                 help="Safe mode prevents accidental overwrites of existing student records and statuses."
             )
             
-            st.info("💡 **Pro Tip for 1st Years:** Leave the 'usn' column blank in your CSV. The system will auto-sort names alphabetically by branch and generate sequential Temp IDs (e.g., TMP-CSE-001).")
-            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob)", type='csv')
+            st.info("💡 **Pro Tip:** Leave 'usn' blank for 1st Years. For lateral students, put 'yes' in the `is_lateral` column.")
+            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob, is_lateral)", type='csv')
             
             if f_stu and st.button("Upload Students", type="primary"):
                 import random  
                 
                 df = pd.read_csv(f_stu)
+                df.columns = [str(c).strip().lower() for c in df.columns]
                 df.rename(columns={'email_id': 'email', 'phone': 'contact'}, inplace=True)
                 
                 if 'usn' not in df.columns:
                     df['usn'] = ''
+                if 'is_lateral' not in df.columns:
+                    df['is_lateral'] = 'no'
                 
                 df['full_name'] = df['full_name'].fillna('')
                 df['branch_code'] = df['branch_code'].fillna('GEN')
                 df = df.sort_values(by=['branch_code', 'full_name'], ascending=[True, True]).reset_index(drop=True)
                 
-                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'section', 'scheme_batch', 'contact', 'email', 'dob']
+                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'section', 'scheme_batch', 'contact', 'email', 'dob', 'is_lateral']
                 data = clean_data_for_db(df, expected)
                 
                 with st.spinner("Analyzing database and generating sequences..."):
@@ -164,6 +167,10 @@ with tabs[2]:
                                 d['section'] = str(d['section']).strip().upper()
                             else:
                                 d['section'] = None
+                                
+                            # Convert is_lateral text to Boolean
+                            lateral_val = str(d.get('is_lateral', '')).strip().lower()
+                            d['is_lateral'] = True if lateral_val in ['yes', 'true', '1'] else False
                             
                             if 'contact' in d and pd.notna(d.get('contact')) and str(d['contact']).strip() != '':
                                 d['contact'] = str(d['contact']).split('.')[0].strip()
@@ -382,6 +389,7 @@ with tabs[3]:
         c_m1, c_m2 = st.columns(2)
         
         with c_m1:
+            st.caption("Valid Course Types: CORE, LAB, NON CREDIT, LATERAL, PE, OE")
             f_crs = st.file_uploader("Upload Scheme CSV (course_code, title, branch_code, semester_id, credits, max_cie, max_see, total_marks, course_type, scheme_batch)", type='csv')
             if f_crs and st.button("Upload Scheme"):
                 df = pd.read_csv(f_crs)
@@ -409,7 +417,7 @@ with tabs[3]:
                 cs = col2.number_input("Semester ID", 1, 10, 1)
                 ccr = col1.number_input("Credits", 0, 5, 4)
                 
-                ctype = col2.selectbox("Course Type", ["CORE", "PE", "OE"])
+                ctype = col2.selectbox("Course Type", ["CORE", "LAB", "NON CREDIT", "LATERAL", "PE", "OE"])
                 c_scheme = col1.number_input("Scheme Batch (Year)", 20, 99, 25, help="Enter the 2-digit batch year this syllabus applies to (e.g., 25, 26).")
                 
                 if st.form_submit_button("💾 Add/Update Course"):
