@@ -87,7 +87,7 @@ def fetch_exam_sessions(cycle_id):
     df['label'] = df['exam_date'] + " | " + df['session']
     return df.sort_values('exam_date')['label'].unique().tolist()
 
-def fetch_exam_data(cycle_id, date_str, session_str):
+def fetch_exam_data(cycle_id, date_str, session_str, exam_type='Regular'):
     tt_res = supabase.table("exam_timetable").select("course_code").eq("cycle_id", cycle_id).eq("exam_date", date_str).eq("session", session_str).execute()
     course_codes = [r['course_code'] for r in tt_res.data]
     if not course_codes: return pd.DataFrame()
@@ -116,9 +116,15 @@ def fetch_exam_data(cycle_id, date_str, session_str):
     df_stus = pd.DataFrame(all_stus)
     if df_stus.empty: return pd.DataFrame()
     
-    # 🟢 PANDAS GUARDRAIL: Filter Active students locally! This prevents the "No registered active students" bug.
+    # 🟢 NEW DYNAMIC GUARDRAIL: Context-aware filtering
     df_stus['status'] = df_stus['status'].fillna('ACTIVE').astype(str).str.strip().str.upper()
-    df_stus = df_stus[df_stus['status'] == 'ACTIVE'].copy()
+    
+    if str(exam_type).strip().upper() == 'REGULAR':
+        # Strict Rule: Only ACTIVE students can write Regular exams
+        df_stus = df_stus[df_stus['status'] == 'ACTIVE'].copy()
+    else:
+        # Lenient Rule: ACTIVE and DETAINED students can write Summer/Supplementary exams
+        df_stus = df_stus[df_stus['status'].isin(['ACTIVE', 'DETAINED'])].copy()
     
     if df_stus.empty: return pd.DataFrame()
     
@@ -721,6 +727,13 @@ pdf_assets = load_pdf_assets()
 
 st.title("🚀 Live Exam Day Operations")
 
+# 🟢 Fetch the specific exam type for the active cycle to apply dynamic rules
+try:
+    cycle_info = supabase.table("exam_cycles").select("exam_type").eq("cycle_id", selected_cycle_id).execute()
+    active_exam_type = cycle_info.data[0]['exam_type'] if cycle_info.data else 'Regular'
+except:
+    active_exam_type = 'Regular'
+
 sessions = fetch_exam_sessions(selected_cycle_id)
 if not sessions:
     st.error("No timetable records found for this cycle.")
@@ -733,7 +746,8 @@ selected_slot = st.selectbox("📅 Select Date & Session", sessions, on_change=c
 
 date_str, sess_str = selected_slot.split(" | ")
 
-df_stus = fetch_exam_data(selected_cycle_id, date_str, sess_str)
+# 🟢 Pass the dynamic exam_type into the data fetcher
+df_stus = fetch_exam_data(selected_cycle_id, date_str, sess_str, exam_type=active_exam_type)
 df_rooms_master = fetch_rooms()
 
 if df_stus.empty:
@@ -742,7 +756,7 @@ elif df_rooms_master.empty:
     st.error("No rooms defined in Infrastructure master.")
 else:
     total_students = len(df_stus)
-    st.info(f"👨‍🎓 **Total Active Students to Allocate:** {total_students}")
+    st.info(f"👨‍🎓 **Total Students to Allocate:** {total_students}")
 
     st.markdown("---")
     st.subheader("🏢 Select Exam Blocks & Rooms")
