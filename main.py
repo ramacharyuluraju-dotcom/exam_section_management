@@ -3,6 +3,7 @@ import pandas as pd
 import io
 import zipfile
 import datetime
+import random
 from collections import defaultdict
 from utils import init_db, clean_data_for_db
 
@@ -119,8 +120,6 @@ with tabs[2]:
             f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob, is_lateral)", type='csv')
             
             if f_stu and st.button("Upload Students", type="primary"):
-                import random  
-                
                 df = pd.read_csv(f_stu)
                 df.columns = [str(c).strip().lower() for c in df.columns]
                 df.rename(columns={'email_id': 'email', 'phone': 'contact'}, inplace=True)
@@ -130,40 +129,78 @@ with tabs[2]:
                 if 'is_lateral' not in df.columns:
                     df['is_lateral'] = 'no'
                 
-                df['full_name'] = df['full_name'].fillna('')
-                df['branch_code'] = df['branch_code'].fillna('GEN')
+                df['full_name'] = df['full_name'].fillna('').astype(str).str.strip()
+                df['branch_code'] = df['branch_code'].fillna('GEN').astype(str).str.strip().str.upper()
                 df = df.sort_values(by=['branch_code', 'full_name'], ascending=[True, True]).reset_index(drop=True)
                 
                 expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'section', 'scheme_batch', 'contact', 'email', 'dob', 'is_lateral']
                 data = clean_data_for_db(df, expected)
                 
-                with st.spinner("Analyzing database and generating sequences..."):
+                with st.spinner("Analyzing full database (bypassing 1,000-row cap) and generating sequences..."):
                     try:
-                        temp_usns_res = supabase.table("master_students").select("usn").like("usn", "TMP-%").execute()
-                        existing_temp_usns = [r['usn'] for r in (temp_usns_res.data or [])]
+                        # 🟢 FIX 1: Paginate through ALL students in master_students to avoid 1,000-row truncation
+                        all_existing_students = []
+                        start = 0
+                        step = 1000
+                        while True:
+                            res = supabase.table("master_students").select("usn, full_name, branch_code, current_sem, photo_pin").range(start, start + step - 1).execute()
+                            if not res.data:
+                                break
+                            all_existing_students.extend(res.data)
+                            if len(res.data) < step:
+                                break
+                            start += step
                         
                         branch_max_seq = defaultdict(int)
-                        for existing_u in existing_temp_usns:
-                            parts = existing_u.split('-')
-                            if len(parts) >= 3:
-                                try:
-                                    seq = int(parts[-1])
-                                    br = '-'.join(parts[1:-1]) 
-                                    if seq > branch_max_seq[br]:
-                                        branch_max_seq[br] = seq
-                                except ValueError: pass
+                        existing_data = {}
+                        existing_identity_map = {}  # Maps (FULL_NAME, BRANCH, SEM) -> existing USN
+                        
+                        for r in all_existing_students:
+                            u = str(r.get('usn', '')).strip().upper()
+                            if not u:
+                                continue
+                            existing_data[u] = r.get('photo_pin')
+                            
+                            # Build lookup for blank-USN duplicate prevention
+                            f_name = str(r.get('full_name', '')).strip().upper()
+                            b_code = str(r.get('branch_code', '')).strip().upper()
+                            c_sem = str(r.get('current_sem', '')).strip()
+                            if f_name and b_code:
+                                existing_identity_map[(f_name, b_code, c_sem)] = u
+                            
+                            # Track highest sequence for TMP-<BRANCH>-<SEQ>
+                            if u.startswith("TMP-"):
+                                parts = u.split('-')
+                                if len(parts) >= 3:
+                                    try:
+                                        seq = int(parts[-1])
+                                        br = '-'.join(parts[1:-1])
+                                        if seq > branch_max_seq[br]:
+                                            branch_max_seq[br] = seq
+                                    except ValueError:
+                                        pass
                                 
                         for d in data:
-                            raw_usn = str(d.get('usn', '')).strip().upper()
-                            branch = str(d.get('branch_code', 'GEN')).strip().upper()
+                            raw_usn = str(d.get('usn') or '').strip().upper()
+                            branch = str(d.get('branch_code') or 'GEN').strip().upper()
+                            full_name_clean = str(d.get('full_name') or '').strip().upper()
+                            sem_clean = str(d.get('current_sem') or '').strip()
+                            
+                            d['full_name'] = full_name_clean
+                            d['branch_code'] = branch
                             
                             if raw_usn in ['', 'NAN', 'NONE', 'NULL']:
-                                branch_max_seq[branch] += 1
-                                d['usn'] = f"TMP-{branch}-{branch_max_seq[branch]:03d}" 
+                                # 🟢 FIX 2: Check if this exact student was already assigned a Temp USN earlier
+                                identity_key = (full_name_clean, branch, sem_clean)
+                                if identity_key in existing_identity_map:
+                                    d['usn'] = existing_identity_map[identity_key]
+                                else:
+                                    branch_max_seq[branch] += 1
+                                    d['usn'] = f"TMP-{branch}-{branch_max_seq[branch]:03d}"
                             else:
                                 d['usn'] = raw_usn
 
-                            if 'section' in d and pd.notna(d.get('section')):
+                            if 'section' in d and pd.notna(d.get('section')) and str(d.get('section')).strip() != '':
                                 d['section'] = str(d['section']).strip().upper()
                             else:
                                 d['section'] = None
@@ -181,11 +218,7 @@ with tabs[2]:
                             if 'dob' in d and pd.notna(d.get('dob')):
                                 d['dob'] = str(d['dob']).strip()
                         
-                        uploaded_usns = [d['usn'] for d in data]
-                        
-                        existing_res = supabase.table("master_students").select("usn, photo_pin").in_("usn", uploaded_usns).execute()
-                        existing_data = {r['usn']: r.get('photo_pin') for r in (existing_res.data or [])}
-                        existing_usns = list(existing_data.keys())
+                        existing_usns_set = set(existing_data.keys())
                         
                         for d in data:
                             if d['usn'] in existing_data and existing_data[d['usn']]:
@@ -193,18 +226,20 @@ with tabs[2]:
                             else:
                                 d['photo_pin'] = str(random.randint(1000, 9999)) 
                         
-                        new_records = [d for d in data if d['usn'] not in existing_usns]
-                        existing_records = [d for d in data if d['usn'] in existing_usns]
+                        new_records = [d for d in data if d['usn'] not in existing_usns_set]
+                        existing_records = [d for d in data if d['usn'] in existing_usns_set]
                         
                         if "Safe Mode" in upload_mode:
                             if new_records:
                                 supabase.table("master_students").insert(new_records).execute()
-                                st.success(f"✅ Successfully enrolled {len(new_records)} NEW students with generated PINs & Temp IDs.")
+                                assigned_preview = ", ".join([f"{r['full_name']} ({r['usn']})" for r in new_records[:5]])
+                                st.success(f"✅ Successfully enrolled {len(new_records)} NEW students: {assigned_preview}{'...' if len(new_records) > 5 else ''}")
                             else:
                                 st.info("No new students to add.")
                                 
                             if existing_records:
-                                st.warning(f"🛡️ Safely ignored {len(existing_records)} students who were already in the database.")
+                                ignored_preview = ", ".join([f"{r['full_name']} ({r['usn']})" for r in existing_records[:5]])
+                                st.warning(f"🛡️ Safely ignored {len(existing_records)} students already in the database: {ignored_preview}{'...' if len(existing_records) > 5 else ''}")
                         
                         elif "Overwrite Mode" in upload_mode:
                             supabase.table("master_students").upsert(data).execute()
@@ -385,7 +420,7 @@ with tabs[3]:
                     st.success("Saved.")
 
     with ac_tabs[1]:
-        st.info("The Master Course table defines every subject taught, its credits, and its max marks. This is critical for the grading engine.")
+        st.info("The Master Course table defines every subject taught, its offering department, its credits, and its max marks. This is critical for the grading and auto-registration engines.")
         c_m1, c_m2 = st.columns(2)
         
         with c_m1:
@@ -401,20 +436,35 @@ with tabs[3]:
             *   **`OE`** (Open Electives)
             """)
             
-            f_crs = st.file_uploader("Upload Scheme CSV (course_code, title, branch_code, semester_id, credits, max_cie, max_see, total_marks, course_type, scheme_batch)", type='csv')
+            # 🟢 UPDATED: Added offering_department to CSV upload format
+            f_crs = st.file_uploader(
+                "Upload Scheme CSV (course_code, title, branch_code, semester_id, credits, max_cie, max_see, total_marks, course_type, scheme_batch, offering_department)", 
+                type='csv'
+            )
             if f_crs and st.button("Upload Scheme"):
                 df = pd.read_csv(f_crs)
+                df.columns = [str(c).strip().lower() for c in df.columns]
                 
                 if 'branch_code' in df.columns:
                     df['branch_code'] = df['branch_code'].astype(str).apply(
-                        lambda x: ", ".join([b.strip().upper() for b in x.split(",")])
+                        lambda x: ", ".join([b.strip().upper() for b in x.split(",") if b.strip()])
                     )
                 
-                expected = ['course_code', 'title', 'branch_code', 'semester_id', 'credits', 'max_cie', 'max_see', 'total_marks', 'course_type', 'scheme_batch']
+                if 'course_type' in df.columns:
+                    df['course_type'] = df['course_type'].astype(str).str.strip().str.upper()
+                    
+                if 'offering_department' in df.columns:
+                    df['offering_department'] = df['offering_department'].fillna('').astype(str).str.strip().str.upper()
+                
+                expected = [
+                    'course_code', 'title', 'branch_code', 'semester_id', 
+                    'credits', 'max_cie', 'max_see', 'total_marks', 
+                    'course_type', 'scheme_batch', 'offering_department'
+                ]
                 data = clean_data_for_db(df, expected)
                 try:
                     supabase.table("master_courses").upsert(data).execute()
-                    st.success("✅ Scheme Updated Successfully.")
+                    st.success(f"✅ Scheme Updated Successfully ({len(data)} courses processed).")
                 except Exception as e:
                     st.error(f"🚨 RAW DATABASE ERROR: {e}")
                     
@@ -425,20 +475,34 @@ with tabs[3]:
                 ct = col2.text_input("Title")
                 
                 cbc = col1.text_input("Branch Code(s)", help="Use comma separation for shared subjects (e.g., 'CS, IS, AI'). Use 'ALL' for universal subjects.")
-                cs = col2.number_input("Semester ID", 1, 10, 1)
-                ccr = col1.number_input("Credits", 0, 5, 4)
+                c_off_dept = col2.text_input("Offering Department", help="Department teaching this course (e.g., 'CS', 'MAT', 'PHY', 'ME').")
                 
-                ctype = col2.selectbox("Course Type", ["CORE", "LAB", "PROJECT", "NON CREDIT", "LATERAL", "PE", "OE"])
-                c_scheme = col1.number_input("Scheme Batch (Year)", 20, 99, 25, help="Enter the 2-digit batch year this syllabus applies to (e.g., 25, 26).")
+                cs = col1.number_input("Semester ID", 1, 10, 1)
+                ccr = col2.number_input("Credits", 0, 5, 4)
+                
+                ctype = col1.selectbox("Course Type", ["CORE", "LAB", "PROJECT", "NON CREDIT", "LATERAL", "PE", "OE"])
+                c_scheme = col2.number_input("Scheme Batch (Year)", 20, 99, 25, help="Enter the 2-digit batch year this syllabus applies to (e.g., 25, 26).")
+                
+                m_cie = col1.number_input("Max CIE Marks", 0, 100, 50)
+                m_see = col2.number_input("Max SEE Marks", 0, 100, 50)
+                t_marks = col1.number_input("Total Marks", 0, 200, 100)
                 
                 if st.form_submit_button("💾 Add/Update Course"):
                     try:
-                        clean_branches = ", ".join([b.strip().upper() for b in cbc.split(",")])
+                        clean_branches = ", ".join([b.strip().upper() for b in cbc.split(",") if b.strip()])
+                        clean_off_dept = c_off_dept.strip().upper() if c_off_dept else None
                         
                         payload = {
-                            "course_code": cc, "title": ct, 
-                            "branch_code": clean_branches, "semester_id": cs, 
-                            "credits": ccr, "course_type": ctype, 
+                            "course_code": cc.strip().upper(),
+                            "title": ct.strip(), 
+                            "branch_code": clean_branches,
+                            "offering_department": clean_off_dept,
+                            "semester_id": cs, 
+                            "credits": ccr,
+                            "max_cie": m_cie,
+                            "max_see": m_see,
+                            "total_marks": t_marks,
+                            "course_type": ctype, 
                             "scheme_batch": c_scheme
                         }
                         supabase.table("master_courses").upsert(payload).execute()
@@ -448,7 +512,7 @@ with tabs[3]:
                         
                 if st.form_submit_button("🗑️ Delete Course"):
                     try:
-                        supabase.table("master_courses").delete().eq("course_code", cc).execute()
+                        supabase.table("master_courses").delete().eq("course_code", cc.strip().upper()).execute()
                         st.warning("Course removed.")
                     except Exception as e:
                         st.error(f"🚨 RAW DATABASE ERROR: {e}")
@@ -463,7 +527,11 @@ with tabs[3]:
                     res = supabase.table("master_courses").select("*").execute()
                     if res.data:
                         df_export = pd.DataFrame(res.data)
-                        cols = ['course_code', 'title', 'branch_code', 'semester_id', 'credits', 'course_type', 'scheme_batch', 'max_cie', 'max_see', 'total_marks']
+                        cols = [
+                            'course_code', 'title', 'branch_code', 'offering_department',
+                            'semester_id', 'credits', 'course_type', 'scheme_batch', 
+                            'max_cie', 'max_see', 'total_marks'
+                        ]
                         df_export = df_export[[c for c in cols if c in df_export.columns]]
                         csv = df_export.to_csv(index=False).encode('utf-8')
                         st.download_button(
