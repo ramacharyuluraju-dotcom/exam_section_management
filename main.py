@@ -138,7 +138,6 @@ with tabs[2]:
                 
                 with st.spinner("Analyzing full database (bypassing 1,000-row cap) and generating sequences..."):
                     try:
-                        # 🟢 FIX 1: Paginate through ALL students in master_students to avoid 1,000-row truncation
                         all_existing_students = []
                         start = 0
                         step = 1000
@@ -153,7 +152,7 @@ with tabs[2]:
                         
                         branch_max_seq = defaultdict(int)
                         existing_data = {}
-                        existing_identity_map = {}  # Maps (FULL_NAME, BRANCH, SEM) -> existing USN
+                        existing_identity_map = {}
                         
                         for r in all_existing_students:
                             u = str(r.get('usn', '')).strip().upper()
@@ -161,14 +160,12 @@ with tabs[2]:
                                 continue
                             existing_data[u] = r.get('photo_pin')
                             
-                            # Build lookup for blank-USN duplicate prevention
                             f_name = str(r.get('full_name', '')).strip().upper()
                             b_code = str(r.get('branch_code', '')).strip().upper()
                             c_sem = str(r.get('current_sem', '')).strip()
                             if f_name and b_code:
                                 existing_identity_map[(f_name, b_code, c_sem)] = u
                             
-                            # Track highest sequence for TMP-<BRANCH>-<SEQ>
                             if u.startswith("TMP-"):
                                 parts = u.split('-')
                                 if len(parts) >= 3:
@@ -190,7 +187,6 @@ with tabs[2]:
                             d['branch_code'] = branch
                             
                             if raw_usn in ['', 'NAN', 'NONE', 'NULL']:
-                                # 🟢 FIX 2: Check if this exact student was already assigned a Temp USN earlier
                                 identity_key = (full_name_clean, branch, sem_clean)
                                 if identity_key in existing_identity_map:
                                     d['usn'] = existing_identity_map[identity_key]
@@ -205,7 +201,6 @@ with tabs[2]:
                             else:
                                 d['section'] = None
                                 
-                            # Convert is_lateral text to Boolean
                             lateral_val = str(d.get('is_lateral', '')).strip().lower()
                             d['is_lateral'] = True if lateral_val in ['yes', 'true', '1'] else False
                             
@@ -434,9 +429,9 @@ with tabs[3]:
             *   **`LATERAL`** (Additional Math for diploma entry students)
             *   **`PE`** (Professional Electives)
             *   **`OE`** (Open Electives)
+            *   **`OMR`** (OMR-based evaluations, like Kannada/Constitution)
             """)
             
-            # 🟢 UPDATED: Added offering_department to CSV upload format
             f_crs = st.file_uploader(
                 "Upload Scheme CSV (course_code, title, branch_code, semester_id, credits, max_cie, max_see, total_marks, course_type, scheme_batch, offering_department)", 
                 type='csv'
@@ -480,7 +475,8 @@ with tabs[3]:
                 cs = col1.number_input("Semester ID", 1, 10, 1)
                 ccr = col2.number_input("Credits", 0, 5, 4)
                 
-                ctype = col1.selectbox("Course Type", ["CORE", "LAB", "PROJECT", "NON CREDIT", "LATERAL", "PE", "OE"])
+                # 🟢 UPDATED: Included OMR as a valid option
+                ctype = col1.selectbox("Course Type", ["CORE", "LAB", "PROJECT", "NON CREDIT", "LATERAL", "PE", "OE", "OMR"])
                 c_scheme = col2.number_input("Scheme Batch (Year)", 20, 99, 25, help="Enter the 2-digit batch year this syllabus applies to (e.g., 25, 26).")
                 
                 m_cie = col1.number_input("Max CIE Marks", 0, 100, 50)
