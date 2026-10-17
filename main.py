@@ -116,24 +116,25 @@ with tabs[2]:
                 help="Safe mode prevents accidental overwrites of existing student records and statuses."
             )
             
-            st.info("💡 **Pro Tip:** Leave 'usn' blank for 1st Years. For lateral students, put 'yes' in the `is_lateral` column.")
-            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob, is_lateral)", type='csv')
+            st.info("💡 **Pro Tip:** Leave 'usn' blank for 1st Years. Use `student_category` to define: Regular, Lateral Entry, Year Back Student, College Change, or Change of Branch.")
+            # 🟢 UPDATED: is_lateral replaced by student_category
+            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob, student_category)", type='csv')
             
             if f_stu and st.button("Upload Students", type="primary"):
                 df = pd.read_csv(f_stu)
                 df.columns = [str(c).strip().lower() for c in df.columns]
-                df.rename(columns={'email_id': 'email', 'phone': 'contact'}, inplace=True)
+                df.rename(columns={'email_id': 'email', 'phone': 'contact', 'category': 'student_category'}, inplace=True)
                 
                 if 'usn' not in df.columns:
                     df['usn'] = ''
-                if 'is_lateral' not in df.columns:
-                    df['is_lateral'] = 'no'
+                if 'student_category' not in df.columns:
+                    df['student_category'] = 'REGULAR'
                 
                 df['full_name'] = df['full_name'].fillna('').astype(str).str.strip()
                 df['branch_code'] = df['branch_code'].fillna('GEN').astype(str).str.strip().str.upper()
                 df = df.sort_values(by=['branch_code', 'full_name'], ascending=[True, True]).reset_index(drop=True)
                 
-                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'section', 'scheme_batch', 'contact', 'email', 'dob', 'is_lateral']
+                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'section', 'scheme_batch', 'contact', 'email', 'dob', 'student_category']
                 data = clean_data_for_db(df, expected)
                 
                 with st.spinner("Analyzing full database (bypassing 1,000-row cap) and generating sequences..."):
@@ -201,8 +202,10 @@ with tabs[2]:
                             else:
                                 d['section'] = None
                                 
-                            lateral_val = str(d.get('is_lateral', '')).strip().lower()
-                            d['is_lateral'] = True if lateral_val in ['yes', 'true', '1'] else False
+                            # 🟢 Clean and standardize the student category
+                            cat_val = str(d.get('student_category', 'REGULAR')).strip().upper()
+                            if cat_val in ['', 'NAN', 'NONE', 'NULL']: cat_val = 'REGULAR'
+                            d['student_category'] = cat_val
                             
                             if 'contact' in d and pd.notna(d.get('contact')) and str(d['contact']).strip() != '':
                                 d['contact'] = str(d['contact']).split('.')[0].strip()
@@ -475,7 +478,6 @@ with tabs[3]:
                 cs = col1.number_input("Semester ID", 1, 10, 1)
                 ccr = col2.number_input("Credits", 0, 5, 4)
                 
-                # 🟢 UPDATED: Included OMR as a valid option
                 ctype = col1.selectbox("Course Type", ["CORE", "LAB", "PROJECT", "NON CREDIT", "LATERAL", "PE", "OE", "OMR"])
                 c_scheme = col2.number_input("Scheme Batch (Year)", 20, 99, 25, help="Enter the 2-digit batch year this syllabus applies to (e.g., 25, 26).")
                 
