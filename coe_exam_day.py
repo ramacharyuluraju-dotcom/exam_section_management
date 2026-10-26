@@ -6,18 +6,20 @@ import math
 import zipfile
 import string
 import random
-from itertools import zip_longest
+from collections import defaultdict
 from utils import init_db
 from PIL import Image as PILImage
 
 # --- PDF LIBRARIES ---
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.utils import ImageReader
+from reportlab.graphics.barcode import code128
+from reportlab.graphics.shapes import Drawing
 
 # --- EXCEL UTILS ---
 from xlsxwriter.utility import xl_rowcol_to_cell, xl_col_to_name
@@ -35,7 +37,6 @@ active_cycle_name = st.session_state.get('active_cycle_name', 'Unknown Cycle')
 
 @st.cache_data
 def load_pdf_assets():
-    """Fetches logos once to prevent slowing down PDF generation"""
     assets = {}
     for k, f in [("logo", LOGO_FILENAME), ("naac", NAAC_FILENAME)]:
         try:
@@ -61,22 +62,8 @@ def resize_image_for_excel(img_bytes, target_height=50):
     except Exception as e:
         return io.BytesIO(img_bytes)
 
-USED_PREFIXES = set()
-
-def generate_dummy_ids(count):
-    global USED_PREFIXES
-    while True:
-        prefix = "".join(random.choices(string.ascii_uppercase, k=2))
-        if prefix not in USED_PREFIXES:
-            USED_PREFIXES.add(prefix)
-            break
-    return [f"{prefix}{i+1}" for i in range(count)]
-
-def clean_str(val):
-    return str(val).strip().upper() if pd.notna(val) else ""
-
 # ==========================================
-# 2. DATA FETCHING
+# 2. DATA FETCHING & DB HELPERS
 # ==========================================
 
 def fetch_exam_sessions(cycle_id):
@@ -106,7 +93,6 @@ def fetch_exam_data(cycle_id, date_str, session_str, exam_type='Regular'):
     usns = df_regs['usn'].unique().tolist()
     start = 0; all_stus = []
     while True:
-        # 🟢 PANDAS GUARDRAIL: Fetch matching USNs without the Supabase filter to bypass API quirks
         res = supabase.table("master_students").select("usn, full_name, branch_code, status").in_("usn", usns).range(start, start + limit - 1).execute()
         if not res.data: break
         all_stus.extend(res.data)
@@ -116,20 +102,15 @@ def fetch_exam_data(cycle_id, date_str, session_str, exam_type='Regular'):
     df_stus = pd.DataFrame(all_stus)
     if df_stus.empty: return pd.DataFrame()
     
-    # 🟢 NEW DYNAMIC GUARDRAIL: Context-aware filtering
     df_stus['status'] = df_stus['status'].fillna('ACTIVE').astype(str).str.strip().str.upper()
-    
     if str(exam_type).strip().upper() == 'REGULAR':
-        # Strict Rule: Only ACTIVE students can write Regular exams
         df_stus = df_stus[df_stus['status'] == 'ACTIVE'].copy()
     else:
-        # Lenient Rule: ACTIVE and DETAINED students can write Summer/Supplementary exams
         df_stus = df_stus[df_stus['status'].isin(['ACTIVE', 'DETAINED'])].copy()
     
     if df_stus.empty: return pd.DataFrame()
     
     df_stus['Branch'] = df_stus['branch_code']
-    
     df_merged = pd.merge(df_regs, df_stus, on='usn', how='inner')
     df_merged.rename(columns={'usn': 'USN', 'full_name': 'Student Name', 'course_code': 'Subject Code'}, inplace=True)
     
@@ -143,8 +124,20 @@ def fetch_rooms():
     res = supabase.table("master_rooms").select("*").order("priority_order").execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
+def fetch_seating_allocation(cycle_id, date_str, session_str):
+    res = supabase.table("exam_seating_allocations").select("*").eq("cycle_id", cycle_id).eq("exam_date", date_str).eq("session", session_str).execute()
+    if not res.data: return pd.DataFrame()
+    
+    df = pd.DataFrame(res.data)
+    df.rename(columns={
+        'room_no': 'RoomNo', 'seat_no': 'SeatNo', 'usn': 'USN', 
+        'student_name': 'Student Name', 'branch': 'Branch', 
+        'course_code': 'Subject Code', 'course_name': 'Subject Name', 'status': 'Status'
+    }, inplace=True)
+    return df
+
 # ==========================================
-# 3. ALLOCATION ENGINE (Fixed OMR Logic)
+# 3. ALLOCATION ENGINE
 # ==========================================
 
 def run_allocation(df_students, df_rooms):
@@ -176,19 +169,14 @@ def run_allocation(df_students, df_rooms):
 
     current_room_no, current_capacity = get_next_room()
     
-    # ==========================================
-    # FIXED OMR ALLOCATION LOGIC
-    # ==========================================
+    # --- OMR ALLOCATION ---
     df_omr = df_students[df_students['AllocCode'].isin(OMR_SUBJECTS)]
     if not df_omr.empty:
-        # Group all OMR students into a single continuous queue to mix them in the same room
         students = df_omr.to_dict('records')
         current_seat = 1
         
         while students:
             if not current_room_no: break
-            
-            # If the current room is full, fetch the next one
             if current_seat > current_capacity:
                 current_room_no, current_capacity = get_next_room()
                 current_seat = 1
@@ -203,13 +191,10 @@ def run_allocation(df_students, df_rooms):
             })
             current_seat += 1
 
-        # Prevent OMR students from sharing a room with Regular (Subjective) exams
         if current_seat > 1:
             current_room_no, current_capacity = get_next_room()
 
-    # ==========================================
-    # REGULAR ALLOCATION LOGIC
-    # ==========================================
+    # --- REGULAR ALLOCATION ---
     df_reg = df_students[~df_students['AllocCode'].isin(OMR_SUBJECTS)]
     if not df_reg.empty:
         subj_queues = {}
@@ -254,7 +239,7 @@ def run_allocation(df_students, df_rooms):
     return pd.DataFrame(allotment_rows)
     
 # ==========================================
-# 4. DOCUMENT GENERATORS
+# 4. DOCUMENT GENERATORS (Posters & Forms)
 # ==========================================
 
 def get_header_drawer(assets):
@@ -273,15 +258,14 @@ def get_header_drawer(assets):
         c.setFont("Helvetica", 9)
         c.drawCentredString(A4[0]/2, y_start - 15, "AMC Campus, Bannerghatta Road, Bengaluru - 560083")
         c.drawCentredString(A4[0]/2, y_start - 27, "Autonomous Institution Affiliated to VTU, Belagavi")
-        c.drawCentredString(A4[0]/2, y_start - 39, "Approved by AICTE, New Delhi | NAAC A+ Accredited")
         
         c.setLineWidth(1)
-        c.line(30, y_start - 48, A4[0] - 30, y_start - 48)
+        c.line(30, y_start - 40, A4[0] - 30, y_start - 40)
         c.restoreState()
     return draw_header
 
 def gen_posters(df, date, session, assets):
-    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=95, bottomMargin=15)
+    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=90, bottomMargin=15)
     elements = []; styles = getSampleStyleSheet()
     s_seat = ParagraphStyle('S', parent=styles['Normal'], fontSize=8, alignment=TA_CENTER, textColor=colors.gray)
     s_usn = ParagraphStyle('U', parent=styles['Normal'], fontSize=11, fontName='Helvetica-Bold', alignment=TA_CENTER)
@@ -310,8 +294,7 @@ def gen_posters(df, date, session, assets):
 def gen_form_b(df, date, session, assets):
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=90, leftMargin=35, rightMargin=35, bottomMargin=15)
-    elements = []
-    styles = getSampleStyleSheet()
+    elements = []; styles = getSampleStyleSheet()
     
     sub_title_style = ParagraphStyle('SubTitle', parent=styles['Normal'], alignment=TA_CENTER, fontName='Helvetica-Bold', fontSize=10)
     meta_style = ParagraphStyle('Meta', parent=styles['Normal'], fontSize=9, leading=12)
@@ -323,66 +306,31 @@ def gen_form_b(df, date, session, assets):
         course_name = group['Subject Name'].iloc[0] if 'Subject Name' in group.columns else code
         branch_val = group['Branch'].iloc[0] if 'Branch' in group.columns else "N/A"
         
-        elements.append(Spacer(1, 5))
-        elements.append(Paragraph("ATTENDANCE & ROOM SUPERINTENDENT’S/EXAMINERS REPORT (In Triplicate)", sub_title_style))
+        elements.append(Paragraph("ATTENDANCE & ROOM SUPERINTENDENT’S REPORT", sub_title_style))
         elements.append(Spacer(1, 8))
         
         m_data = [
-            [Paragraph(f"<b>B.E./B.Arch./MCA/MBA/M.Tech:</b> {branch_val}", meta_style), Paragraph(f"<b>Semester Examination:</b> {date}", meta_style), Paragraph(f"<b>Block No:</b> {room}", meta_style)],
-            [Paragraph(f"<b>Branch / Title of the course:</b> {branch_val}", meta_style), Paragraph(f"<b>Subject Code:</b> {code}", meta_style), ""],
-            [Paragraph(f"<b>Subject:</b> {course_name}", meta_style), "", ""],
-            [Paragraph(f"<b>Centre:</b> AMC ENGINEERING COLLEGE", meta_style), Paragraph(f"<b>Seat No's from:</b> {group['USN'].min()} <b>TO</b> {group['USN'].max()}", meta_style), ""],
-            [Paragraph(f"<b>Date:</b> {date}", meta_style), "", Paragraph(f"<b>Time:</b> {session}", meta_style)]
+            [Paragraph(f"<b>Branch:</b> {branch_val}", meta_style), Paragraph(f"<b>Date:</b> {date}", meta_style), Paragraph(f"<b>Room No:</b> {room}", meta_style)],
+            [Paragraph(f"<b>Course:</b> {course_name}", meta_style), Paragraph(f"<b>Course Code:</b> {code}", meta_style), Paragraph(f"<b>Session:</b> {session}", meta_style)],
         ]
-        
         m_table = Table(m_data, colWidths=[2.7*inch, 2.7*inch, 2.0*inch])
-        m_table.setStyle(TableStyle([
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('SPAN', (0,2), (2,2)), 
-            ('BOTTOMPADDING', (0,0), (-1,-1), 4)
-        ]))
+        m_table.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'LEFT'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
         elements.append(m_table)
         elements.append(Spacer(1, 5))
         
         t_data = [[
-            Paragraph("<b>ROLL NO</b>", th_style),
-            Paragraph("<b>Seat Number of the Candidate</b>", th_style),
-            Paragraph("<b>Answer Book/Main Drawing Sheet Number</b>", th_style),
-            Paragraph("<b>Signature of the Candidate</b>", th_style),
-            Paragraph("<b>Additional/Drawing/ Graph Sheet Numbers</b>", th_style),
-            Paragraph("<b>Total</b>", th_style)
+            Paragraph("<b>USN</b>", th_style), Paragraph("<b>Candidate Name</b>", th_style),
+            Paragraph("<b>Booklet No.</b>", th_style), Paragraph("<b>Signature</b>", th_style)
         ]]
-        
         for _, r in group.sort_values('SeatNo').iterrows():
-            t_data.append([Paragraph(r['USN'], td_style_c), Paragraph(str(r['Student Name']), td_style_l), "", "", "", ""])
+            t_data.append([Paragraph(r['USN'], td_style_c), Paragraph(str(r['Student Name']), td_style_l), "", ""])
             
-        t = Table(t_data, colWidths=[1.1*inch, 2.1*inch, 1.3*inch, 1.3*inch, 1.1*inch, 0.5*inch])
+        t = Table(t_data, colWidths=[1.5*inch, 2.5*inch, 1.5*inch, 1.5*inch])
         t.setStyle(TableStyle([
-            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 2), 
-            ('TOPPADDING', (0,0), (-1,-1), 2),
-            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 2), ('BACKGROUND', (0,0), (-1,0), colors.lightgrey)
         ]))
         elements.append(t)
-        elements.append(Spacer(1, 10))
-        
-        f_data = [
-            [Paragraph("<b>Seat Number of the candidates absent:</b> ____________________________________________________________________", meta_style), "", ""],
-            [Paragraph("<b>Seat Number of the candidates booked under Malpractice:</b> ________________________________________________________", meta_style), "", ""],
-            [Paragraph(f"<b>Total Number of students:</b> {len(group)}", meta_style), Paragraph("<b>Total Present:</b> ________", meta_style), Paragraph("<b>Total Absent:</b> ________", meta_style)],
-            ["\n\nSignature of Room Superintendent", "", "\n\nSignature of Chief Superintendent"]
-        ]
-        f_table = Table(f_data, colWidths=[3.6*inch, 1.9*inch, 1.9*inch])
-        f_table.setStyle(TableStyle([
-            ('SPAN', (0,0), (2,0)), 
-            ('SPAN', (0,1), (2,1)), 
-            ('ALIGN', (0,3), (2,3), 'CENTER'), 
-            ('VALIGN', (0,0), (-1,-1), 'BOTTOM'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 5)
-        ]))
-        elements.append(f_table)
         elements.append(PageBreak())
         
     doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
@@ -391,11 +339,9 @@ def gen_form_b(df, date, session, assets):
 def gen_form_a(df, date, session, assets, cycle_name):
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=90, leftMargin=35, rightMargin=35, bottomMargin=30)
-    elements = []
-    styles = getSampleStyleSheet()
+    elements = []; styles = getSampleStyleSheet()
     
     title_style = ParagraphStyle('Title', parent=styles['Heading3'], alignment=TA_CENTER, fontName='Helvetica-Bold', fontSize=12)
-    sub_title_style = ParagraphStyle('SubTitle', parent=styles['Normal'], alignment=TA_CENTER, fontName='Helvetica-Bold', fontSize=10)
     meta_style = ParagraphStyle('Meta', parent=styles['Normal'], fontSize=10, leading=14)
     th_style = ParagraphStyle('th', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10)
     td_style_l = ParagraphStyle('td_l', parent=styles['Normal'], fontSize=9, leading=14, alignment=TA_LEFT)
@@ -404,49 +350,31 @@ def gen_form_a(df, date, session, assets, cycle_name):
     for (branch, code), group in df.groupby(['Branch', 'Subject Code']):
         course_name = group['Subject Name'].iloc[0] if 'Subject Name' in group.columns else code
         
-        elements.append(Spacer(1, 5))
-        elements.append(Paragraph("FORM - A", title_style))
-        elements.append(Paragraph("CONSOLIDATED ATTENDANCE REPORT FOR PACKING OF ANSWER SCRIPTS  (In Duplicate)", sub_title_style))
+        elements.append(Paragraph("FORM - A (CONSOLIDATED ATTENDANCE REPORT)", title_style))
         elements.append(Spacer(1, 15))
         
-        elements.append(Paragraph(f"<b>Semester End Examination - {cycle_name}</b>", sub_title_style))
-        elements.append(Spacer(1, 10))
-        
         m_data = [
-            [Paragraph(f"<b>Branch / Program:</b>", meta_style), Paragraph(f"{branch}", meta_style), "", ""],
-            [Paragraph(f"<b>Course Title:</b>", meta_style), Paragraph(f"{course_name}", meta_style), Paragraph(f"<b>Course Code:</b>", meta_style), Paragraph(f"{code}", meta_style)],
-            [Paragraph(f"<b>Date:</b>", meta_style), Paragraph(f"{date}", meta_style), Paragraph(f"<b>Time:</b>", meta_style), Paragraph(f"{session}", meta_style)]
+            [Paragraph(f"<b>Branch:</b> {branch}", meta_style), Paragraph(f"<b>Course:</b> {course_name} ({code})", meta_style)],
+            [Paragraph(f"<b>Date:</b> {date}", meta_style), Paragraph(f"<b>Session:</b> {session}", meta_style)]
         ]
-        
-        m_table = Table(m_data, colWidths=[1.3*inch, 3.2*inch, 1.2*inch, 1.3*inch])
-        m_table.setStyle(TableStyle([
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 6)
-        ]))
+        m_table = Table(m_data, colWidths=[2.5*inch, 4.5*inch])
+        m_table.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'LEFT'), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
         elements.append(m_table)
         elements.append(Spacer(1, 15))
         
         present_usns = group[group['Status'] == 'PRESENT']['USN'].sort_values().tolist()
         absent_usns = group[group['Status'] == 'ABSENT']['USN'].sort_values().tolist()
-        malpractice_usns = group[group['Status'] == 'MALPRACTICE']['USN'].sort_values().tolist()
+        malp_usns = group[group['Status'] == 'MALPRACTICE']['USN'].sort_values().tolist()
         
         t_data = []
-        t_styles = [
-            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('TOPPADDING', (0,0), (-1,-1), 6),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-        ]
-        
+        t_styles = [('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]
         current_row = 0
         
-        def add_section(title, usn_list, total_count):
+        def add_section(title, usn_list):
             nonlocal current_row
             t_data.append([Paragraph(f"<b>{title}</b>", th_style), Paragraph("<b>COUNT</b>", th_style)])
             t_styles.append(('BACKGROUND', (0, current_row), (-1, current_row), colors.lightgrey))
             current_row += 1
-            
             if not usn_list:
                 t_data.append([Paragraph("Nil", td_style_l), Paragraph("0", td_style_c)])
                 current_row += 1
@@ -454,65 +382,25 @@ def gen_form_a(df, date, session, assets, cycle_name):
                 chunk_size = 60 
                 for i in range(0, len(usn_list), chunk_size):
                     chunk = usn_list[i:i+chunk_size]
-                    count_text = str(total_count) if i == 0 else "" 
-                    t_data.append([Paragraph(", ".join(chunk), td_style_l), Paragraph(count_text, td_style_c)])
+                    t_data.append([Paragraph(", ".join(chunk), td_style_l), Paragraph(str(len(usn_list)) if i==0 else "", td_style_c)])
                     current_row += 1
 
-        add_section("SEAT NUMBERS OF CANDIDATES PRESENT", present_usns, len(present_usns))
-        add_section("SEAT NUMBERS OF CANDIDATES ABSENT", absent_usns, len(absent_usns))
-        add_section("SEAT NUMBERS OF CANDIDATES BOOKED UNDER MALPRACTICE", malpractice_usns, len(malpractice_usns))
+        add_section("PRESENT CANDIDATES", present_usns)
+        add_section("ABSENT CANDIDATES", absent_usns)
+        add_section("MALPRACTICE CANDIDATES", malp_usns)
         
         t = Table(t_data, colWidths=[6.2*inch, 1.0*inch])
         t.setStyle(TableStyle(t_styles))
         elements.append(t)
-        elements.append(Spacer(1, 30))
-        
-        elements.append(Paragraph("<b>Signatures with date:</b>", meta_style))
-        elements.append(Spacer(1, 30))
-        
-        sig_data = [
-            ["Deputy Chief Superintendent", "Chief Superintendent"]
-        ]
-        sig_table = Table(sig_data, colWidths=[3.5*inch, 3.5*inch])
-        sig_table.setStyle(TableStyle([
-            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-            ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold')
-        ]))
-        elements.append(sig_table)
         elements.append(PageBreak())
         
     doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
     return buf.getvalue()
 
-def gen_qpds(df, date, session, assets):
-    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=95)
-    elements = []; styles = getSampleStyleSheet()
-    elements.append(Paragraph("<b>QP INDENT (ROOM WISE)</b>", styles['Heading2']))
-    elements.append(Paragraph(f"Date: {date} | Session: {session}", styles['Normal']))
-    elements.append(Spacer(1, 15))
-    
-    for room, data in df.groupby('RoomNo'):
-        elements.append(Paragraph(f"<b>ROOM: {room}</b>", styles['Heading3']))
-        counts = data.groupby('Subject Code').size().reset_index(name='Qty')
-        t_data = [['Course Code', 'Quantity']]
-        for _, r in counts.iterrows(): t_data.append([r['Subject Code'], str(r['Qty'])])
-        t_data.append(['TOTAL', str(counts['Qty'].sum())])
-        
-        t = Table(t_data, colWidths=[2*inch, 1*inch])
-        t.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black)]))
-        elements.append(t); elements.append(Spacer(1, 10))
-        
-    doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
-    return buf.getvalue()
 
-def gen_smart_excel(df, date, session):
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-        df_sorted = df.sort_values(['Branch', 'USN'])
-        df_sorted.to_excel(writer, sheet_name='Appearing_List', index=False, columns=['RoomNo', 'SeatNo', 'USN', 'Student Name', 'Branch', 'Subject Code'])
-        summary = df.groupby(['RoomNo', 'Subject Code']).size().reset_index(name='Count')
-        summary.to_excel(writer, sheet_name='Room_Summary', index=False)
-    return buf.getvalue()
+# ==========================================
+# 5. HYBRID BUNDLE GENERATORS (Excel + Barcodes)
+# ==========================================
 
 def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, total_bundles, cycle_name, assets):
     out = io.BytesIO()
@@ -660,63 +548,170 @@ def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, tota
 
     return out.getvalue()
 
-def gen_marks_bundles(df, assets, cycle_name):
-    global USED_PREFIXES
-    USED_PREFIXES.clear() 
+def gen_barcode_bundle_covers(bundles, cycle_name, assets):
+    """Generates the physical printouts for the evaluation envelopes"""
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=50, bottomMargin=30)
+    elements = []
+    styles = getSampleStyleSheet()
     
+    for b in bundles:
+        elements.append(Paragraph(f"<b>EVALUATION BUNDLE COVER</b>", ParagraphStyle('T', alignment=TA_CENTER, fontSize=16)))
+        elements.append(Spacer(1, 10))
+        
+        # Draw Barcode (Code128)
+        barcode = code128.Code128(b['bundle_id'], barHeight=40, barWidth=1.5)
+        d = Drawing(300, 50)
+        d.add(barcode)
+        elements.append(d)
+        elements.append(Spacer(1, 5))
+        elements.append(Paragraph(f"<b>{b['bundle_id']}</b>", ParagraphStyle('BC', alignment=TA_CENTER, fontSize=14, fontName='Helvetica-Bold')))
+        elements.append(Spacer(1, 20))
+        
+        meta = [
+            [f"Course Code:", f"{b['course_code']}"],
+            [f"Course Name:", f"{b['course_name']}"],
+            [f"Exam Date:", f"{b['exam_date']} ({b['session']})"],
+            [f"Total Scripts Inside:", f"{len(b['scripts'])} Papers"]
+        ]
+        t_meta = Table(meta, colWidths=[2*inch, 4*inch])
+        t_meta.setStyle(TableStyle([
+            ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (-1,-1), 12),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+        ]))
+        elements.append(t_meta)
+        elements.append(Spacer(1, 20))
+        
+        elements.append(Paragraph("<b>COE INSTRUCTIONS:</b> Mask the USNs and write the following sequential Dummy IDs on the physical booklets before sealing this envelope.", styles['Normal']))
+        elements.append(Spacer(1, 10))
+        
+        grid_data = [["Sl. No.", "Dummy ID to Write on Booklet", "Status"]]
+        for idx, s in enumerate(b['scripts']):
+            status_str = s['status'] if s['status'] != 'PRESENT' else ""
+            grid_data.append([str(idx+1), s['dummy_id'], status_str])
+            
+        t_grid = Table(grid_data, colWidths=[0.8*inch, 3*inch, 2*inch])
+        t_grid.setStyle(TableStyle([
+            ('GRID', (0,0), (-1,-1), 1, colors.black),
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('PADDING', (0,0), (-1,-1), 6)
+        ]))
+        elements.append(t_grid)
+        elements.append(Spacer(1, 30))
+        
+        elements.append(Paragraph("<b>EVALUATOR INSTRUCTIONS:</b> Open the Excel file matching the barcode ID above, OR scan this barcode in the Faculty Portal to enter marks.", styles['Normal']))
+        elements.append(PageBreak())
+        
+    doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
+    return buf.getvalue()
+
+def gen_hybrid_bundles(df_seating, date_post, sess_post, cycle_id, cycle_name, assets):
+    """
+    The Ultimate Engine:
+    1. Generates Barcode IDs and Dummy sequences.
+    2. Packages formulated Excel sheets for immediate faculty use.
+    3. Generates Barcode PDF covers for the physical envelopes.
+    4. Writes everything to Supabase for the upcoming Web Portal.
+    """
     zip_buf = io.BytesIO()
     key_log = []
-    
+    bundles_payload = []
+    scripts_payload = []
+    cover_sheet_data = []
+
     def get_bundle_group(row):
         usn = str(row['USN']).strip().upper()
         branch = str(row['Branch']).strip().upper()
-        
         if branch == 'CS' or 'CS' in usn:
-            if usn.startswith('1AX'):
-                return 'CS_1AX'
-            else:
-                return 'CS_1AM'
+            if usn.startswith('1AX'): return 'CS_1AX'
+            else: return 'CS_1AM'
         return branch 
 
-    df_bundles = df.copy()
+    df_bundles = df_seating.copy()
     df_bundles['BundleGroup'] = df_bundles.apply(get_bundle_group, axis=1)
-    
+
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        
         for (cc, b_group), group in df_bundles.groupby(['Subject Code', 'BundleGroup']):
+            course_name = group['Subject Name'].iloc[0]
             group = group.sort_values('USN').reset_index(drop=True)
             n_chunks = math.ceil(len(group) / 20)
             
             for i in range(n_chunks):
                 chunk = group.iloc[i*20 : (i+1)*20].copy()
-                chunk['Dummy_ID'] = generate_dummy_ids(len(chunk))
                 
-                dummy_prefix = chunk['Dummy_ID'].iloc[0][:2]
-                b_id = f"{b_group}-{cc}-{str(i+1).zfill(2)}-{dummy_prefix}"
-                course_name = chunk['Subject Name'].iloc[0] if 'Subject Name' in chunk.columns else cc
+                # Generate unique 4-5 digit bundle barcode (e.g. B49281)
+                bndl_num = random.randint(10000, 99999)
+                bundle_id = f"B{bndl_num}"
                 
-                for _, s in chunk.iterrows():
+                bundles_payload.append({
+                    "bundle_id": bundle_id,
+                    "cycle_id": cycle_id,
+                    "exam_date": date_post,
+                    "course_code": cc,
+                    "total_scripts": len(chunk),
+                    "status": "CREATED"
+                })
+                
+                dummy_ids = []
+                bundle_scripts_info = []
+                
+                for dummy_seq, (_, s) in enumerate(chunk.iterrows(), start=1):
+                    dummy_id = f"{bundle_id}-{dummy_seq:02d}"
+                    dummy_ids.append(dummy_id)
+                    
+                    scripts_payload.append({
+                        "dummy_id": dummy_id,
+                        "bundle_id": bundle_id,
+                        "usn": s['USN'],
+                        "status": s['Status']
+                    })
+                    
+                    bundle_scripts_info.append({"dummy_id": dummy_id, "status": s['Status']})
+                    
                     key_log.append({
-                        'Bundle_ID': b_id, 
+                        'Bundle_Barcode': bundle_id, 
                         'Original_Room': s.get('RoomNo', 'N/A'), 
                         'USN': s['USN'], 
                         'Subject': cc, 
                         'Branch_Group': b_group,
-                        'Dummy_ID': s['Dummy_ID'], 
+                        'Dummy_ID': dummy_id, 
                         'Status': s['Status']
                     })
+                    
+                chunk['Dummy_ID'] = dummy_ids
+                cover_sheet_data.append({
+                    "bundle_id": bundle_id,
+                    "course_code": cc,
+                    "course_name": course_name,
+                    "exam_date": date_post,
+                    "session": sess_post,
+                    "scripts": bundle_scripts_info
+                })
                 
+                # 🟢 GENERATE EXCEL FILE (For immediate use)
                 excel_bytes = create_locked_bundle(chunk, cc, course_name, b_group, i+1, n_chunks, cycle_name, assets)
-                zf.writestr(f"Bundles/{b_id}.xlsx", excel_bytes)
+                zf.writestr(f"Excel_Bundles/{cc}/{bundle_id}_{b_group}.xlsx", excel_bytes)
                 
+        # 🟢 GENERATE PDF BARCODE COVERS
+        pdf_bytes = gen_barcode_bundle_covers(cover_sheet_data, cycle_name, assets)
+        zf.writestr(f"Barcode_Envelope_Covers_{date_post}.pdf", pdf_bytes)
+        
+        # 🟢 GENERATE MASTER SECRET KEY
         kdf = pd.DataFrame(key_log)
         out_k = io.BytesIO()
         kdf.to_excel(out_k, index=False)
         zf.writestr("MASTER_SECRET_KEY.xlsx", out_k.getvalue())
         
-    return zip_buf.getvalue()
+    return zip_buf.getvalue(), bundles_payload, scripts_payload
+
 
 # ==========================================
-# 5. LIVE EXAM DAY UI FLOW
+# 6. LIVE EXAM DAY UI FLOW (Decoupled)
 # ==========================================
 
 if not selected_cycle_id:
@@ -725,9 +720,8 @@ if not selected_cycle_id:
 
 pdf_assets = load_pdf_assets()
 
-st.title("🚀 Live Exam Day Operations")
+st.title("🚀 Exam Logistics & Bundling")
 
-# 🟢 Fetch the specific exam type for the active cycle to apply dynamic rules
 try:
     cycle_info = supabase.table("exam_cycles").select("exam_type").eq("cycle_id", selected_cycle_id).execute()
     active_exam_type = cycle_info.data[0]['exam_type'] if cycle_info.data else 'Regular'
@@ -739,101 +733,172 @@ if not sessions:
     st.error("No timetable records found for this cycle.")
     st.stop()
 
-def clear_allocation():
-    if "alloc_df" in st.session_state: del st.session_state["alloc_df"]
+tab1, tab2 = st.tabs(["📌 Phase 1: Pre-Exam (Seating)", "📦 Phase 2: Post-Exam (Attendance & Bundling)"])
 
-selected_slot = st.selectbox("📅 Select Date & Session", sessions, on_change=clear_allocation)
-
-date_str, sess_str = selected_slot.split(" | ")
-
-# 🟢 Pass the dynamic exam_type into the data fetcher
-df_stus = fetch_exam_data(selected_cycle_id, date_str, sess_str, exam_type=active_exam_type)
-df_rooms_master = fetch_rooms()
-
-if df_stus.empty:
-    st.error("No registered active students found for this session.")
-elif df_rooms_master.empty:
-    st.error("No rooms defined in Infrastructure master.")
-else:
-    total_students = len(df_stus)
-    st.info(f"👨‍🎓 **Total Students to Allocate:** {total_students}")
-
-    st.markdown("---")
-    st.subheader("🏢 Select Exam Blocks & Rooms")
+# ==========================================
+# TAB 1: PRE-EXAM LOGISTICS (Rooms & Seating)
+# ==========================================
+with tab1:
+    st.subheader("Room Allocation & Form B")
+    selected_slot_pre = st.selectbox("📅 Select Session for Seating:", sessions, key="slot_pre")
+    date_pre, sess_pre = selected_slot_pre.split(" | ")
     
-    with st.form("room_selector_form"):
-        df_rooms_master.insert(0, 'Select', False) 
-        display_cols = ['Select', 'block_name', 'room_no', 'capacity', 'bench_type']
-        
-        edited_rooms = st.data_editor(
-            df_rooms_master[display_cols],
-            column_config={
-                "Select": st.column_config.CheckboxColumn("Use Room", default=False),
-                "block_name": st.column_config.TextColumn("Block Name", disabled=True),
-                "room_no": st.column_config.TextColumn("Room No.", disabled=True),
-                "capacity": st.column_config.NumberColumn("Capacity", disabled=True)
-            },
-            hide_index=True, use_container_width=True
-        )
-
-        selected_rooms_df = edited_rooms[edited_rooms['Select'] == True]
-        selected_capacity = selected_rooms_df['capacity'].sum()
-        
-        st.write(f"**Selected Capacity:** {selected_capacity} / {total_students} needed.")
-        
-        submitted_allocation = st.form_submit_button("⚙️ Run Allocation Algorithm", type="primary")
-        
-        if submitted_allocation:
-            if selected_capacity < total_students:
-                st.error("⚠️ Not enough capacity! Please select more rooms.")
-            else:
-                with st.spinner("Assigning seats..."):
-                    df_alloc = run_allocation(df_stus, selected_rooms_df)
-                    df_alloc['Status'] = "PRESENT" 
-                    st.session_state.alloc_df = df_alloc
-                    st.success(f"✅ Allocated {len(df_alloc)} students successfully!")
-                    st.rerun()
-
-if "alloc_df" in st.session_state and not st.session_state.alloc_df.empty:
-    df_a = st.session_state.alloc_df
+    # Check if seating is already saved
+    existing_seating = fetch_seating_allocation(selected_cycle_id, date_pre, sess_pre)
     
-    st.markdown("---")
-    st.subheader("📝 1. Mark Absentees / Malpractice")
-    st.write("Enter USNs separated by commas or new lines. This updates Form A and locks them out of evaluation bundles.")
-    
-    with st.form("absentee_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            abs_text = st.text_area("Absentee USNs", placeholder="e.g. 1AM25CS001, 1AM25CS002\n1AM25CS003", height=100)
-        with col2:
-            mal_text = st.text_area("Malpractice USNs", placeholder="e.g. 1AM25ME045", height=100)
+    if not existing_seating.empty:
+        st.success(f"✅ Seating layout already generated for this session! ({len(existing_seating)} students)")
+        
+        c1, c2 = st.columns(2)
+        with c1: st.download_button("📌 Download Room Posters", gen_posters(existing_seating, date_pre, sess_pre, pdf_assets), f"Posters_{date_pre}.pdf", type="primary", use_container_width=True)
+        with c2: st.download_button("📝 Download Form B (Room Attendance)", gen_form_b(existing_seating, date_pre, sess_pre, pdf_assets), f"FormB_{date_pre}.pdf", type="primary", use_container_width=True)
+        
+        st.divider()
+        if st.button("⚠️ Delete Seating & Re-Run Allocation", type="secondary"):
+            supabase.table("exam_seating_allocations").delete().eq("cycle_id", selected_cycle_id).eq("exam_date", date_pre).eq("session", sess_pre).execute()
+            st.rerun()
             
-        if st.form_submit_button("💾 Apply Status Updates", type="secondary"):
-            absent_list = [x.strip().upper() for x in abs_text.replace('\n', ',').split(',') if x.strip()]
-            mal_list = [x.strip().upper() for x in mal_text.replace('\n', ',').split(',') if x.strip()]
+    else:
+        df_stus = fetch_exam_data(selected_cycle_id, date_pre, sess_pre, exam_type=active_exam_type)
+        df_rooms_master = fetch_rooms()
+
+        if df_stus.empty:
+            st.error("No registered students found for this session.")
+        elif df_rooms_master.empty:
+            st.error("No rooms defined in Infrastructure master.")
+        else:
+            total_students = len(df_stus)
+            st.info(f"👨‍🎓 **Total Students to Allocate:** {total_students}")
             
-            df_a['Status'] = "PRESENT"
-            df_a.loc[df_a['USN'].isin(absent_list), 'Status'] = "ABSENT"
-            df_a.loc[df_a['USN'].isin(mal_list), 'Status'] = "MALPRACTICE"
-            
-            st.session_state.alloc_df = df_a
-            st.success(f"Updated! {len(absent_list)} Absentees, {len(mal_list)} Malpractice.")
+            with st.form("room_selector_form"):
+                df_rooms_master.insert(0, 'Select', False) 
+                display_cols = ['Select', 'block_name', 'room_no', 'capacity', 'bench_type']
+                
+                edited_rooms = st.data_editor(
+                    df_rooms_master[display_cols],
+                    column_config={
+                        "Select": st.column_config.CheckboxColumn("Use Room", default=False),
+                        "block_name": st.column_config.TextColumn("Block Name", disabled=True),
+                        "room_no": st.column_config.TextColumn("Room No.", disabled=True),
+                        "capacity": st.column_config.NumberColumn("Capacity", disabled=True)
+                    },
+                    hide_index=True, use_container_width=True
+                )
+
+                selected_rooms_df = edited_rooms[edited_rooms['Select'] == True]
+                selected_capacity = selected_rooms_df['capacity'].sum()
+                
+                st.write(f"**Selected Capacity:** {selected_capacity} / {total_students} needed.")
+                
+                if st.form_submit_button("⚙️ Run Algorithm & Save Seating", type="primary"):
+                    if selected_capacity < total_students:
+                        st.error("⚠️ Not enough capacity! Please select more rooms.")
+                    else:
+                        with st.spinner("Assigning seats & writing to database..."):
+                            df_alloc = run_allocation(df_stus, selected_rooms_df)
+                            
+                            # Prepare for DB Insert
+                            payload = []
+                            for _, row in df_alloc.iterrows():
+                                payload.append({
+                                    "cycle_id": selected_cycle_id,
+                                    "exam_date": date_pre,
+                                    "session": sess_pre,
+                                    "usn": row['USN'],
+                                    "student_name": row['Student Name'],
+                                    "branch": row['Branch'],
+                                    "course_code": row['Subject Code'],
+                                    "course_name": row['Subject Name'],
+                                    "room_no": row['RoomNo'],
+                                    "seat_no": row['SeatNo'],
+                                    "status": "PRESENT"
+                                })
+                                
+                            try:
+                                # Chunking insert for large arrays
+                                for i in range(0, len(payload), 500):
+                                    supabase.table("exam_seating_allocations").insert(payload[i:i+500]).execute()
+                                st.success(f"✅ Seating successfully locked into database!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Database error: {e}")
+
+# ==========================================
+# TAB 2: POST-EXAM LOGISTICS (Attendance & Bundling)
+# ==========================================
+with tab2:
+    st.subheader("Attendance & Secure Pocket Coding")
+    selected_slot_post = st.selectbox("📅 Select Completed Session:", sessions, key="slot_post")
+    date_post, sess_post = selected_slot_post.split(" | ")
     
-    st.markdown("---")
-    st.subheader("🖨️ 2. Download Exam Documents")
+    post_seating = fetch_seating_allocation(selected_cycle_id, date_post, sess_post)
     
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1: st.download_button("📌 Room Posters", gen_posters(df_a, date_str, sess_str, pdf_assets), f"Posters_{date_str}.pdf")
-    with c2: st.download_button("📝 Form B", gen_form_b(df_a, date_str, sess_str, pdf_assets), f"FormB_{date_str}.pdf")
-    with c3: st.download_button("📦 Form A", gen_form_a(df_a, date_str, sess_str, pdf_assets, active_cycle_name), f"FormA_{date_str}.pdf")
-    with c4: st.download_button("📋 QPDS", gen_qpds(df_a, date_str, sess_str, pdf_assets), f"QPDS_{date_str}.pdf")
-    with c5: st.download_button("📊 Appearing List", gen_smart_excel(df_a, date_str, sess_str), f"Appearing_{date_str}.xlsx")
+    if post_seating.empty:
+        st.warning("⚠️ Seating has not been generated for this session yet. Please go to Phase 1.")
+    else:
+        st.info("Mark any Absentees or Malpractice cases below before generating Form A or Evaluation Bundles.")
         
-    st.markdown("---")
-    st.subheader("🔐 3. Post-Exam Processing")
-    st.info("Generates secure Evaluation Excel bundles. Maximum 20 papers per bundle. Absentees are dynamically locked. USNs are completely masked from Evaluators.")
-    
-    if st.button("📦 Generate Locked Marks Bundles (.zip)", type="primary"):
-        with st.spinner("Encrypting bundles and generating Secret Key..."):
-            zip_bytes = gen_marks_bundles(df_a, pdf_assets, active_cycle_name)
-            st.download_button("📥 Click to Download ZIP", zip_bytes, f"Evaluation_Bundles_{date_str}.zip", "application/zip")
+        with st.form("absentee_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                existing_abs = post_seating[post_seating['Status'] == 'ABSENT']['USN'].tolist()
+                abs_text = st.text_area("Absentee USNs (comma separated)", value=",".join(existing_abs), height=80)
+            with col2:
+                existing_mal = post_seating[post_seating['Status'] == 'MALPRACTICE']['USN'].tolist()
+                mal_text = st.text_area("Malpractice USNs (comma separated)", value=",".join(existing_mal), height=80)
+                
+            if st.form_submit_button("💾 Lock Attendance", type="primary"):
+                absent_list = [x.strip().upper() for x in abs_text.replace('\n', ',').split(',') if x.strip()]
+                mal_list = [x.strip().upper() for x in mal_text.replace('\n', ',').split(',') if x.strip()]
+                
+                with st.spinner("Updating database..."):
+                    supabase.table("exam_seating_allocations").update({"status": "PRESENT"}).eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).eq("session", sess_post).execute()
+                    
+                    if absent_list:
+                        supabase.table("exam_seating_allocations").update({"status": "ABSENT"}).eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).eq("session", sess_post).in_("usn", absent_list).execute()
+                    
+                    if mal_list:
+                        supabase.table("exam_seating_allocations").update({"status": "MALPRACTICE"}).eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).eq("session", sess_post).in_("usn", mal_list).execute()
+                        
+                st.success("✅ Attendance Locked!")
+                st.rerun()
+
+        st.download_button("📦 Download Form A (Based on Locked Attendance)", gen_form_a(post_seating, date_post, sess_post, pdf_assets, active_cycle_name), f"FormA_{date_post}.pdf", use_container_width=True)
+        
+        st.divider()
+        st.subheader("Hybrid Database & Excel Bundling")
+        st.write("Generates Formulated Excel Files for your current process AND writes everything to the database for the upcoming Barcode Web App.")
+        
+        # Check if bundles exist
+        existing_bundles = supabase.table("evaluation_bundles").select("bundle_id").eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).execute()
+        
+        if existing_bundles.data:
+            st.success(f"✅ Secure bundles have already been created for this session in the database!")
+            st.warning("If you need to regenerate the Excel sheets, you must contact the DB Admin to clear the existing bundles for this session first.")
+        else:
+            if st.button("🚀 Generate Hybrid Bundles (ZIP)", type="primary"):
+                with st.spinner("Building Excels, Barcodes, and locking to Database..."):
+                    
+                    df_to_bundle = post_seating.copy()
+                    
+                    # Run the Hybrid Engine
+                    zip_bytes, b_payload, s_payload = gen_hybrid_bundles(df_to_bundle, date_post, sess_post, selected_cycle_id, active_cycle_name, pdf_assets)
+                    
+                    try:
+                        # Write to database (Background process for future app)
+                        for i in range(0, len(b_payload), 500):
+                            supabase.table("evaluation_bundles").insert(b_payload[i:i+500]).execute()
+                        for i in range(0, len(s_payload), 500):
+                            supabase.table("evaluation_scripts").insert(s_payload[i:i+500]).execute()
+                            
+                        st.success("✅ Bundles successfully locked in database and ZIP generated!")
+                        st.download_button(
+                            label="📥 Download Master ZIP (Excels, PDF Covers, Master Key)", 
+                            data=zip_bytes, 
+                            file_name=f"Hybrid_Evaluation_Bundles_{date_post}.zip", 
+                            type="primary", 
+                            use_container_width=True
+                        )
+                        
+                    except Exception as e:
+                        st.error(f"Error saving bundles to database: {e}")
