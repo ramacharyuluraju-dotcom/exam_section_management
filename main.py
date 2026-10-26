@@ -291,7 +291,7 @@ with tabs[2]:
                         d['staff_pin'] = str(random.randint(1000, 9999))
                 
                 try:
-                    supabase.table("master_staff").upsert(data).execute()
+                    supabase.table("master_staff").upsert(data, on_conflict="email").execute()
                     st.success(f"✅ Added/Updated {len(data)} staff members with generated 4-Digit PINs!")
                 except Exception as e: 
                     st.error(f"Error: {e}")
