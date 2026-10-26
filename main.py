@@ -103,7 +103,7 @@ with tabs[1]:
 # ==========================================
 with tabs[2]:
     st.header("Step 2: Stakeholder Master Data")
-    st_tabs = st.tabs(["Students", "Evaluators", "🔄 USN Migration", "🛑 Status Manager"])
+    st_tabs = st.tabs(["Students", "Staff & Evaluators", "🔄 USN Migration", "🛑 Status Manager"])
     
     with st_tabs[0]:
         st.subheader("Student Database Enrollment")
@@ -117,7 +117,6 @@ with tabs[2]:
             )
             
             st.info("💡 **Pro Tip:** Leave 'usn' blank for 1st Years. Use `student_category` to define: Regular, Lateral Entry, Year Back Student, College Change, or Change of Branch.")
-            # 🟢 UPDATED: is_lateral replaced by student_category
             f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob, student_category)", type='csv')
             
             if f_stu and st.button("Upload Students", type="primary"):
@@ -202,7 +201,6 @@ with tabs[2]:
                             else:
                                 d['section'] = None
                                 
-                            # 🟢 Clean and standardize the student category
                             cat_val = str(d.get('student_category', 'REGULAR')).strip().upper()
                             if cat_val in ['', 'NAN', 'NONE', 'NULL']: cat_val = 'REGULAR'
                             d['student_category'] = cat_val
@@ -250,26 +248,88 @@ with tabs[2]:
             st.info("Uploading Photos? Go to the 'Pre-Exam Docs' module for the bulk photo uploader.")
 
     with st_tabs[1]:
-        st.subheader("Faculty / Evaluators")
+        st.subheader("Staff & Evaluators Provisioning")
+        st.info("Uploading Staff automatically assigns them a secure 4-digit PIN for portal access based on the new `master_staff` schema.")
+        
         col_e1, col_e2 = st.columns(2)
         with col_e1:
-            f_fac = st.file_uploader("Upload CSV (faculty_id, name, department)", type='csv')
-            if f_fac and st.button("Upload Faculty"):
+            st.markdown("**Bulk Account Creation (CSV)**")
+            f_fac = st.file_uploader("Upload CSV (full_name, email, role, dept, is_evaluator)", type='csv')
+            if f_fac and st.button("Upload Staff & Generate PINs", type="primary"):
                 df = pd.read_csv(f_fac)
-                expected = ['faculty_id', 'name', 'department']
+                df.columns = [str(c).strip().lower() for c in df.columns]
+                
+                expected = ['full_name', 'email', 'role', 'dept', 'is_evaluator']
                 data = clean_data_for_db(df, expected)
+                
+                # Fetch existing staff to protect their PINs and retrieve staff_id for upsert
+                existing_staff_res = supabase.table("master_staff").select("staff_id, email, staff_pin").execute()
+                existing_staff = {r['email'].lower(): r for r in existing_staff_res.data} if existing_staff_res.data else {}
+                
+                valid_roles = ['COE', 'Principal', 'Faculty', 'Admin', 'Staff', 'BOS', 'BOE']
+                
+                for d in data:
+                    em = str(d.get('email', '')).strip().lower()
+                    d['email'] = em
+                    
+                    # Coerce roles to match the DB constraint exactly
+                    raw_role = str(d.get('role', 'Faculty')).strip().upper()
+                    if raw_role in ['COE', 'BOS', 'BOE']: d['role'] = raw_role
+                    elif raw_role == 'PRINCIPAL': d['role'] = 'Principal'
+                    elif raw_role == 'ADMIN': d['role'] = 'Admin'
+                    elif raw_role == 'STAFF': d['role'] = 'Staff'
+                    else: d['role'] = 'Faculty'
+                    
+                    # Handle boolean
+                    is_eval = str(d.get('is_evaluator', '')).strip().lower()
+                    d['is_evaluator'] = True if is_eval in ['true', 'yes', '1', 'y'] else False
+                    
+                    if em in existing_staff:
+                        d['staff_id'] = existing_staff[em]['staff_id']
+                        d['staff_pin'] = existing_staff[em].get('staff_pin') or str(random.randint(1000, 9999))
+                    else:
+                        d['staff_pin'] = str(random.randint(1000, 9999))
+                
                 try:
-                    supabase.table("master_evaluators").upsert(data).execute()
-                    st.success(f"Added {len(data)} faculty members.")
-                except Exception as e: st.error(f"Error: {e}")
+                    supabase.table("master_staff").upsert(data).execute()
+                    st.success(f"✅ Added/Updated {len(data)} staff members with generated 4-Digit PINs!")
+                except Exception as e: 
+                    st.error(f"Error: {e}")
+                    
         with col_e2:
+            st.markdown("**Single Staff Entry**")
             with st.form("fac_manual"):
-                f_id = st.text_input("Faculty ID")
                 f_name = st.text_input("Full Name")
-                f_dep = st.text_input("Department")
-                if st.form_submit_button("Add/Update Faculty"):
-                    supabase.table("master_evaluators").upsert({"faculty_id": f_id, "name": f_name, "department": f_dep}).execute()
-                    st.success("Saved.")
+                f_email = st.text_input("Email Address").strip().lower()
+                f_role = st.selectbox("Role", ['COE', 'Principal', 'Faculty', 'Admin', 'Staff', 'BOS', 'BOE'], index=2)
+                f_dept = st.text_input("Department (e.g., CSE)")
+                f_eval = st.checkbox("Is Evaluator?", value=False)
+                
+                if st.form_submit_button("Add/Update Staff Account"):
+                    if f_email and f_name:
+                        try:
+                            # Generate a PIN only if one doesn't exist
+                            existing = supabase.table("master_staff").select("staff_id, staff_pin").eq("email", f_email).execute()
+                            payload = {
+                                "full_name": f_name,
+                                "email": f_email,
+                                "role": f_role,
+                                "dept": f_dept,
+                                "is_evaluator": f_eval
+                            }
+                            
+                            if existing.data:
+                                payload['staff_id'] = existing.data[0]['staff_id']
+                                payload['staff_pin'] = existing.data[0].get('staff_pin') or str(random.randint(1000, 9999))
+                            else:
+                                payload['staff_pin'] = str(random.randint(1000, 9999))
+                                
+                            supabase.table("master_staff").upsert(payload).execute()
+                            st.success(f"✅ Saved Profile & Created Login PIN for {f_email}")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                    else:
+                        st.error("Email Address and Name are mandatory.")
 
     with st_tabs[2]:
         st.subheader("Temp-to-Official USN Migration Tool")
