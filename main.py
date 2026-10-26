@@ -286,7 +286,7 @@ with tabs[2]:
                 df['role'] = df['role'].fillna('Faculty').astype(str).str.strip()
                 df['dept'] = df['dept'].fillna('GEN').astype(str).str.strip().str.upper()
                 df['branch'] = df['branch'].fillna(df['dept']).astype(str).str.strip().str.upper()
-                df['email'] = df['email'].fillna('none').astype(str).str.strip().lower()
+                df['email'] = df['email'].fillna('none').astype(str).str.strip().str.lower()
                 
                 def parse_bool(val):
                     if pd.isna(val): return False
