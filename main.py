@@ -83,9 +83,14 @@ with tabs[1]:
             df = pd.read_csv(f_rooms)
             expected = ['room_number', 'capacity', 'block_name']
             data = clean_data_for_db(df, expected)
+            
+            # Deduplicate by room number to prevent Postgres 21000 Error
+            unique_rooms = {str(d.get('room_number')).strip(): d for d in data if d.get('room_number')}
+            final_data = list(unique_rooms.values())
+            
             try:
-                supabase.table("master_rooms").upsert(data).execute()
-                st.success(f"Added {len(data)} rooms successfully.")
+                supabase.table("master_rooms").upsert(final_data).execute()
+                st.success(f"Added {len(final_data)} rooms successfully.")
             except Exception as e: st.error(f"Error: {e}")
             
     with col_i2:
@@ -214,6 +219,10 @@ with tabs[2]:
                             if 'dob' in d and pd.notna(d.get('dob')):
                                 d['dob'] = str(d['dob']).strip()
                         
+                        # Deduplicate by USN to prevent Postgres 21000 Error
+                        unique_data = {d['usn']: d for d in data}
+                        data = list(unique_data.values())
+                        
                         existing_usns_set = set(existing_data.keys())
                         
                         for d in data:
@@ -227,7 +236,9 @@ with tabs[2]:
                         
                         if "Safe Mode" in upload_mode:
                             if new_records:
-                                supabase.table("master_students").insert(new_records).execute()
+                                # Chunking inserts
+                                for i in range(0, len(new_records), 500):
+                                    supabase.table("master_students").insert(new_records[i:i+500]).execute()
                                 assigned_preview = ", ".join([f"{r['full_name']} ({r['usn']})" for r in new_records[:5]])
                                 st.success(f"✅ Successfully enrolled {len(new_records)} NEW students: {assigned_preview}{'...' if len(new_records) > 5 else ''}")
                             else:
@@ -238,7 +249,8 @@ with tabs[2]:
                                 st.warning(f"🛡️ Safely ignored {len(existing_records)} students already in the database: {ignored_preview}{'...' if len(existing_records) > 5 else ''}")
                         
                         elif "Overwrite Mode" in upload_mode:
-                            supabase.table("master_students").upsert(data).execute()
+                            for i in range(0, len(data), 500):
+                                supabase.table("master_students").upsert(data[i:i+500]).execute()
                             st.success(f"⚠️ Overwrite Complete! {len(data)} students processed. Existing PINs were protected.")
                             
                     except Exception as e:
@@ -262,17 +274,17 @@ with tabs[2]:
                 expected = ['full_name', 'email', 'role', 'dept', 'is_evaluator']
                 data = clean_data_for_db(df, expected)
                 
-                # Fetch existing staff to protect their PINs and retrieve staff_id for upsert
                 existing_staff_res = supabase.table("master_staff").select("staff_id, email, staff_pin").execute()
                 existing_staff = {r['email'].lower(): r for r in existing_staff_res.data} if existing_staff_res.data else {}
                 
-                valid_roles = ['COE', 'Principal', 'Faculty', 'Admin', 'Staff', 'BOS', 'BOE']
+                # 🟢 Pre-Flight Deduplication Dictionary to prevent Postgres 21000 Error
+                unique_staff_map = {}
                 
                 for d in data:
                     em = str(d.get('email', '')).strip().lower()
+                    if not em or em == 'nan': continue # Skip empty emails
                     d['email'] = em
                     
-                    # Coerce roles to match the DB constraint exactly
                     raw_role = str(d.get('role', 'Faculty')).strip().upper()
                     if raw_role in ['COE', 'BOS', 'BOE']: d['role'] = raw_role
                     elif raw_role == 'PRINCIPAL': d['role'] = 'Principal'
@@ -280,7 +292,6 @@ with tabs[2]:
                     elif raw_role == 'STAFF': d['role'] = 'Staff'
                     else: d['role'] = 'Faculty'
                     
-                    # Handle boolean
                     is_eval = str(d.get('is_evaluator', '')).strip().lower()
                     d['is_evaluator'] = True if is_eval in ['true', 'yes', '1', 'y'] else False
                     
@@ -289,12 +300,22 @@ with tabs[2]:
                         d['staff_pin'] = existing_staff[em].get('staff_pin') or str(random.randint(1000, 9999))
                     else:
                         d['staff_pin'] = str(random.randint(1000, 9999))
+                        
+                    # Save to dictionary (overwrites any accidental duplicates from the CSV)
+                    unique_staff_map[em] = d
                 
-                try:
-                    supabase.table("master_staff").upsert(data, on_conflict="email").execute()
-                    st.success(f"✅ Added/Updated {len(data)} staff members with generated 4-Digit PINs!")
-                except Exception as e: 
-                    st.error(f"Error: {e}")
+                # Convert back to list for upload
+                final_staff_data = list(unique_staff_map.values())
+                
+                if final_staff_data:
+                    try:
+                        for i in range(0, len(final_staff_data), 500):
+                            supabase.table("master_staff").upsert(final_staff_data[i:i+500], on_conflict="email").execute()
+                        st.success(f"✅ Added/Updated {len(final_staff_data)} unique staff members with generated 4-Digit PINs!")
+                    except Exception as e: 
+                        st.error(f"Upload Error: {e}")
+                else:
+                    st.warning("No valid emails found in the uploaded file.")
                     
         with col_e2:
             st.markdown("**Single Staff Entry**")
@@ -308,7 +329,6 @@ with tabs[2]:
                 if st.form_submit_button("Add/Update Staff Account"):
                     if f_email and f_name:
                         try:
-                            # Generate a PIN only if one doesn't exist
                             existing = supabase.table("master_staff").select("staff_id, staff_pin").eq("email", f_email).execute()
                             payload = {
                                 "full_name": f_name,
@@ -324,7 +344,7 @@ with tabs[2]:
                             else:
                                 payload['staff_pin'] = str(random.randint(1000, 9999))
                                 
-                            supabase.table("master_staff").upsert(payload).execute()
+                            supabase.table("master_staff").upsert(payload, on_conflict="email").execute()
                             st.success(f"✅ Saved Profile & Created Login PIN for {f_email}")
                         except Exception as e:
                             st.error(f"Error: {e}")
@@ -464,9 +484,14 @@ with tabs[3]:
                 df = pd.read_csv(f_br)
                 expected = ['branch_code', 'branch_name', 'program_type']
                 data = clean_data_for_db(df, expected)
+                
+                # Deduplicate
+                unique_branches = {str(d.get('branch_code')).strip(): d for d in data if d.get('branch_code')}
+                final_data = list(unique_branches.values())
+                
                 try:
-                    supabase.table("master_branches").upsert(data).execute()
-                    st.success(f"Added {len(data)} branches.")
+                    supabase.table("master_branches").upsert(final_data).execute()
+                    st.success(f"Added {len(final_data)} branches.")
                 except Exception as e: st.error(f"Error: {e}")
         with c_b2:
             with st.form("branch_manual"):
@@ -520,9 +545,15 @@ with tabs[3]:
                     'course_type', 'scheme_batch', 'offering_department'
                 ]
                 data = clean_data_for_db(df, expected)
+                
+                # Deduplicate by course_code
+                unique_courses = {str(d.get('course_code')).strip(): d for d in data if d.get('course_code')}
+                final_data = list(unique_courses.values())
+                
                 try:
-                    supabase.table("master_courses").upsert(data).execute()
-                    st.success(f"✅ Scheme Updated Successfully ({len(data)} courses processed).")
+                    for i in range(0, len(final_data), 500):
+                        supabase.table("master_courses").upsert(final_data[i:i+500]).execute()
+                    st.success(f"✅ Scheme Updated Successfully ({len(final_data)} unique courses processed).")
                 except Exception as e:
                     st.error(f"🚨 RAW DATABASE ERROR: {e}")
                     
