@@ -84,7 +84,6 @@ with tabs[1]:
             expected = ['room_number', 'capacity', 'block_name']
             data = clean_data_for_db(df, expected)
             
-            # Deduplicate by room number to prevent Postgres 21000 Error
             unique_rooms = {str(d.get('room_number')).strip(): d for d in data if d.get('room_number')}
             final_data = list(unique_rooms.values())
             
@@ -219,7 +218,6 @@ with tabs[2]:
                             if 'dob' in d and pd.notna(d.get('dob')):
                                 d['dob'] = str(d['dob']).strip()
                         
-                        # Deduplicate by USN to prevent Postgres 21000 Error
                         unique_data = {d['usn']: d for d in data}
                         data = list(unique_data.values())
                         
@@ -236,7 +234,6 @@ with tabs[2]:
                         
                         if "Safe Mode" in upload_mode:
                             if new_records:
-                                # Chunking inserts
                                 for i in range(0, len(new_records), 500):
                                     supabase.table("master_students").insert(new_records[i:i+500]).execute()
                                 assigned_preview = ", ".join([f"{r['full_name']} ({r['usn']})" for r in new_records[:5]])
@@ -261,29 +258,52 @@ with tabs[2]:
 
     with st_tabs[1]:
         st.subheader("Staff & Evaluators Provisioning")
-        st.info("Uploading Staff automatically assigns them a secure 4-digit PIN for portal access based on the new `master_staff` schema.")
+        st.info("Upload Faculty without an ID, and the system will automatically generate a clean, sequential ID (e.g., AE2601) and a 4-digit PIN for portal access.")
         
         col_e1, col_e2 = st.columns(2)
         with col_e1:
             st.markdown("**Bulk Account Creation (CSV)**")
-            f_fac = st.file_uploader("Upload CSV (full_name, email, role, dept, is_evaluator)", type='csv')
+            f_fac = st.file_uploader("Upload CSV (faculty_id, full_name, role, dept, is_evaluator)", type='csv')
             if f_fac and st.button("Upload Staff & Generate PINs", type="primary"):
                 df = pd.read_csv(f_fac)
                 df.columns = [str(c).strip().lower() for c in df.columns]
                 
-                expected = ['full_name', 'email', 'role', 'dept', 'is_evaluator']
+                # We expect faculty_id now instead of email, but it can be blank
+                if 'faculty_id' not in df.columns:
+                    df['faculty_id'] = ''
+                    
+                expected = ['faculty_id', 'full_name', 'role', 'dept', 'is_evaluator']
                 data = clean_data_for_db(df, expected)
                 
-                existing_staff_res = supabase.table("master_staff").select("staff_id, email, staff_pin").execute()
-                existing_staff = {r['email'].lower(): r for r in existing_staff_res.data} if existing_staff_res.data else {}
+                # Fetch existing staff to protect their PINs and find max sequences
+                existing_staff_res = supabase.table("master_staff").select("staff_id, faculty_id, staff_pin").execute()
+                existing_fac_map = {r['faculty_id'].strip().upper(): r for r in existing_staff_res.data if r.get('faculty_id')} if existing_staff_res.data else {}
                 
-                # 🟢 Pre-Flight Deduplication Dictionary to prevent Postgres 21000 Error
+                # Analyze existing sequences (e.g., AE2601)
+                current_year = str(datetime.date.today().year)[-2:]
+                dept_seq = defaultdict(int)
+                for fid in existing_fac_map.keys():
+                    if fid[:-2].isdigit() and fid[-4:-2] == current_year:
+                        dept = fid[:-4]
+                        try:
+                            seq = int(fid[-2:])
+                            if seq > dept_seq[dept]: dept_seq[dept] = seq
+                        except: pass
+                
                 unique_staff_map = {}
                 
+                # 🟢 AUTO-GENERATE MISSING FACULTY IDs
                 for d in data:
-                    em = str(d.get('email', '')).strip().lower()
-                    if not em or em == 'nan': continue # Skip empty emails
-                    d['email'] = em
+                    name = str(d.get('full_name', 'Unknown')).strip()
+                    dept = str(d.get('dept', 'GEN')).strip().upper()
+                    
+                    raw_fid = str(d.get('faculty_id', '')).strip().upper()
+                    if not raw_fid or raw_fid == 'NAN': 
+                        # Generate ID: DEPT + YEAR + SEQ
+                        dept_seq[dept] += 1
+                        raw_fid = f"{dept}{current_year}{dept_seq[dept]:02d}"
+                        
+                    d['faculty_id'] = raw_fid
                     
                     raw_role = str(d.get('role', 'Faculty')).strip().upper()
                     if raw_role in ['COE', 'BOS', 'BOE']: d['role'] = raw_role
@@ -295,44 +315,63 @@ with tabs[2]:
                     is_eval = str(d.get('is_evaluator', '')).strip().lower()
                     d['is_evaluator'] = True if is_eval in ['true', 'yes', '1', 'y'] else False
                     
-                    if em in existing_staff:
-                        d['staff_id'] = existing_staff[em]['staff_id']
-                        d['staff_pin'] = existing_staff[em].get('staff_pin') or str(random.randint(1000, 9999))
+                    if raw_fid in existing_fac_map:
+                        d['staff_id'] = existing_fac_map[raw_fid]['staff_id']
+                        d['staff_pin'] = existing_fac_map[raw_fid].get('staff_pin') or str(random.randint(1000, 9999))
                     else:
                         d['staff_pin'] = str(random.randint(1000, 9999))
                         
-                    # Save to dictionary (overwrites any accidental duplicates from the CSV)
-                    unique_staff_map[em] = d
+                    unique_staff_map[raw_fid] = d
                 
-                # Convert back to list for upload
                 final_staff_data = list(unique_staff_map.values())
                 
                 if final_staff_data:
                     try:
                         for i in range(0, len(final_staff_data), 500):
-                            supabase.table("master_staff").upsert(final_staff_data[i:i+500], on_conflict="email").execute()
-                        st.success(f"✅ Added/Updated {len(final_staff_data)} unique staff members with generated 4-Digit PINs!")
+                            supabase.table("master_staff").upsert(final_staff_data[i:i+500], on_conflict="faculty_id").execute()
+                        st.success(f"✅ Added/Updated {len(final_staff_data)} unique staff members with generated IDs and 4-Digit PINs!")
+                        
+                        # Show preview of generated IDs so admin knows what to tell the staff
+                        with st.expander("Preview Generated Login IDs"):
+                            preview_df = pd.DataFrame(final_staff_data)[['full_name', 'faculty_id', 'staff_pin', 'role', 'dept']]
+                            st.dataframe(preview_df, use_container_width=True, hide_index=True)
+                            
                     except Exception as e: 
                         st.error(f"Upload Error: {e}")
                 else:
-                    st.warning("No valid emails found in the uploaded file.")
+                    st.warning("No valid staff records found in the uploaded file.")
                     
         with col_e2:
             st.markdown("**Single Staff Entry**")
             with st.form("fac_manual"):
                 f_name = st.text_input("Full Name")
-                f_email = st.text_input("Email Address").strip().lower()
+                f_id = st.text_input("Faculty ID", help="Leave blank to auto-generate").strip().upper()
                 f_role = st.selectbox("Role", ['COE', 'Principal', 'Faculty', 'Admin', 'Staff', 'BOS', 'BOE'], index=2)
-                f_dept = st.text_input("Department (e.g., CSE)")
+                f_dept = st.text_input("Department (e.g., CSE)").strip().upper()
                 f_eval = st.checkbox("Is Evaluator?", value=False)
                 
                 if st.form_submit_button("Add/Update Staff Account"):
-                    if f_email and f_name:
+                    if f_name and f_dept:
                         try:
-                            existing = supabase.table("master_staff").select("staff_id, staff_pin").eq("email", f_email).execute()
+                            # Auto-generate if blank
+                            if not f_id:
+                                existing_staff_res = supabase.table("master_staff").select("faculty_id").execute()
+                                current_year = str(datetime.date.today().year)[-2:]
+                                max_seq = 0
+                                if existing_staff_res.data:
+                                    for r in existing_staff_res.data:
+                                        if r.get('faculty_id', '').startswith(f"{f_dept}{current_year}"):
+                                            try:
+                                                seq = int(r['faculty_id'][-2:])
+                                                if seq > max_seq: max_seq = seq
+                                            except: pass
+                                f_id = f"{f_dept}{current_year}{max_seq + 1:02d}"
+                                st.info(f"Auto-generated Faculty ID: **{f_id}**")
+                            
+                            existing = supabase.table("master_staff").select("staff_id, staff_pin").eq("faculty_id", f_id).execute()
                             payload = {
                                 "full_name": f_name,
-                                "email": f_email,
+                                "faculty_id": f_id,
                                 "role": f_role,
                                 "dept": f_dept,
                                 "is_evaluator": f_eval
@@ -344,12 +383,12 @@ with tabs[2]:
                             else:
                                 payload['staff_pin'] = str(random.randint(1000, 9999))
                                 
-                            supabase.table("master_staff").upsert(payload, on_conflict="email").execute()
-                            st.success(f"✅ Saved Profile & Created Login PIN for {f_email}")
+                            supabase.table("master_staff").upsert(payload, on_conflict="faculty_id").execute()
+                            st.success(f"✅ Saved Profile & Created Login PIN for {f_id}")
                         except Exception as e:
                             st.error(f"Error: {e}")
                     else:
-                        st.error("Email Address and Name are mandatory.")
+                        st.error("Full Name and Department are mandatory.")
 
     with st_tabs[2]:
         st.subheader("Temp-to-Official USN Migration Tool")
@@ -485,7 +524,6 @@ with tabs[3]:
                 expected = ['branch_code', 'branch_name', 'program_type']
                 data = clean_data_for_db(df, expected)
                 
-                # Deduplicate
                 unique_branches = {str(d.get('branch_code')).strip(): d for d in data if d.get('branch_code')}
                 final_data = list(unique_branches.values())
                 
@@ -546,7 +584,6 @@ with tabs[3]:
                 ]
                 data = clean_data_for_db(df, expected)
                 
-                # Deduplicate by course_code
                 unique_courses = {str(d.get('course_code')).strip(): d for d in data if d.get('course_code')}
                 final_data = list(unique_courses.values())
                 
@@ -663,7 +700,7 @@ with tabs[4]:
         tables_to_backup = [
             "master_students", "master_courses", "master_branches", "master_fees",
             "exam_cycles", "exam_timetable", "course_registrations",
-            "student_results", "marks_audit_log"
+            "student_results", "marks_audit_log", "master_staff"
         ]
         
         progress_bar = st.progress(0)
