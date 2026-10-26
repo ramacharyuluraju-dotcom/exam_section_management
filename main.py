@@ -85,6 +85,7 @@ with tabs[1]:
             expected = ['room_number', 'capacity', 'block_name']
             data = clean_data_for_db(df, expected)
             
+            # Deduplicate by room number to prevent Postgres 21000 Error
             unique_rooms = {str(d.get('room_number')).strip(): d for d in data if d.get('room_number')}
             final_data = list(unique_rooms.values())
             
@@ -264,19 +265,39 @@ with tabs[2]:
         col_e1, col_e2 = st.columns(2)
         with col_e1:
             st.markdown("**Bulk Account Creation (CSV)**")
-            f_fac = st.file_uploader("Upload CSV (faculty_id, full_name, role, dept, branch, is_evaluator, email)", type='csv')
+            f_fac = st.file_uploader("Upload CSV (full_name, role, dept, is_evaluator)", type='csv')
             if f_fac and st.button("Upload Staff & Generate PINs", type="primary"):
                 df = pd.read_csv(f_fac)
                 df.columns = [str(c).strip().lower() for c in df.columns]
                 
-                if 'faculty_id' not in df.columns:
-                    df['faculty_id'] = ''
-                if 'email' not in df.columns:
-                    df['email'] = ''
-                    
-                expected = ['faculty_id', 'full_name', 'role', 'dept', 'branch', 'is_evaluator', 'email']
-                data = clean_data_for_db(df, expected)
+                # 🟢 BULLETPROOF DATA CLEANING: Bypassing clean_data_for_db completely
+                # Fill missing columns with safe defaults so NO ROWS ARE DROPPED
+                if 'faculty_id' not in df.columns: df['faculty_id'] = 'MISSING'
+                if 'full_name' not in df.columns: df['full_name'] = 'Unknown'
+                if 'role' not in df.columns: df['role'] = 'Faculty'
+                if 'dept' not in df.columns: df['dept'] = 'GEN'
+                if 'branch' not in df.columns: df['branch'] = df['dept']
+                if 'is_evaluator' not in df.columns: df['is_evaluator'] = False
+                if 'email' not in df.columns: df['email'] = 'none'
                 
+                # Convert everything to safe strings
+                df['faculty_id'] = df['faculty_id'].fillna('MISSING').astype(str).str.strip().str.upper()
+                df['full_name'] = df['full_name'].fillna('Unknown').astype(str).str.strip()
+                df['role'] = df['role'].fillna('Faculty').astype(str).str.strip()
+                df['dept'] = df['dept'].fillna('GEN').astype(str).str.strip()
+                df['branch'] = df['branch'].fillna(df['dept']).astype(str).str.strip().str.upper()
+                df['email'] = df['email'].fillna('none').astype(str).str.strip().lower()
+                
+                def parse_bool(val):
+                    if pd.isna(val): return False
+                    return str(val).strip().lower() in ['true', 'yes', '1', 'y', 't']
+                
+                df['is_evaluator'] = df['is_evaluator'].apply(parse_bool)
+                
+                # Convert DataFrame to a list of dictionaries manually
+                data = df.to_dict('records')
+                
+                # Fetch existing staff to protect their PINs and find max sequences
                 existing_staff_res = supabase.table("master_staff").select("staff_id, faculty_id, staff_pin").execute()
                 existing_fac_map = {r['faculty_id'].strip().upper(): r for r in existing_staff_res.data if r.get('faculty_id')} if existing_staff_res.data else {}
                 
@@ -293,27 +314,28 @@ with tabs[2]:
                 unique_staff_map = {}
                 
                 for d in data:
+                    branch = str(d.get('branch', '')).strip().upper()
                     dept = str(d.get('dept', 'GEN')).strip().upper()
-                    branch = str(d.get('branch', dept)).strip().upper()
-                    if not branch or branch == 'NAN': branch = dept
-                    d['branch'] = branch
+                    if not branch or branch == 'NAN' or branch == 'NONE': branch = dept if dept not in ['NAN', 'NONE'] else 'GEN'
                     
+                    d['branch'] = branch
+                    d['dept'] = dept if dept not in ['NAN', 'NONE'] else 'GEN'
+                    
+                    # 🟢 GENERATE ID IF MISSING OR BLANK
                     raw_fid = str(d.get('faculty_id', '')).strip().upper()
-                    if not raw_fid or raw_fid == 'NAN': 
+                    if raw_fid in ['MISSING', 'NAN', 'NONE', '']: 
                         dept_seq[branch] += 1
                         raw_fid = f"{branch}{current_year}{dept_seq[branch]:02d}"
                         
                     d['faculty_id'] = raw_fid
                     
-                    raw_role = str(d.get('role', 'Faculty')).strip().upper()
-                    if raw_role in ['COE', 'BOS', 'BOE']: d['role'] = raw_role
-                    elif raw_role == 'PRINCIPAL': d['role'] = 'Principal'
-                    elif raw_role == 'ADMIN': d['role'] = 'Admin'
-                    elif raw_role == 'STAFF': d['role'] = 'Staff'
-                    else: d['role'] = 'Faculty'
+                    # Ensure email is valid for the DB or NULL
+                    em = str(d.get('email', '')).strip().lower()
+                    d['email'] = em if em not in ['nan', 'none', ''] else None
                     
-                    is_eval = str(d.get('is_evaluator', '')).strip().lower()
-                    d['is_evaluator'] = True if is_eval in ['true', 'yes', '1', 'y'] else False
+                    raw_role = str(d.get('role', 'Faculty')).strip().title()
+                    if raw_role.upper() in ['COE', 'BOS', 'BOE']: raw_role = raw_role.upper()
+                    d['role'] = raw_role if raw_role in ['COE', 'Principal', 'Faculty', 'Admin', 'Staff', 'BOS', 'BOE'] else 'Faculty'
                     
                     if raw_fid in existing_fac_map:
                         d['staff_id'] = existing_fac_map[raw_fid]['staff_id']
@@ -329,10 +351,10 @@ with tabs[2]:
                     try:
                         for i in range(0, len(final_staff_data), 500):
                             supabase.table("master_staff").upsert(final_staff_data[i:i+500], on_conflict="faculty_id").execute()
-                        st.success(f"✅ Added/Updated {len(final_staff_data)} unique staff members with generated IDs and 4-Digit PINs!")
+                        st.success(f"✅ Successfully processed and uploaded **{len(final_staff_data)}** staff members with generated IDs and 4-Digit PINs!")
                         
-                        with st.expander("Preview Generated Login IDs"):
-                            preview_df = pd.DataFrame(final_staff_data)[['full_name', 'faculty_id', 'branch', 'staff_pin', 'role']]
+                        with st.expander("Preview Uploaded Staff"):
+                            preview_df = pd.DataFrame(final_staff_data)[['full_name', 'faculty_id', 'branch', 'staff_pin', 'role', 'dept']]
                             st.dataframe(preview_df, use_container_width=True, hide_index=True)
                             
                     except Exception as e: 
