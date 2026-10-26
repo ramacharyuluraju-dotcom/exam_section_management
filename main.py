@@ -260,23 +260,23 @@ with tabs[2]:
 
     with st_tabs[1]:
         st.subheader("Staff & Evaluators Provisioning")
-        st.info("Upload Faculty without an ID, and the system will automatically generate a clean, sequential ID (e.g., AE2601) and a 4-digit PIN for portal access.")
+        st.info("Upload Faculty without an ID. The system will use their 'branch' to auto-generate a sequential ID (e.g., CD2601) and a 4-digit PIN.")
         
         col_e1, col_e2 = st.columns(2)
         with col_e1:
             st.markdown("**Bulk Account Creation (CSV)**")
-            f_fac = st.file_uploader("Upload CSV (full_name, role, dept, is_evaluator)", type='csv')
+            f_fac = st.file_uploader("Upload CSV (full_name, role, dept, branch, is_evaluator)", type='csv')
+            
             if f_fac and st.button("Upload Staff & Generate PINs", type="primary"):
                 df = pd.read_csv(f_fac)
                 df.columns = [str(c).strip().lower() for c in df.columns]
                 
-                # 🟢 BULLETPROOF DATA CLEANING: Bypassing clean_data_for_db completely
-                # Fill missing columns with safe defaults so NO ROWS ARE DROPPED
+                # 🟢 BULLETPROOF DATA CLEANING: Fill missing columns so NO ROWS ARE DROPPED
                 if 'faculty_id' not in df.columns: df['faculty_id'] = 'MISSING'
                 if 'full_name' not in df.columns: df['full_name'] = 'Unknown'
                 if 'role' not in df.columns: df['role'] = 'Faculty'
                 if 'dept' not in df.columns: df['dept'] = 'GEN'
-                if 'branch' not in df.columns: df['branch'] = df['dept']
+                if 'branch' not in df.columns: df['branch'] = df.get('dept', 'GEN')
                 if 'is_evaluator' not in df.columns: df['is_evaluator'] = False
                 if 'email' not in df.columns: df['email'] = 'none'
                 
@@ -284,7 +284,7 @@ with tabs[2]:
                 df['faculty_id'] = df['faculty_id'].fillna('MISSING').astype(str).str.strip().str.upper()
                 df['full_name'] = df['full_name'].fillna('Unknown').astype(str).str.strip()
                 df['role'] = df['role'].fillna('Faculty').astype(str).str.strip()
-                df['dept'] = df['dept'].fillna('GEN').astype(str).str.strip()
+                df['dept'] = df['dept'].fillna('GEN').astype(str).str.strip().str.upper()
                 df['branch'] = df['branch'].fillna(df['dept']).astype(str).str.strip().str.upper()
                 df['email'] = df['email'].fillna('none').astype(str).str.strip().lower()
                 
@@ -303,25 +303,28 @@ with tabs[2]:
                 
                 current_year = str(datetime.date.today().year)[-2:]
                 dept_seq = defaultdict(int)
+                
+                # Pre-calculate highest sequence for each branch
                 for fid in existing_fac_map.keys():
                     if fid[:-2].isdigit() and fid[-4:-2] == current_year:
-                        dept = fid[:-4]
+                        branch_prefix = fid[:-4]
                         try:
                             seq = int(fid[-2:])
-                            if seq > dept_seq[dept]: dept_seq[dept] = seq
+                            if seq > dept_seq[branch_prefix]: 
+                                dept_seq[branch_prefix] = seq
                         except: pass
                 
                 unique_staff_map = {}
                 
                 for d in data:
-                    branch = str(d.get('branch', '')).strip().upper()
                     dept = str(d.get('dept', 'GEN')).strip().upper()
-                    if not branch or branch == 'NAN' or branch == 'NONE': branch = dept if dept not in ['NAN', 'NONE'] else 'GEN'
+                    branch = str(d.get('branch', '')).strip().upper()
+                    if not branch or branch in ['NAN', 'NONE']: branch = dept if dept not in ['NAN', 'NONE'] else 'GEN'
                     
                     d['branch'] = branch
                     d['dept'] = dept if dept not in ['NAN', 'NONE'] else 'GEN'
                     
-                    # 🟢 GENERATE ID IF MISSING OR BLANK
+                    # 🟢 GENERATE ID USING BRANCH PREFIX (e.g., CD2601)
                     raw_fid = str(d.get('faculty_id', '')).strip().upper()
                     if raw_fid in ['MISSING', 'NAN', 'NONE', '']: 
                         dept_seq[branch] += 1
@@ -366,17 +369,19 @@ with tabs[2]:
             st.markdown("**Single Staff Entry**")
             with st.form("fac_manual"):
                 f_name = st.text_input("Full Name")
-                f_id = st.text_input("Faculty ID", help="Leave blank to auto-generate").strip().upper()
+                f_id = st.text_input("Faculty ID", help="Leave blank to auto-generate based on Branch").strip().upper()
                 f_role = st.selectbox("Role", ['COE', 'Principal', 'Faculty', 'Admin', 'Staff', 'BOS', 'BOE'], index=2)
-                f_dept = st.text_input("Department (e.g., Computer Science)")
-                f_branch = st.text_input("Branch Code (e.g., AE, CSE)").strip().upper()
-                f_email = st.text_input("Email Address (Optional)")
+                f_dept = st.text_input("Parent Department (e.g., CSE)").strip().upper()
+                f_branch = st.text_input("Branch Code (e.g., CD, AI, CS)").strip().upper()
                 f_eval = st.checkbox("Is Evaluator?", value=False)
                 
                 if st.form_submit_button("Add/Update Staff Account"):
                     if f_name and (f_dept or f_branch):
                         try:
-                            if not f_branch: f_branch = "GEN"
+                            if not f_branch: f_branch = f_dept if f_dept else "GEN"
+                            if not f_dept: f_dept = f_branch
+                            
+                            # 🟢 Auto-generate single ID using Branch
                             if not f_id:
                                 existing_staff_res = supabase.table("master_staff").select("faculty_id").execute()
                                 current_year = str(datetime.date.today().year)[-2:]
@@ -398,7 +403,6 @@ with tabs[2]:
                                 "role": f_role,
                                 "dept": f_dept,
                                 "branch": f_branch,
-                                "email": f_email if f_email else None,
                                 "is_evaluator": f_eval
                             }
                             
