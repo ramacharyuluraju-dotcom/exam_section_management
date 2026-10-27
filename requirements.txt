@@ -8,3 +8,4 @@ docxtpl
 opencv-python-headless
 PyMuPDF
 networkx
+qrcode
