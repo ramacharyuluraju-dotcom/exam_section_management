@@ -62,7 +62,6 @@ def resize_image_for_excel(img_bytes, target_height=50):
     except Exception as e:
         return io.BytesIO(img_bytes)
 
-# 🟢 RESTORED ORIGINAL DUMMY ID GENERATOR (e.g. AA1, AA2)
 USED_PREFIXES = set()
 
 def generate_dummy_ids(count):
@@ -181,7 +180,6 @@ def run_allocation(df_students, df_rooms):
 
     current_room_no, current_capacity = get_next_room()
     
-    # --- OMR ALLOCATION ---
     df_omr = df_students[df_students['AllocCode'].isin(OMR_SUBJECTS)]
     if not df_omr.empty:
         students = df_omr.to_dict('records')
@@ -206,7 +204,6 @@ def run_allocation(df_students, df_rooms):
         if current_seat > 1:
             current_room_no, current_capacity = get_next_room()
 
-    # --- REGULAR ALLOCATION ---
     df_reg = df_students[~df_students['AllocCode'].isin(OMR_SUBJECTS)]
     if not df_reg.empty:
         subj_queues = {}
@@ -786,7 +783,6 @@ with tab1:
     selected_slot_pre = st.selectbox("📅 Select Session for Seating:", sessions, key="slot_pre")
     date_pre, sess_pre = selected_slot_pre.split(" | ")
     
-    # Check if seating is already saved
     existing_seating = fetch_seating_allocation(selected_cycle_id, date_pre, sess_pre)
     
     if not existing_seating.empty:
@@ -912,11 +908,24 @@ with tab2:
         st.subheader("Hybrid Database & Excel Bundling")
         st.write("Generates formulated Excel Files for your current process, printable QR Code covers, AND writes everything to the database for the upcoming Web App.")
         
-        existing_bundles = supabase.table("evaluation_bundles").select("bundle_id").eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).execute()
+        # 🟢 FETCH BUNDLES ONLY FOR COURSES IN THIS SESSION
+        session_courses = post_seating['Subject Code'].unique().tolist()
+        existing_bundles = supabase.table("evaluation_bundles").select("bundle_id").eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).in_("course_code", session_courses).execute()
         
         if existing_bundles.data:
-            st.success(f"✅ Secure bundles have already been created for this session in the database!")
-            st.warning("If you need to regenerate the Excel sheets, you must contact the DB Admin to clear the existing bundles for this session first.")
+            st.success(f"✅ {len(existing_bundles.data)} secure bundles have already been created for this session in the database!")
+            st.warning("If you need to regenerate the Excel sheets or QR codes, you can delete the existing bundles for this session below.")
+            
+            # 🟢 NEW REDO BUTTON
+            if st.button("⚠️ Delete Existing Bundles & Regenerate", type="secondary"):
+                with st.spinner("Deleting existing bundles from database..."):
+                    try:
+                        # ON DELETE CASCADE cleans up the evaluation_scripts automatically
+                        supabase.table("evaluation_bundles").delete().eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).in_("course_code", session_courses).execute()
+                        st.success("✅ Existing bundles deleted successfully! Please click 'Generate Hybrid Bundles' to recreate them.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error deleting bundles: {e} (Did you run the SQL to allow Deletes?)")
         else:
             if st.button("🚀 Generate Hybrid Bundles (ZIP)", type="primary"):
                 with st.spinner("Building Excels, QR Codes, and locking to Database..."):
