@@ -348,7 +348,6 @@ def gen_form_b(df, date, session, assets):
     doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
     return buf.getvalue()
 
-# 🟢 RESTORED QPDS GENERATOR
 def gen_qpds(df, date, session, assets):
     buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=95)
     elements = []; styles = getSampleStyleSheet()
@@ -370,7 +369,6 @@ def gen_qpds(df, date, session, assets):
     doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
     return buf.getvalue()
 
-# 🟢 RESTORED SMART EXCEL GENERATOR (Appearing List)
 def gen_smart_excel(df, date, session):
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
@@ -593,7 +591,7 @@ def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, tota
     return out.getvalue()
 
 def gen_barcode_bundle_covers(bundles, cycle_name, assets):
-    """Generates the physical printouts using High-Density QR Codes containing all bundle metadata"""
+    """Generates the physical printouts using Secured QR Codes (No USNs)"""
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=50, bottomMargin=30)
     elements = []
@@ -603,12 +601,11 @@ def gen_barcode_bundle_covers(bundles, cycle_name, assets):
         elements.append(Paragraph(f"<b>EVALUATION BUNDLE COVER</b>", ParagraphStyle('T', alignment=TA_CENTER, fontSize=16)))
         elements.append(Spacer(1, 10))
         
-        # 🟢 GENERATE HIGH-DENSITY QR CODE WITH EMBEDDED METADATA
+        # 🟢 SECURED QR CODE: Contains ONLY public metadata to pass the lookup key to the portal
         qr_payload = {
-            "cycle": cycle_name,
-            "bundle": b['bundle_id'],
-            "course": b['course_code'],
-            "map": {s['dummy_id']: s['usn'] for s in b['scripts'] if s['status'] == 'PRESENT'}
+            "bundle_id": b['bundle_id'],
+            "course_code": b['course_code'],
+            "cycle": cycle_name
         }
         
         qr = qrcode.make(json.dumps(qr_payload))
@@ -616,7 +613,6 @@ def gen_barcode_bundle_covers(bundles, cycle_name, assets):
         qr.save(qr_io, format="PNG")
         qr_io.seek(0)
         
-        # Add QR Image to PDF
         qr_img = RLImage(qr_io, width=2*inch, height=2*inch)
         qr_img.hAlign = 'CENTER'
         elements.append(qr_img)
@@ -667,13 +663,6 @@ def gen_barcode_bundle_covers(bundles, cycle_name, assets):
     return buf.getvalue()
 
 def gen_hybrid_bundles(df_seating, date_post, sess_post, cycle_id, cycle_name, assets):
-    """
-    The Ultimate Hybrid Engine:
-    1. Reverts to AA1, AB2 Dummy generation.
-    2. Packages formulated Excel sheets for immediate faculty use.
-    3. Generates QR Code PDF covers for the physical envelopes containing rich JSON data.
-    4. Writes everything to Supabase for the upcoming Web Portal.
-    """
     global USED_PREFIXES
     USED_PREFIXES.clear() 
     
@@ -704,11 +693,9 @@ def gen_hybrid_bundles(df_seating, date_post, sess_post, cycle_id, cycle_name, a
             for i in range(n_chunks):
                 chunk = group.iloc[i*20 : (i+1)*20].copy()
                 
-                # 🟢 RESTORED: Generate Familiar AA1, AA2 dummy IDs
                 dummy_ids = generate_dummy_ids(len(chunk))
                 chunk['Dummy_ID'] = dummy_ids
                 
-                # The Envelope Barcode (BNDL-XXXX)
                 bndl_num = random.randint(10000, 99999)
                 bundle_id = f"BNDL-{bndl_num}"
                 
@@ -752,15 +739,12 @@ def gen_hybrid_bundles(df_seating, date_post, sess_post, cycle_id, cycle_name, a
                     "scripts": bundle_scripts_info
                 })
                 
-                # 🟢 GENERATE EXCEL FILE (For immediate use)
                 excel_bytes = create_locked_bundle(chunk, cc, course_name, b_group, i+1, n_chunks, cycle_name, assets)
                 zf.writestr(f"Excel_Bundles/{cc}/{bundle_id}_{b_group}.xlsx", excel_bytes)
                 
-        # 🟢 GENERATE PDF QR COVERS
         pdf_bytes = gen_barcode_bundle_covers(cover_sheet_data, cycle_name, assets)
         zf.writestr(f"QR_Envelope_Covers_{date_post}.pdf", pdf_bytes)
         
-        # 🟢 GENERATE MASTER SECRET KEY
         kdf = pd.DataFrame(key_log)
         out_k = io.BytesIO()
         kdf.to_excel(out_k, index=False)
@@ -808,7 +792,6 @@ with tab1:
     if not existing_seating.empty:
         st.success(f"✅ Seating layout already generated for this session! ({len(existing_seating)} students)")
         
-        # 🟢 RESTORED: All 4 Download Buttons
         c1, c2, c3, c4 = st.columns(4)
         with c1: st.download_button("📌 Download Room Posters", gen_posters(existing_seating, date_pre, sess_pre, pdf_assets), f"Posters_{date_pre}.pdf", type="primary", use_container_width=True)
         with c2: st.download_button("📝 Download Form B (Attendance)", gen_form_b(existing_seating, date_pre, sess_pre, pdf_assets), f"FormB_{date_pre}.pdf", type="primary", use_container_width=True)
@@ -859,7 +842,6 @@ with tab1:
                         with st.spinner("Assigning seats & writing to database..."):
                             df_alloc = run_allocation(df_stus, selected_rooms_df)
                             
-                            # Prepare for DB Insert
                             payload = []
                             for _, row in df_alloc.iterrows():
                                 payload.append({
@@ -877,7 +859,6 @@ with tab1:
                                 })
                                 
                             try:
-                                # Chunking insert for large arrays
                                 for i in range(0, len(payload), 500):
                                     supabase.table("exam_seating_allocations").insert(payload[i:i+500]).execute()
                                 st.success(f"✅ Seating successfully locked into database!")
@@ -903,7 +884,6 @@ with tab2:
         with st.form("absentee_form"):
             col1, col2 = st.columns(2)
             with col1:
-                # Pre-fill with existing absentees if already saved
                 existing_abs = post_seating[post_seating['Status'] == 'ABSENT']['USN'].tolist()
                 abs_text = st.text_area("Absentee USNs (comma separated)", value=",".join(existing_abs), height=80)
             with col2:
@@ -915,14 +895,11 @@ with tab2:
                 mal_list = [x.strip().upper() for x in mal_text.replace('\n', ',').split(',') if x.strip()]
                 
                 with st.spinner("Updating database..."):
-                    # Reset all to present first
                     supabase.table("exam_seating_allocations").update({"status": "PRESENT"}).eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).eq("session", sess_post).execute()
                     
-                    # Update Absentees
                     if absent_list:
                         supabase.table("exam_seating_allocations").update({"status": "ABSENT"}).eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).eq("session", sess_post).in_("usn", absent_list).execute()
                     
-                    # Update Malpractice
                     if mal_list:
                         supabase.table("exam_seating_allocations").update({"status": "MALPRACTICE"}).eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).eq("session", sess_post).in_("usn", mal_list).execute()
                         
@@ -935,7 +912,6 @@ with tab2:
         st.subheader("Hybrid Database & Excel Bundling")
         st.write("Generates formulated Excel Files for your current process, printable QR Code covers, AND writes everything to the database for the upcoming Web App.")
         
-        # Check if bundles exist
         existing_bundles = supabase.table("evaluation_bundles").select("bundle_id").eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).execute()
         
         if existing_bundles.data:
@@ -946,12 +922,9 @@ with tab2:
                 with st.spinner("Building Excels, QR Codes, and locking to Database..."):
                     
                     df_to_bundle = post_seating.copy()
-                    
-                    # Run the Hybrid Engine
                     zip_bytes, b_payload, s_payload = gen_hybrid_bundles(df_to_bundle, date_post, sess_post, selected_cycle_id, active_cycle_name, pdf_assets)
                     
                     try:
-                        # Write to database (Background process for future app)
                         for i in range(0, len(b_payload), 500):
                             supabase.table("evaluation_bundles").insert(b_payload[i:i+500]).execute()
                         for i in range(0, len(s_payload), 500):
