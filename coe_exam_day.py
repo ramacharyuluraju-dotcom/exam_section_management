@@ -348,6 +348,38 @@ def gen_form_b(df, date, session, assets):
     doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
     return buf.getvalue()
 
+# 🟢 RESTORED QPDS GENERATOR
+def gen_qpds(df, date, session, assets):
+    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=95)
+    elements = []; styles = getSampleStyleSheet()
+    elements.append(Paragraph("<b>QP INDENT (ROOM WISE)</b>", styles['Heading2']))
+    elements.append(Paragraph(f"Date: {date} | Session: {session}", styles['Normal']))
+    elements.append(Spacer(1, 15))
+    
+    for room, data in df.groupby('RoomNo'):
+        elements.append(Paragraph(f"<b>ROOM: {room}</b>", styles['Heading3']))
+        counts = data.groupby('Subject Code').size().reset_index(name='Qty')
+        t_data = [['Course Code', 'Quantity']]
+        for _, r in counts.iterrows(): t_data.append([r['Subject Code'], str(r['Qty'])])
+        t_data.append(['TOTAL', str(counts['Qty'].sum())])
+        
+        t = Table(t_data, colWidths=[2*inch, 1*inch])
+        t.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black)]))
+        elements.append(t); elements.append(Spacer(1, 10))
+        
+    doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
+    return buf.getvalue()
+
+# 🟢 RESTORED SMART EXCEL GENERATOR (Appearing List)
+def gen_smart_excel(df, date, session):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+        df_sorted = df.sort_values(['Branch', 'USN'])
+        df_sorted.to_excel(writer, sheet_name='Appearing_List', index=False, columns=['RoomNo', 'SeatNo', 'USN', 'Student Name', 'Branch', 'Subject Code'])
+        summary = df.groupby(['RoomNo', 'Subject Code']).size().reset_index(name='Count')
+        summary.to_excel(writer, sheet_name='Room_Summary', index=False)
+    return buf.getvalue()
+
 def gen_form_a(df, date, session, assets, cycle_name):
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=90, leftMargin=35, rightMargin=35, bottomMargin=30)
@@ -776,9 +808,12 @@ with tab1:
     if not existing_seating.empty:
         st.success(f"✅ Seating layout already generated for this session! ({len(existing_seating)} students)")
         
-        c1, c2 = st.columns(2)
+        # 🟢 RESTORED: All 4 Download Buttons
+        c1, c2, c3, c4 = st.columns(4)
         with c1: st.download_button("📌 Download Room Posters", gen_posters(existing_seating, date_pre, sess_pre, pdf_assets), f"Posters_{date_pre}.pdf", type="primary", use_container_width=True)
-        with c2: st.download_button("📝 Download Form B (Room Attendance)", gen_form_b(existing_seating, date_pre, sess_pre, pdf_assets), f"FormB_{date_pre}.pdf", type="primary", use_container_width=True)
+        with c2: st.download_button("📝 Download Form B (Attendance)", gen_form_b(existing_seating, date_pre, sess_pre, pdf_assets), f"FormB_{date_pre}.pdf", type="primary", use_container_width=True)
+        with c3: st.download_button("📋 Download QPDS (Indent)", gen_qpds(existing_seating, date_pre, sess_pre, pdf_assets), f"QPDS_{date_pre}.pdf", type="primary", use_container_width=True)
+        with c4: st.download_button("📊 Download Appearing List", gen_smart_excel(existing_seating, date_pre, sess_pre), f"Appearing_{date_pre}.xlsx", type="primary", use_container_width=True)
         
         st.divider()
         if st.button("⚠️ Delete Seating & Re-Run Allocation", type="secondary"):
