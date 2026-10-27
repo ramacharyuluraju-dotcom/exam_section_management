@@ -6,6 +6,8 @@ import math
 import zipfile
 import string
 import random
+import json
+import qrcode
 from collections import defaultdict
 from utils import init_db
 from PIL import Image as PILImage
@@ -18,8 +20,6 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.utils import ImageReader
-from reportlab.graphics.barcode import code128
-from reportlab.graphics.shapes import Drawing
 
 # --- EXCEL UTILS ---
 from xlsxwriter.utility import xl_rowcol_to_cell, xl_col_to_name
@@ -61,6 +61,18 @@ def resize_image_for_excel(img_bytes, target_height=50):
             return out_io
     except Exception as e:
         return io.BytesIO(img_bytes)
+
+# 🟢 RESTORED ORIGINAL DUMMY ID GENERATOR (e.g. AA1, AA2)
+USED_PREFIXES = set()
+
+def generate_dummy_ids(count):
+    global USED_PREFIXES
+    while True:
+        prefix = "".join(random.choices(string.ascii_uppercase, k=2))
+        if prefix not in USED_PREFIXES:
+            USED_PREFIXES.add(prefix)
+            break
+    return [f"{prefix}{i+1}" for i in range(count)]
 
 # ==========================================
 # 2. DATA FETCHING & DB HELPERS
@@ -549,7 +561,7 @@ def create_locked_bundle(df, course_code, course_name, b_group, bundle_seq, tota
     return out.getvalue()
 
 def gen_barcode_bundle_covers(bundles, cycle_name, assets):
-    """Generates the physical printouts for the evaluation envelopes"""
+    """Generates the physical printouts using High-Density QR Codes containing all bundle metadata"""
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=50, bottomMargin=30)
     elements = []
@@ -559,14 +571,27 @@ def gen_barcode_bundle_covers(bundles, cycle_name, assets):
         elements.append(Paragraph(f"<b>EVALUATION BUNDLE COVER</b>", ParagraphStyle('T', alignment=TA_CENTER, fontSize=16)))
         elements.append(Spacer(1, 10))
         
-        # Draw Barcode (Code128)
-        barcode = code128.Code128(b['bundle_id'], barHeight=40, barWidth=1.5)
-        d = Drawing(300, 50)
-        d.add(barcode)
-        elements.append(d)
+        # 🟢 GENERATE HIGH-DENSITY QR CODE WITH EMBEDDED METADATA
+        qr_payload = {
+            "cycle": cycle_name,
+            "bundle": b['bundle_id'],
+            "course": b['course_code'],
+            "map": {s['dummy_id']: s['usn'] for s in b['scripts'] if s['status'] == 'PRESENT'}
+        }
+        
+        qr = qrcode.make(json.dumps(qr_payload))
+        qr_io = io.BytesIO()
+        qr.save(qr_io, format="PNG")
+        qr_io.seek(0)
+        
+        # Add QR Image to PDF
+        qr_img = RLImage(qr_io, width=2*inch, height=2*inch)
+        qr_img.hAlign = 'CENTER'
+        elements.append(qr_img)
         elements.append(Spacer(1, 5))
+        
         elements.append(Paragraph(f"<b>{b['bundle_id']}</b>", ParagraphStyle('BC', alignment=TA_CENTER, fontSize=14, fontName='Helvetica-Bold')))
-        elements.append(Spacer(1, 20))
+        elements.append(Spacer(1, 15))
         
         meta = [
             [f"Course Code:", f"{b['course_code']}"],
@@ -583,7 +608,7 @@ def gen_barcode_bundle_covers(bundles, cycle_name, assets):
         elements.append(t_meta)
         elements.append(Spacer(1, 20))
         
-        elements.append(Paragraph("<b>COE INSTRUCTIONS:</b> Mask the USNs and write the following sequential Dummy IDs on the physical booklets before sealing this envelope.", styles['Normal']))
+        elements.append(Paragraph("<b>COE INSTRUCTIONS:</b> Mask the USNs and write the following familiar Dummy IDs on the physical booklets before sealing this envelope.", styles['Normal']))
         elements.append(Spacer(1, 10))
         
         grid_data = [["Sl. No.", "Dummy ID to Write on Booklet", "Status"]]
@@ -603,7 +628,7 @@ def gen_barcode_bundle_covers(bundles, cycle_name, assets):
         elements.append(t_grid)
         elements.append(Spacer(1, 30))
         
-        elements.append(Paragraph("<b>EVALUATOR INSTRUCTIONS:</b> Open the Excel file matching the barcode ID above, OR scan this barcode in the Faculty Portal to enter marks.", styles['Normal']))
+        elements.append(Paragraph("<b>EVALUATOR INSTRUCTIONS:</b> Open the Excel file matching the barcode ID above, OR scan the QR Code using the Faculty Portal to instantly ingest the dummy-to-USN mapping.", styles['Normal']))
         elements.append(PageBreak())
         
     doc.build(elements, onFirstPage=get_header_drawer(assets), onLaterPages=get_header_drawer(assets))
@@ -611,12 +636,15 @@ def gen_barcode_bundle_covers(bundles, cycle_name, assets):
 
 def gen_hybrid_bundles(df_seating, date_post, sess_post, cycle_id, cycle_name, assets):
     """
-    The Ultimate Engine:
-    1. Generates Barcode IDs and Dummy sequences.
+    The Ultimate Hybrid Engine:
+    1. Reverts to AA1, AB2 Dummy generation.
     2. Packages formulated Excel sheets for immediate faculty use.
-    3. Generates Barcode PDF covers for the physical envelopes.
+    3. Generates QR Code PDF covers for the physical envelopes containing rich JSON data.
     4. Writes everything to Supabase for the upcoming Web Portal.
     """
+    global USED_PREFIXES
+    USED_PREFIXES.clear() 
+    
     zip_buf = io.BytesIO()
     key_log = []
     bundles_payload = []
@@ -644,9 +672,13 @@ def gen_hybrid_bundles(df_seating, date_post, sess_post, cycle_id, cycle_name, a
             for i in range(n_chunks):
                 chunk = group.iloc[i*20 : (i+1)*20].copy()
                 
-                # Generate unique 4-5 digit bundle barcode (e.g. B49281)
+                # 🟢 RESTORED: Generate Familiar AA1, AA2 dummy IDs
+                dummy_ids = generate_dummy_ids(len(chunk))
+                chunk['Dummy_ID'] = dummy_ids
+                
+                # The Envelope Barcode (BNDL-XXXX)
                 bndl_num = random.randint(10000, 99999)
-                bundle_id = f"B{bndl_num}"
+                bundle_id = f"BNDL-{bndl_num}"
                 
                 bundles_payload.append({
                     "bundle_id": bundle_id,
@@ -657,21 +689,17 @@ def gen_hybrid_bundles(df_seating, date_post, sess_post, cycle_id, cycle_name, a
                     "status": "CREATED"
                 })
                 
-                dummy_ids = []
                 bundle_scripts_info = []
                 
-                for dummy_seq, (_, s) in enumerate(chunk.iterrows(), start=1):
-                    dummy_id = f"{bundle_id}-{dummy_seq:02d}"
-                    dummy_ids.append(dummy_id)
-                    
+                for _, s in chunk.iterrows():
                     scripts_payload.append({
-                        "dummy_id": dummy_id,
+                        "dummy_id": s['Dummy_ID'],
                         "bundle_id": bundle_id,
                         "usn": s['USN'],
                         "status": s['Status']
                     })
                     
-                    bundle_scripts_info.append({"dummy_id": dummy_id, "status": s['Status']})
+                    bundle_scripts_info.append({"dummy_id": s['Dummy_ID'], "status": s['Status'], "usn": s['USN']})
                     
                     key_log.append({
                         'Bundle_Barcode': bundle_id, 
@@ -679,11 +707,10 @@ def gen_hybrid_bundles(df_seating, date_post, sess_post, cycle_id, cycle_name, a
                         'USN': s['USN'], 
                         'Subject': cc, 
                         'Branch_Group': b_group,
-                        'Dummy_ID': dummy_id, 
+                        'Dummy_ID': s['Dummy_ID'], 
                         'Status': s['Status']
                     })
                     
-                chunk['Dummy_ID'] = dummy_ids
                 cover_sheet_data.append({
                     "bundle_id": bundle_id,
                     "course_code": cc,
@@ -697,9 +724,9 @@ def gen_hybrid_bundles(df_seating, date_post, sess_post, cycle_id, cycle_name, a
                 excel_bytes = create_locked_bundle(chunk, cc, course_name, b_group, i+1, n_chunks, cycle_name, assets)
                 zf.writestr(f"Excel_Bundles/{cc}/{bundle_id}_{b_group}.xlsx", excel_bytes)
                 
-        # 🟢 GENERATE PDF BARCODE COVERS
+        # 🟢 GENERATE PDF QR COVERS
         pdf_bytes = gen_barcode_bundle_covers(cover_sheet_data, cycle_name, assets)
-        zf.writestr(f"Barcode_Envelope_Covers_{date_post}.pdf", pdf_bytes)
+        zf.writestr(f"QR_Envelope_Covers_{date_post}.pdf", pdf_bytes)
         
         # 🟢 GENERATE MASTER SECRET KEY
         kdf = pd.DataFrame(key_log)
@@ -841,6 +868,7 @@ with tab2:
         with st.form("absentee_form"):
             col1, col2 = st.columns(2)
             with col1:
+                # Pre-fill with existing absentees if already saved
                 existing_abs = post_seating[post_seating['Status'] == 'ABSENT']['USN'].tolist()
                 abs_text = st.text_area("Absentee USNs (comma separated)", value=",".join(existing_abs), height=80)
             with col2:
@@ -852,11 +880,14 @@ with tab2:
                 mal_list = [x.strip().upper() for x in mal_text.replace('\n', ',').split(',') if x.strip()]
                 
                 with st.spinner("Updating database..."):
+                    # Reset all to present first
                     supabase.table("exam_seating_allocations").update({"status": "PRESENT"}).eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).eq("session", sess_post).execute()
                     
+                    # Update Absentees
                     if absent_list:
                         supabase.table("exam_seating_allocations").update({"status": "ABSENT"}).eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).eq("session", sess_post).in_("usn", absent_list).execute()
                     
+                    # Update Malpractice
                     if mal_list:
                         supabase.table("exam_seating_allocations").update({"status": "MALPRACTICE"}).eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).eq("session", sess_post).in_("usn", mal_list).execute()
                         
@@ -867,7 +898,7 @@ with tab2:
         
         st.divider()
         st.subheader("Hybrid Database & Excel Bundling")
-        st.write("Generates Formulated Excel Files for your current process AND writes everything to the database for the upcoming Barcode Web App.")
+        st.write("Generates formulated Excel Files for your current process, printable QR Code covers, AND writes everything to the database for the upcoming Web App.")
         
         # Check if bundles exist
         existing_bundles = supabase.table("evaluation_bundles").select("bundle_id").eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).execute()
@@ -877,7 +908,7 @@ with tab2:
             st.warning("If you need to regenerate the Excel sheets, you must contact the DB Admin to clear the existing bundles for this session first.")
         else:
             if st.button("🚀 Generate Hybrid Bundles (ZIP)", type="primary"):
-                with st.spinner("Building Excels, Barcodes, and locking to Database..."):
+                with st.spinner("Building Excels, QR Codes, and locking to Database..."):
                     
                     df_to_bundle = post_seating.copy()
                     
@@ -893,7 +924,7 @@ with tab2:
                             
                         st.success("✅ Bundles successfully locked in database and ZIP generated!")
                         st.download_button(
-                            label="📥 Download Master ZIP (Excels, PDF Covers, Master Key)", 
+                            label="📥 Download Master ZIP (Excels, QR Covers, Master Key)", 
                             data=zip_bytes, 
                             file_name=f"Hybrid_Evaluation_Bundles_{date_post}.zip", 
                             type="primary", 
