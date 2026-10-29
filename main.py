@@ -262,14 +262,17 @@ with tabs[2]:
         st.subheader("Staff & Evaluators Provisioning")
         st.info("Upload Faculty without an ID. The system will use their 'branch' to auto-generate a sequential ID (e.g., CD2601) and a 4-digit PIN.")
         
-        # 🟢 BULLETPROOF ROLE LIST (Matched to your Excel sheet)
+        # 🟢 BULLETPROOF ROLE LIST (Exhaustive Match based on user data)
         valid_roles = [
-            'Principal', 'Vice Principal & Professor', 'Controller of Examinations (COE)',
-            'Professor & HOD', 'Professor', 'Associate Professor', 'Assistant Professor',
+            'Principal', 'Vice Principal & Professor', 'Principal & Professor', 'Principal& Professor', 
+            'Controller of Examinations (COE)', 'Professor & HOD', 'Associate Professor & HOD', 
+            'Professor & Academic Advisor', 'HOD', 'Professor', 'Associate Professor', 'Assistant Professor',
+            'Associate Professor & Resident Engineer', 'Associate Professor & Resident  Engineer',
             'Assistant Professor - G1', 'Assistant Professor - G2', 'Assistant Professor - G3',
-            'Lab Instructor', 'Librarian', 'First Division Assistant (FDA)', 
-            'Second Division Assistant (SDA)', 'Office Superintendent', 'Office Executive', 
-            'Attender', 'Faculty', 'Staff', 'Executive', 'Senior Executive', 'Exam Section'
+            'Lab Instructor', 'LAB', 'Librarian', 'First Division Assistant (FDA)', 'FDA',
+            'Second Division Assistant (SDA)', 'SDA', 'Office Superintendent', 'Office Executive', 
+            'Office Staff', 'Physical Education', 'PE', 'NCC', 'IT', 'Exam Section',
+            'Attender', 'Faculty', 'Staff', 'Executive', 'Senior Executive'
         ]
 
         col_e1, col_e2 = st.columns(2)
