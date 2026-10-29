@@ -262,6 +262,13 @@ with tabs[2]:
         st.subheader("Staff & Evaluators Provisioning")
         st.info("Upload Faculty without an ID. The system will use their 'branch' to auto-generate a sequential ID (e.g., CD2601) and a 4-digit PIN.")
         
+        # 🟢 FETCH STANDARDIZED ROLES FROM THE DATABASE
+        try:
+            roles_res = supabase.table("ref_staff_roles").select("role_name").eq("is_active", True).execute()
+            valid_roles = [r['role_name'] for r in roles_res.data] if roles_res.data else ['Faculty', 'Staff']
+        except:
+            valid_roles = ['Faculty', 'Staff']
+
         col_e1, col_e2 = st.columns(2)
         with col_e1:
             st.markdown("**Bulk Account Creation (CSV)**")
@@ -271,7 +278,6 @@ with tabs[2]:
                 df = pd.read_csv(f_fac)
                 df.columns = [str(c).strip().lower() for c in df.columns]
                 
-                # 🟢 BULLETPROOF DATA CLEANING: Fill missing columns so NO ROWS ARE DROPPED
                 if 'faculty_id' not in df.columns: df['faculty_id'] = 'MISSING'
                 if 'full_name' not in df.columns: df['full_name'] = 'Unknown'
                 if 'role' not in df.columns: df['role'] = 'Faculty'
@@ -280,10 +286,8 @@ with tabs[2]:
                 if 'is_evaluator' not in df.columns: df['is_evaluator'] = False
                 if 'email' not in df.columns: df['email'] = 'none'
                 
-                # Convert everything to safe strings
                 df['faculty_id'] = df['faculty_id'].fillna('MISSING').astype(str).str.strip().str.upper()
                 df['full_name'] = df['full_name'].fillna('Unknown').astype(str).str.strip()
-                df['role'] = df['role'].fillna('Faculty').astype(str).str.strip()
                 df['dept'] = df['dept'].fillna('GEN').astype(str).str.strip().str.upper()
                 df['branch'] = df['branch'].fillna(df['dept']).astype(str).str.strip().str.upper()
                 df['email'] = df['email'].fillna('none').astype(str).str.strip().str.lower()
@@ -293,18 +297,14 @@ with tabs[2]:
                     return str(val).strip().lower() in ['true', 'yes', '1', 'y', 't']
                 
                 df['is_evaluator'] = df['is_evaluator'].apply(parse_bool)
-                
-                # Convert DataFrame to a list of dictionaries manually
                 data = df.to_dict('records')
                 
-                # Fetch existing staff to protect their PINs and find max sequences
                 existing_staff_res = supabase.table("master_staff").select("staff_id, faculty_id, staff_pin").execute()
                 existing_fac_map = {r['faculty_id'].strip().upper(): r for r in existing_staff_res.data if r.get('faculty_id')} if existing_staff_res.data else {}
                 
                 current_year = str(datetime.date.today().year)[-2:]
                 dept_seq = defaultdict(int)
                 
-                # Pre-calculate highest sequence for each branch
                 for fid in existing_fac_map.keys():
                     if fid[:-2].isdigit() and fid[-4:-2] == current_year:
                         branch_prefix = fid[:-4]
@@ -324,21 +324,19 @@ with tabs[2]:
                     d['branch'] = branch
                     d['dept'] = dept if dept not in ['NAN', 'NONE'] else 'GEN'
                     
-                    # 🟢 GENERATE ID USING BRANCH PREFIX (e.g., CD2601)
                     raw_fid = str(d.get('faculty_id', '')).strip().upper()
                     if raw_fid in ['MISSING', 'NAN', 'NONE', '']: 
                         dept_seq[branch] += 1
                         raw_fid = f"{branch}{current_year}{dept_seq[branch]:02d}"
                         
                     d['faculty_id'] = raw_fid
-                    
-                    # Ensure email is valid for the DB or NULL
                     em = str(d.get('email', '')).strip().lower()
                     d['email'] = em if em not in ['nan', 'none', ''] else None
                     
-                    raw_role = str(d.get('role', 'Faculty')).strip().title()
-                    if raw_role.upper() in ['COE', 'BOS', 'BOE']: raw_role = raw_role.upper()
-                    d['role'] = raw_role if raw_role in ['COE', 'Principal', 'Faculty', 'Admin', 'Staff', 'BOS', 'BOE'] else 'Faculty'
+                    # 🟢 DYNAMIC ROLE VALIDATION
+                    raw_role = str(d.get('role', 'Faculty')).strip()
+                    matched_role = next((r for r in valid_roles if r.lower() == raw_role.lower()), 'Faculty')
+                    d['role'] = matched_role
                     
                     if raw_fid in existing_fac_map:
                         d['staff_id'] = existing_fac_map[raw_fid]['staff_id']
@@ -369,8 +367,12 @@ with tabs[2]:
             st.markdown("**Single Staff Entry**")
             with st.form("fac_manual"):
                 f_name = st.text_input("Full Name")
-                f_id = st.text_input("Faculty ID", help="Leave blank to auto-generate based on Branch").strip().upper()
-                f_role = st.selectbox("Role", ['COE', 'Principal', 'Faculty', 'Admin', 'Staff', 'BOS', 'BOE'], index=2)
+                f_id = st.text_input("Faculty ID", help="Leave blank to auto-generate").strip().upper()
+                
+                # 🟢 DYNAMIC DROPDOWN LIST FOR UI
+                default_idx = valid_roles.index('Assistant Professor') if 'Assistant Professor' in valid_roles else 0
+                f_role = st.selectbox("Role / Designation", valid_roles, index=default_idx)
+                
                 f_dept = st.text_input("Parent Department (e.g., CSE)").strip().upper()
                 f_branch = st.text_input("Branch Code (e.g., CD, AI, CS)").strip().upper()
                 f_eval = st.checkbox("Is Evaluator?", value=False)
@@ -381,7 +383,6 @@ with tabs[2]:
                             if not f_branch: f_branch = f_dept if f_dept else "GEN"
                             if not f_dept: f_dept = f_branch
                             
-                            # 🟢 Auto-generate single ID using Branch
                             if not f_id:
                                 existing_staff_res = supabase.table("master_staff").select("faculty_id").execute()
                                 current_year = str(datetime.date.today().year)[-2:]
