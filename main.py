@@ -262,12 +262,15 @@ with tabs[2]:
         st.subheader("Staff & Evaluators Provisioning")
         st.info("Upload Faculty without an ID. The system will use their 'branch' to auto-generate a sequential ID (e.g., CD2601) and a 4-digit PIN.")
         
-        # 🟢 FETCH STANDARDIZED ROLES FROM THE DATABASE
-        try:
-            roles_res = supabase.table("ref_staff_roles").select("role_name").eq("is_active", True).execute()
-            valid_roles = [r['role_name'] for r in roles_res.data] if roles_res.data else ['Faculty', 'Staff']
-        except:
-            valid_roles = ['Faculty', 'Staff']
+        # 🟢 BULLETPROOF ROLE LIST (Matched to your Excel sheet)
+        valid_roles = [
+            'Principal', 'Vice Principal & Professor', 'Controller of Examinations (COE)',
+            'Professor & HOD', 'Professor', 'Associate Professor', 'Assistant Professor',
+            'Assistant Professor - G1', 'Assistant Professor - G2', 'Assistant Professor - G3',
+            'Lab Instructor', 'Librarian', 'First Division Assistant (FDA)', 
+            'Second Division Assistant (SDA)', 'Office Superintendent', 'Office Executive', 
+            'Attender', 'Faculty', 'Staff', 'Executive', 'Senior Executive', 'Exam Section'
+        ]
 
         col_e1, col_e2 = st.columns(2)
         with col_e1:
@@ -333,9 +336,15 @@ with tabs[2]:
                     em = str(d.get('email', '')).strip().lower()
                     d['email'] = em if em not in ['nan', 'none', ''] else None
                     
-                    # 🟢 DYNAMIC ROLE VALIDATION
+                    # 🟢 FORCE PRECISE ROLE MATCHING
                     raw_role = str(d.get('role', 'Faculty')).strip()
-                    matched_role = next((r for r in valid_roles if r.lower() == raw_role.lower()), 'Faculty')
+                    # Try to find an exact match (ignoring case)
+                    matched_role = next((r for r in valid_roles if r.lower() == raw_role.lower()), None)
+                    
+                    # If they uploaded a role that isn't in our list at all, default them to 'Faculty'
+                    if not matched_role:
+                        matched_role = 'Faculty'
+                        
                     d['role'] = matched_role
                     
                     if raw_fid in existing_fac_map:
@@ -352,7 +361,7 @@ with tabs[2]:
                     try:
                         for i in range(0, len(final_staff_data), 500):
                             supabase.table("master_staff").upsert(final_staff_data[i:i+500], on_conflict="faculty_id").execute()
-                        st.success(f"✅ Successfully processed and uploaded **{len(final_staff_data)}** staff members with generated IDs and 4-Digit PINs!")
+                        st.success(f"✅ Successfully processed and uploaded **{len(final_staff_data)}** staff members with accurate roles!")
                         
                         with st.expander("Preview Uploaded Staff"):
                             preview_df = pd.DataFrame(final_staff_data)[['full_name', 'faculty_id', 'branch', 'staff_pin', 'role', 'dept']]
@@ -369,7 +378,7 @@ with tabs[2]:
                 f_name = st.text_input("Full Name")
                 f_id = st.text_input("Faculty ID", help="Leave blank to auto-generate").strip().upper()
                 
-                # 🟢 DYNAMIC DROPDOWN LIST FOR UI
+                # 🟢 DYNAMIC DROPDOWN USING BULLETPROOF LIST
                 default_idx = valid_roles.index('Assistant Professor') if 'Assistant Professor' in valid_roles else 0
                 f_role = st.selectbox("Role / Designation", valid_roles, index=default_idx)
                 
