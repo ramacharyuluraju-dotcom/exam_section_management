@@ -415,6 +415,7 @@ with tabs[2]:
                     else:
                         st.error("Full Name and Department/Branch are mandatory.")
 
+    # 🟢 FULLY UPGRADED USN MIGRATION TOOL
     with st_tabs[2]:
         st.subheader("Temp-to-Official USN Migration Tool")
         st.info("When VTU releases official USNs, upload a CSV mapping the Temporary Admission Numbers to the Official USNs.")
