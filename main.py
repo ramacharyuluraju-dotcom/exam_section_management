@@ -108,7 +108,9 @@ with tabs[1]:
 # ==========================================
 with tabs[2]:
     st.header("Step 2: Stakeholder Master Data")
-    st_tabs = st.tabs(["Students", "Staff & Evaluators", "🔄 USN Migration", "🛑 Status Manager"])
+    
+    # 🟢 NEW: Added the 5th Tab for PG Specializations
+    st_tabs = st.tabs(["Students", "Staff & Evaluators", "🔄 USN Migration", "🛑 Status Manager", "🎯 PG Specializations"])
     
     with st_tabs[0]:
         st.subheader("Student Database Enrollment")
@@ -121,8 +123,10 @@ with tabs[2]:
                 help="Safe mode prevents accidental overwrites of existing student records and statuses."
             )
             
-            st.info("💡 **Pro Tip:** Leave 'usn' blank for 1st Years. Use `student_category` to define: Regular, Lateral Entry, etc. Include `specialization` for PG students (e.g., HR, Finance, or GENERAL).")
-            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob, student_category, specialization)", type='csv')
+            st.info("💡 **Pro Tip:** Leave 'usn' blank for 1st Years. Use `student_category` to define: Regular, Lateral Entry, Year Back Student, College Change, or Change of Branch.")
+            
+            # Removed specialization from this primary upload to keep it clean
+            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob, student_category)", type='csv')
             
             if f_stu and st.button("Upload Students", type="primary"):
                 df = pd.read_csv(f_stu)
@@ -131,14 +135,12 @@ with tabs[2]:
                 
                 if 'usn' not in df.columns: df['usn'] = ''
                 if 'student_category' not in df.columns: df['student_category'] = 'REGULAR'
-                if 'specialization' not in df.columns: df['specialization'] = 'GENERAL'
                 
                 df['full_name'] = df['full_name'].fillna('').astype(str).str.strip()
                 df['branch_code'] = df['branch_code'].fillna('GEN').astype(str).str.strip().str.upper()
-                df['specialization'] = df['specialization'].fillna('GENERAL').astype(str).str.strip().str.upper()
                 df = df.sort_values(by=['branch_code', 'full_name'], ascending=[True, True]).reset_index(drop=True)
                 
-                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'section', 'scheme_batch', 'contact', 'email', 'dob', 'student_category', 'specialization']
+                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'section', 'scheme_batch', 'contact', 'email', 'dob', 'student_category']
                 data = clean_data_for_db(df, expected)
                 
                 with st.spinner("Analyzing full database (bypassing 1,000-row cap) and generating sequences..."):
@@ -147,7 +149,7 @@ with tabs[2]:
                         start = 0
                         step = 1000
                         while True:
-                            res = supabase.table("master_students").select("usn, full_name, branch_code, current_sem, photo_pin").range(start, start + step - 1).execute()
+                            res = supabase.table("master_students").select("usn, full_name, branch_code, current_sem, photo_pin, specialization").range(start, start + step - 1).execute()
                             if not res.data: break
                             all_existing_students.extend(res.data)
                             if len(res.data) < step: break
@@ -160,7 +162,12 @@ with tabs[2]:
                         for r in all_existing_students:
                             u = str(r.get('usn', '')).strip().upper()
                             if not u: continue
-                            existing_data[u] = r.get('photo_pin')
+                            
+                            # Preserve PIN and existing specialization during standard overwrites
+                            existing_data[u] = {
+                                'pin': r.get('photo_pin'),
+                                'spec': r.get('specialization', 'GENERAL')
+                            }
                             
                             f_name = str(r.get('full_name', '')).strip().upper()
                             b_code = str(r.get('branch_code', '')).strip().upper()
@@ -186,7 +193,6 @@ with tabs[2]:
                             
                             d['full_name'] = full_name_clean
                             d['branch_code'] = branch
-                            d['specialization'] = str(d.get('specialization', 'GENERAL')).strip().upper()
                             
                             if raw_usn in ['', 'NAN', 'NONE', 'NULL']:
                                 identity_key = (full_name_clean, branch, sem_clean)
@@ -222,10 +228,13 @@ with tabs[2]:
                         existing_usns_set = set(existing_data.keys())
                         
                         for d in data:
-                            if d['usn'] in existing_data and existing_data[d['usn']]:
-                                d['photo_pin'] = existing_data[d['usn']] 
+                            if d['usn'] in existing_data:
+                                d['photo_pin'] = existing_data[d['usn']]['pin']
+                                # Preserve their existing specialization so it doesn't get wiped out during a standard overwrite
+                                d['specialization'] = existing_data[d['usn']]['spec'] 
                             else:
-                                d['photo_pin'] = str(random.randint(1000, 9999)) 
+                                d['photo_pin'] = str(random.randint(1000, 9999))
+                                d['specialization'] = 'GENERAL'
                         
                         new_records = [d for d in data if d['usn'] not in existing_usns_set]
                         existing_records = [d for d in data if d['usn'] in existing_usns_set]
@@ -246,7 +255,7 @@ with tabs[2]:
                         elif "Overwrite Mode" in upload_mode:
                             for i in range(0, len(data), 500):
                                 supabase.table("master_students").upsert(data[i:i+500]).execute()
-                            st.success(f"⚠️ Overwrite Complete! {len(data)} students processed. Existing PINs were protected.")
+                            st.success(f"⚠️ Overwrite Complete! {len(data)} students processed. Existing PINs and Specializations were protected.")
                             
                     except Exception as e:
                         st.error(f"Database Error: {e}")
@@ -415,6 +424,174 @@ with tabs[2]:
                     else:
                         st.error("Full Name and Department/Branch are mandatory.")
 
+    with st_tabs[2]:
+        st.subheader("Temp-to-Official USN Migration Tool")
+        st.info("When VTU releases official USNs, upload a CSV mapping the Temporary Admission Numbers to the Official USNs.")
+        
+        with st.expander("View CSV Template Guide"):
+            st.code("temp_usn,official_usn\nTMP-CSE-001,1AM26CS001\nTMP-CSE-002,1AM26CS002")
+            
+        f_mig = st.file_uploader("Upload Migration CSV (temp_usn, official_usn)", type='csv')
+        
+        if f_mig and st.button("🚀 Execute USN Migration", type="primary"):
+            df_mig = pd.read_csv(f_mig)
+            df_mig.columns = [str(c).strip().lower() for c in df_mig.columns]
+            
+            if 'temp_usn' not in df_mig.columns or 'official_usn' not in df_mig.columns:
+                st.error("❌ CSV must contain exact headers: 'temp_usn' and 'official_usn'.")
+            else:
+                with st.spinner("Migrating student records across the database..."):
+                    success_count = 0
+                    error_count = 0
+                    error_logs = []
+                    migrations = df_mig.to_dict('records')
+                    progress_bar = st.progress(0)
+                    
+                    for idx, row in enumerate(migrations):
+                        old_usn = str(row['temp_usn']).strip().upper()
+                        new_usn = str(row['official_usn']).strip().upper()
+                        
+                        try:
+                            old_stu_res = supabase.table("master_students").select("*").eq("usn", old_usn).execute()
+                            if not old_stu_res.data:
+                                error_count += 1
+                                error_logs.append(f"{old_usn}: Not found.")
+                                continue
+                                
+                            new_stu_data = old_stu_res.data[0].copy()
+                            new_stu_data['usn'] = new_usn
+                            new_stu_data['admission_number'] = old_usn
+                            
+                            supabase.table("master_students").upsert(new_stu_data).execute()
+                            
+                            supabase.table("course_registrations").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            supabase.table("student_results").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            
+                            try: supabase.table("course_registration_online").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            except: pass
+                            
+                            try: supabase.table("cash_receipts").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            except: pass
+                            
+                            try: supabase.table("marks_audit_log").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            except: pass
+                                
+                            supabase.table("master_students").delete().eq("usn", old_usn).execute()
+                            success_count += 1
+                            
+                        except Exception as e:
+                            error_count += 1
+                            error_logs.append(f"{old_usn} -> {new_usn}: {str(e)}")
+                            
+                        progress_bar.progress((idx + 1) / len(migrations))
+                        
+                    if success_count > 0:
+                        st.success(f"✅ Successfully migrated {success_count} students to their official USNs!")
+                    if error_count > 0:
+                        st.error(f"⚠️ Failed to migrate {error_count} records.")
+                        with st.expander("View Error Logs"):
+                            for err in error_logs: st.write(err)
+
+    with st_tabs[3]:
+        st.subheader("Student Status Management")
+        st.warning("Marking a student as 'DETAINED' or 'DISCONTINUED' will freeze their profile and prevent them from appearing in future registrations, OMR generation, and seating allotments.")
+        
+        col_m1, col_m2 = st.columns(2)
+        
+        with col_m1:
+            st.markdown("**Single Student Update**")
+            search_usn = st.text_input("Enter USN").strip().upper()
+            
+            if search_usn:
+                stu_res = supabase.table("master_students").select("usn, full_name, status").eq("usn", search_usn).execute()
+                
+                if stu_res.data:
+                    student = stu_res.data[0]
+                    raw_status = student.get('status')
+                    current_status = str(raw_status).strip().upper() if raw_status else "ACTIVE"
+                    
+                    if current_status not in ["ACTIVE", "DETAINED", "DISCONTINUED"]:
+                        current_status = "ACTIVE"
+                        
+                    st.info(f"👤 **{student['full_name']}** | Current Status: **{current_status}**")
+                    
+                    with st.form("status_update_form"):
+                        valid_options = ["ACTIVE", "DETAINED", "DISCONTINUED"]
+                        new_status = st.selectbox("Update Status To:", valid_options, index=valid_options.index(current_status))
+                        
+                        if st.form_submit_button("Apply Status Change"):
+                            supabase.table("master_students").update({"status": new_status}).eq("usn", search_usn).execute()
+                            st.success(f"Status for {search_usn} updated to {new_status}!")
+                else:
+                    st.error("Student not found in database.")
+
+        with col_m2:
+            st.markdown("**Bulk Status Update**")
+            st.caption("Upload a CSV to process Detained lists quickly.")
+            with st.expander("View CSV Template Guide"):
+                st.code("usn,status\n1AM24CS001,DETAINED\n1AM24AI015,DISCONTINUED")
+                
+            f_stat = st.file_uploader("Upload Status CSV (usn, status)", type='csv')
+            if f_stat and st.button("Execute Bulk Update"):
+                df_stat = pd.read_csv(f_stat)
+                df_stat.columns = [str(c).strip().lower() for c in df_stat.columns]
+                
+                if 'usn' not in df_stat.columns or 'status' not in df_stat.columns:
+                    st.error("❌ CSV must contain exact headers: 'usn' and 'status'.")
+                else:
+                    with st.spinner("Updating statuses..."):
+                        updates = df_stat.to_dict('records')
+                        for row in updates:
+                            clean_usn = str(row['usn']).strip().upper()
+                            clean_status = str(row['status']).strip().upper()
+                            if clean_status in ["ACTIVE", "DETAINED", "DISCONTINUED"]:
+                                supabase.table("master_students").update({"status": clean_status}).eq("usn", clean_usn).execute()
+                    st.success(f"✅ Successfully processed {len(updates)} status updates.")
+
+    # 🟢 NEW: 5TH TAB - PG SPECIALIZATIONS
+    with st_tabs[4]:
+        st.subheader("🎯 PG Specialization Assignment")
+        st.info("When PG students (MBA/MCA) enter their 3rd Semester, upload a CSV here to instantly assign their chosen Specialization Track (e.g., HR, FINANCE).")
+        
+        with st.expander("View Specialization CSV Template"):
+            st.code("usn,specialization\n1AM25MBA01,FINANCE\n1AM25MBA02,HR\n1AM25MCA05,DATA_SCIENCE")
+            
+        f_spec = st.file_uploader("Upload Track Mapping CSV (usn, specialization)", type='csv')
+        
+        if f_spec and st.button("🚀 Apply Specializations to Profiles", type="primary"):
+            df_spec = pd.read_csv(f_spec)
+            df_spec.columns = [str(c).strip().lower() for c in df_spec.columns]
+            
+            if 'usn' not in df_spec.columns or 'specialization' not in df_spec.columns:
+                st.error("❌ CSV must contain exactly these two headers: 'usn' and 'specialization'.")
+            else:
+                with st.spinner("Applying specialization tracks to student profiles..."):
+                    success_count = 0
+                    missing_count = 0
+                    updates = df_spec.to_dict('records')
+                    progress_bar = st.progress(0)
+                    
+                    for idx, row in enumerate(updates):
+                        target_usn = str(row['usn']).strip().upper()
+                        new_track = str(row['specialization']).strip().upper()
+                        
+                        if new_track in ['NAN', 'NONE', 'NULL', '']:
+                            new_track = 'GENERAL'
+                            
+                        # Quick check if student exists before updating
+                        check = supabase.table("master_students").select("usn").eq("usn", target_usn).execute()
+                        if check.data:
+                            supabase.table("master_students").update({"specialization": new_track}).eq("usn", target_usn).execute()
+                            success_count += 1
+                        else:
+                            missing_count += 1
+                            
+                        progress_bar.progress((idx + 1) / len(updates))
+                        
+                    st.success(f"✅ Successfully updated Specialization Tracks for {success_count} students!")
+                    if missing_count > 0:
+                        st.warning(f"⚠️ {missing_count} USNs in the CSV were not found in the database and were ignored.")
+                        
     # 🟢 FULLY UPGRADED USN MIGRATION TOOL
     with st_tabs[2]:
         st.subheader("Temp-to-Official USN Migration Tool")
