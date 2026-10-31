@@ -85,7 +85,6 @@ with tabs[1]:
             expected = ['room_number', 'capacity', 'block_name']
             data = clean_data_for_db(df, expected)
             
-            # Deduplicate by room number to prevent Postgres 21000 Error
             unique_rooms = {str(d.get('room_number')).strip(): d for d in data if d.get('room_number')}
             final_data = list(unique_rooms.values())
             
@@ -122,24 +121,24 @@ with tabs[2]:
                 help="Safe mode prevents accidental overwrites of existing student records and statuses."
             )
             
-            st.info("💡 **Pro Tip:** Leave 'usn' blank for 1st Years. Use `student_category` to define: Regular, Lateral Entry, Year Back Student, College Change, or Change of Branch.")
-            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob, student_category)", type='csv')
+            st.info("💡 **Pro Tip:** Leave 'usn' blank for 1st Years. Use `student_category` to define: Regular, Lateral Entry, etc. Include `specialization` for PG students (e.g., HR, Finance, or GENERAL).")
+            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob, student_category, specialization)", type='csv')
             
             if f_stu and st.button("Upload Students", type="primary"):
                 df = pd.read_csv(f_stu)
                 df.columns = [str(c).strip().lower() for c in df.columns]
                 df.rename(columns={'email_id': 'email', 'phone': 'contact', 'category': 'student_category'}, inplace=True)
                 
-                if 'usn' not in df.columns:
-                    df['usn'] = ''
-                if 'student_category' not in df.columns:
-                    df['student_category'] = 'REGULAR'
+                if 'usn' not in df.columns: df['usn'] = ''
+                if 'student_category' not in df.columns: df['student_category'] = 'REGULAR'
+                if 'specialization' not in df.columns: df['specialization'] = 'GENERAL'
                 
                 df['full_name'] = df['full_name'].fillna('').astype(str).str.strip()
                 df['branch_code'] = df['branch_code'].fillna('GEN').astype(str).str.strip().str.upper()
+                df['specialization'] = df['specialization'].fillna('GENERAL').astype(str).str.strip().str.upper()
                 df = df.sort_values(by=['branch_code', 'full_name'], ascending=[True, True]).reset_index(drop=True)
                 
-                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'section', 'scheme_batch', 'contact', 'email', 'dob', 'student_category']
+                expected = ['usn', 'full_name', 'branch_code', 'current_sem', 'section', 'scheme_batch', 'contact', 'email', 'dob', 'student_category', 'specialization']
                 data = clean_data_for_db(df, expected)
                 
                 with st.spinner("Analyzing full database (bypassing 1,000-row cap) and generating sequences..."):
@@ -149,11 +148,9 @@ with tabs[2]:
                         step = 1000
                         while True:
                             res = supabase.table("master_students").select("usn, full_name, branch_code, current_sem, photo_pin").range(start, start + step - 1).execute()
-                            if not res.data:
-                                break
+                            if not res.data: break
                             all_existing_students.extend(res.data)
-                            if len(res.data) < step:
-                                break
+                            if len(res.data) < step: break
                             start += step
                         
                         branch_max_seq = defaultdict(int)
@@ -162,8 +159,7 @@ with tabs[2]:
                         
                         for r in all_existing_students:
                             u = str(r.get('usn', '')).strip().upper()
-                            if not u:
-                                continue
+                            if not u: continue
                             existing_data[u] = r.get('photo_pin')
                             
                             f_name = str(r.get('full_name', '')).strip().upper()
@@ -180,8 +176,7 @@ with tabs[2]:
                                         br = '-'.join(parts[1:-1])
                                         if seq > branch_max_seq[br]:
                                             branch_max_seq[br] = seq
-                                    except ValueError:
-                                        pass
+                                    except ValueError: pass
                                 
                         for d in data:
                             raw_usn = str(d.get('usn') or '').strip().upper()
@@ -191,6 +186,7 @@ with tabs[2]:
                             
                             d['full_name'] = full_name_clean
                             d['branch_code'] = branch
+                            d['specialization'] = str(d.get('specialization', 'GENERAL')).strip().upper()
                             
                             if raw_usn in ['', 'NAN', 'NONE', 'NULL']:
                                 identity_key = (full_name_clean, branch, sem_clean)
@@ -262,7 +258,6 @@ with tabs[2]:
         st.subheader("Staff & Evaluators Provisioning")
         st.info("Upload Faculty without an ID. The system will use their 'branch' to auto-generate a sequential ID (e.g., CD2601) and a 4-digit PIN.")
         
-        # 🟢 BULLETPROOF ROLE LIST (Exhaustive Match based on user data)
         valid_roles = [
             'Principal', 'Vice Principal & Professor', 'Principal & Professor', 'Principal& Professor', 
             'Controller of Examinations (COE)', 'Professor & HOD', 'Associate Professor & HOD', 
@@ -339,15 +334,9 @@ with tabs[2]:
                     em = str(d.get('email', '')).strip().lower()
                     d['email'] = em if em not in ['nan', 'none', ''] else None
                     
-                    # 🟢 FORCE PRECISE ROLE MATCHING
                     raw_role = str(d.get('role', 'Faculty')).strip()
-                    # Try to find an exact match (ignoring case)
                     matched_role = next((r for r in valid_roles if r.lower() == raw_role.lower()), None)
-                    
-                    # If they uploaded a role that isn't in our list at all, default them to 'Faculty'
-                    if not matched_role:
-                        matched_role = 'Faculty'
-                        
+                    if not matched_role: matched_role = 'Faculty'
                     d['role'] = matched_role
                     
                     if raw_fid in existing_fac_map:
@@ -365,11 +354,6 @@ with tabs[2]:
                         for i in range(0, len(final_staff_data), 500):
                             supabase.table("master_staff").upsert(final_staff_data[i:i+500], on_conflict="faculty_id").execute()
                         st.success(f"✅ Successfully processed and uploaded **{len(final_staff_data)}** staff members with accurate roles!")
-                        
-                        with st.expander("Preview Uploaded Staff"):
-                            preview_df = pd.DataFrame(final_staff_data)[['full_name', 'faculty_id', 'branch', 'staff_pin', 'role', 'dept']]
-                            st.dataframe(preview_df, use_container_width=True, hide_index=True)
-                            
                     except Exception as e: 
                         st.error(f"Upload Error: {e}")
                 else:
@@ -381,7 +365,6 @@ with tabs[2]:
                 f_name = st.text_input("Full Name")
                 f_id = st.text_input("Faculty ID", help="Leave blank to auto-generate").strip().upper()
                 
-                # 🟢 DYNAMIC DROPDOWN USING BULLETPROOF LIST
                 default_idx = valid_roles.index('Assistant Professor') if 'Assistant Professor' in valid_roles else 0
                 f_role = st.selectbox("Role / Designation", valid_roles, index=default_idx)
                 
@@ -432,7 +415,6 @@ with tabs[2]:
                     else:
                         st.error("Full Name and Department/Branch are mandatory.")
 
-    # 🟢 FULLY UPGRADED USN MIGRATION TOOL
     with st_tabs[2]:
         st.subheader("Temp-to-Official USN Migration Tool")
         st.info("When VTU releases official USNs, upload a CSV mapping the Temporary Admission Numbers to the Official USNs.")
@@ -473,22 +455,16 @@ with tabs[2]:
                             
                             supabase.table("master_students").upsert(new_stu_data).execute()
                             
-                            # STANDARD COE MIGRATIONS
                             supabase.table("course_registrations").update({"usn": new_usn}).eq("usn", old_usn).execute()
                             supabase.table("student_results").update({"usn": new_usn}).eq("usn", old_usn).execute()
                             
-                            # STAGING & FINANCE MIGRATIONS (Fixes BRS Portals)
-                            try:
-                                supabase.table("course_registration_online").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            try: supabase.table("course_registration_online").update({"usn": new_usn}).eq("usn", old_usn).execute()
                             except: pass
                             
-                            try:
-                                supabase.table("cash_receipts").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            try: supabase.table("cash_receipts").update({"usn": new_usn}).eq("usn", old_usn).execute()
                             except: pass
                             
-                            # AUDIT LOG MIGRATIONS
-                            try:
-                                supabase.table("marks_audit_log").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            try: supabase.table("marks_audit_log").update({"usn": new_usn}).eq("usn", old_usn).execute()
                             except: pass
                                 
                             supabase.table("master_students").delete().eq("usn", old_usn).execute()
@@ -610,11 +586,13 @@ with tabs[3]:
             *   **`LATERAL`** (Additional Math for diploma entry students)
             *   **`PE`** (Professional Electives)
             *   **`OE`** (Open Electives)
-            *   **`OMR`** (OMR-based evaluations, like Kannada/Constitution)
+            *   **`OMR`** (OMR-based evaluations)
+            
+            **Specialization:** Include a `specialization` column for PG tracks (e.g., HR, Finance). Leave as 'GENERAL' if it applies to everyone.
             """)
             
             f_crs = st.file_uploader(
-                "Upload Scheme CSV (course_code, title, branch_code, semester_id, credits, max_cie, max_see, total_marks, course_type, scheme_batch, offering_department)", 
+                "Upload Scheme CSV (course_code, title, branch_code, semester_id, credits, max_cie, max_see, total_marks, course_type, scheme_batch, offering_department, specialization)", 
                 type='csv'
             )
             if f_crs and st.button("Upload Scheme"):
@@ -631,11 +609,15 @@ with tabs[3]:
                     
                 if 'offering_department' in df.columns:
                     df['offering_department'] = df['offering_department'].fillna('').astype(str).str.strip().str.upper()
+                    
+                if 'specialization' not in df.columns:
+                    df['specialization'] = 'GENERAL'
+                df['specialization'] = df['specialization'].fillna('GENERAL').astype(str).str.strip().str.upper()
                 
                 expected = [
                     'course_code', 'title', 'branch_code', 'semester_id', 
                     'credits', 'max_cie', 'max_see', 'total_marks', 
-                    'course_type', 'scheme_batch', 'offering_department'
+                    'course_type', 'scheme_batch', 'offering_department', 'specialization'
                 ]
                 data = clean_data_for_db(df, expected)
                 
@@ -655,18 +637,20 @@ with tabs[3]:
                 cc = col1.text_input("Course Code")
                 ct = col2.text_input("Title")
                 
-                cbc = col1.text_input("Branch Code(s)", help="Use comma separation for shared subjects (e.g., 'CS, IS, AI'). Use 'ALL' for universal subjects.")
-                c_off_dept = col2.text_input("Offering Department", help="Department teaching this course (e.g., 'CS', 'MAT', 'PHY', 'ME').")
+                cbc = col1.text_input("Branch Code(s)", help="Use comma separation for shared subjects (e.g., 'CS, IS, AI').")
+                c_off_dept = col2.text_input("Offering Department", help="e.g., 'CS', 'MAT', 'PHY'.")
                 
                 cs = col1.number_input("Semester ID", 1, 10, 1)
                 ccr = col2.number_input("Credits", 0, 5, 4)
                 
                 ctype = col1.selectbox("Course Type", ["CORE", "LAB", "PROJECT", "NON CREDIT", "LATERAL", "PE", "OE", "OMR"])
-                c_scheme = col2.number_input("Scheme Batch (Year)", 20, 99, 25, help="Enter the 2-digit batch year this syllabus applies to (e.g., 25, 26).")
+                c_spec = col2.text_input("Specialization Track", value="GENERAL", help="e.g., HR, Finance. Leave as GENERAL if applicable to all.").strip().upper()
                 
-                m_cie = col1.number_input("Max CIE Marks", 0, 100, 50)
-                m_see = col2.number_input("Max SEE Marks", 0, 100, 50)
-                t_marks = col1.number_input("Total Marks", 0, 200, 100)
+                c_scheme = col1.number_input("Scheme Batch (Year)", 20, 99, 25)
+                m_cie = col2.number_input("Max CIE Marks", 0, 100, 50)
+                
+                m_see = col1.number_input("Max SEE Marks", 0, 100, 50)
+                t_marks = col2.number_input("Total Marks", 0, 200, 100)
                 
                 if st.form_submit_button("💾 Add/Update Course"):
                     try:
@@ -684,7 +668,8 @@ with tabs[3]:
                             "max_see": m_see,
                             "total_marks": t_marks,
                             "course_type": ctype, 
-                            "scheme_batch": c_scheme
+                            "scheme_batch": c_scheme,
+                            "specialization": c_spec if c_spec else "GENERAL"
                         }
                         supabase.table("master_courses").upsert(payload).execute()
                         st.success("✅ Course saved.")
@@ -711,7 +696,7 @@ with tabs[3]:
                         cols = [
                             'course_code', 'title', 'branch_code', 'offering_department',
                             'semester_id', 'credits', 'course_type', 'scheme_batch', 
-                            'max_cie', 'max_see', 'total_marks'
+                            'specialization', 'max_cie', 'max_see', 'total_marks'
                         ]
                         df_export = df_export[[c for c in cols if c in df_export.columns]]
                         csv = df_export.to_csv(index=False).encode('utf-8')
