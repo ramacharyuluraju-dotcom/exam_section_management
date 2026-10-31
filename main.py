@@ -108,8 +108,6 @@ with tabs[1]:
 # ==========================================
 with tabs[2]:
     st.header("Step 2: Stakeholder Master Data")
-    
-    # 🟢 NEW: Added the 5th Tab for PG Specializations
     st_tabs = st.tabs(["Students", "Staff & Evaluators", "🔄 USN Migration", "🛑 Status Manager", "🎯 PG Specializations"])
     
     with st_tabs[0]:
@@ -124,11 +122,9 @@ with tabs[2]:
             )
             
             st.info("💡 **Pro Tip:** Leave 'usn' blank for 1st Years. Use `student_category` to define: Regular, Lateral Entry, Year Back Student, College Change, or Change of Branch.")
+            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob, student_category)", type='csv', key="main_stu_upload")
             
-            # Removed specialization from this primary upload to keep it clean
-            f_stu = st.file_uploader("Upload CSV (usn, full_name, branch_code, current_sem, section, scheme_batch, contact, email, dob, student_category)", type='csv')
-            
-            if f_stu and st.button("Upload Students", type="primary"):
+            if f_stu and st.button("Upload Students", type="primary", key="main_stu_upload_btn"):
                 df = pd.read_csv(f_stu)
                 df.columns = [str(c).strip().lower() for c in df.columns]
                 df.rename(columns={'email_id': 'email', 'phone': 'contact', 'category': 'student_category'}, inplace=True)
@@ -163,7 +159,6 @@ with tabs[2]:
                             u = str(r.get('usn', '')).strip().upper()
                             if not u: continue
                             
-                            # Preserve PIN and existing specialization during standard overwrites
                             existing_data[u] = {
                                 'pin': r.get('photo_pin'),
                                 'spec': r.get('specialization', 'GENERAL')
@@ -230,7 +225,6 @@ with tabs[2]:
                         for d in data:
                             if d['usn'] in existing_data:
                                 d['photo_pin'] = existing_data[d['usn']]['pin']
-                                # Preserve their existing specialization so it doesn't get wiped out during a standard overwrite
                                 d['specialization'] = existing_data[d['usn']]['spec'] 
                             else:
                                 d['photo_pin'] = str(random.randint(1000, 9999))
@@ -282,9 +276,9 @@ with tabs[2]:
         col_e1, col_e2 = st.columns(2)
         with col_e1:
             st.markdown("**Bulk Account Creation (CSV)**")
-            f_fac = st.file_uploader("Upload CSV (full_name, role, dept, branch, is_evaluator)", type='csv')
+            f_fac = st.file_uploader("Upload CSV (full_name, role, dept, branch, is_evaluator)", type='csv', key="main_fac_upload")
             
-            if f_fac and st.button("Upload Staff & Generate PINs", type="primary"):
+            if f_fac and st.button("Upload Staff & Generate PINs", type="primary", key="main_fac_btn"):
                 df = pd.read_csv(f_fac)
                 df.columns = [str(c).strip().lower() for c in df.columns]
                 
@@ -370,7 +364,7 @@ with tabs[2]:
                     
         with col_e2:
             st.markdown("**Single Staff Entry**")
-            with st.form("fac_manual"):
+            with st.form("fac_manual_form"):
                 f_name = st.text_input("Full Name")
                 f_id = st.text_input("Faculty ID", help="Leave blank to auto-generate").strip().upper()
                 
@@ -431,9 +425,9 @@ with tabs[2]:
         with st.expander("View CSV Template Guide"):
             st.code("temp_usn,official_usn\nTMP-CSE-001,1AM26CS001\nTMP-CSE-002,1AM26CS002")
             
-        f_mig = st.file_uploader("Upload Migration CSV (temp_usn, official_usn)", type='csv')
+        f_mig = st.file_uploader("Upload Migration CSV (temp_usn, official_usn)", type='csv', key="main_mig_upload")
         
-        if f_mig and st.button("🚀 Execute USN Migration", type="primary"):
+        if f_mig and st.button("🚀 Execute USN Migration", type="primary", key="main_mig_btn"):
             df_mig = pd.read_csv(f_mig)
             df_mig.columns = [str(c).strip().lower() for c in df_mig.columns]
             
@@ -500,7 +494,7 @@ with tabs[2]:
         
         with col_m1:
             st.markdown("**Single Student Update**")
-            search_usn = st.text_input("Enter USN").strip().upper()
+            search_usn = st.text_input("Enter USN", key="main_stat_usn").strip().upper()
             
             if search_usn:
                 stu_res = supabase.table("master_students").select("usn, full_name, status").eq("usn", search_usn).execute()
@@ -515,7 +509,7 @@ with tabs[2]:
                         
                     st.info(f"👤 **{student['full_name']}** | Current Status: **{current_status}**")
                     
-                    with st.form("status_update_form"):
+                    with st.form("status_update_form_main"):
                         valid_options = ["ACTIVE", "DETAINED", "DISCONTINUED"]
                         new_status = st.selectbox("Update Status To:", valid_options, index=valid_options.index(current_status))
                         
@@ -531,8 +525,8 @@ with tabs[2]:
             with st.expander("View CSV Template Guide"):
                 st.code("usn,status\n1AM24CS001,DETAINED\n1AM24AI015,DISCONTINUED")
                 
-            f_stat = st.file_uploader("Upload Status CSV (usn, status)", type='csv')
-            if f_stat and st.button("Execute Bulk Update"):
+            f_stat = st.file_uploader("Upload Status CSV (usn, status)", type='csv', key="main_stat_upload")
+            if f_stat and st.button("Execute Bulk Update", key="main_stat_btn"):
                 df_stat = pd.read_csv(f_stat)
                 df_stat.columns = [str(c).strip().lower() for c in df_stat.columns]
                 
@@ -548,7 +542,6 @@ with tabs[2]:
                                 supabase.table("master_students").update({"status": clean_status}).eq("usn", clean_usn).execute()
                     st.success(f"✅ Successfully processed {len(updates)} status updates.")
 
-    # 🟢 NEW: 5TH TAB - PG SPECIALIZATIONS
     with st_tabs[4]:
         st.subheader("🎯 PG Specialization Assignment")
         st.info("When PG students (MBA/MCA) enter their 3rd Semester, upload a CSV here to instantly assign their chosen Specialization Track (e.g., HR, FINANCE).")
@@ -556,9 +549,9 @@ with tabs[2]:
         with st.expander("View Specialization CSV Template"):
             st.code("usn,specialization\n1AM25MBA01,FINANCE\n1AM25MBA02,HR\n1AM25MCA05,DATA_SCIENCE")
             
-        f_spec = st.file_uploader("Upload Track Mapping CSV (usn, specialization)", type='csv')
+        f_spec = st.file_uploader("Upload Track Mapping CSV (usn, specialization)", type='csv', key="main_spec_upload")
         
-        if f_spec and st.button("🚀 Apply Specializations to Profiles", type="primary"):
+        if f_spec and st.button("🚀 Apply Specializations to Profiles", type="primary", key="main_spec_btn"):
             df_spec = pd.read_csv(f_spec)
             df_spec.columns = [str(c).strip().lower() for c in df_spec.columns]
             
@@ -578,7 +571,6 @@ with tabs[2]:
                         if new_track in ['NAN', 'NONE', 'NULL', '']:
                             new_track = 'GENERAL'
                             
-                        # Quick check if student exists before updating
                         check = supabase.table("master_students").select("usn").eq("usn", target_usn).execute()
                         if check.data:
                             supabase.table("master_students").update({"specialization": new_track}).eq("usn", target_usn).execute()
@@ -591,131 +583,6 @@ with tabs[2]:
                     st.success(f"✅ Successfully updated Specialization Tracks for {success_count} students!")
                     if missing_count > 0:
                         st.warning(f"⚠️ {missing_count} USNs in the CSV were not found in the database and were ignored.")
-                        
-    # 🟢 FULLY UPGRADED USN MIGRATION TOOL
-    with st_tabs[2]:
-        st.subheader("Temp-to-Official USN Migration Tool")
-        st.info("When VTU releases official USNs, upload a CSV mapping the Temporary Admission Numbers to the Official USNs.")
-        
-        with st.expander("View CSV Template Guide"):
-            st.code("temp_usn,official_usn\nTMP-CSE-001,1AM26CS001\nTMP-CSE-002,1AM26CS002")
-            
-        f_mig = st.file_uploader("Upload Migration CSV (temp_usn, official_usn)", type='csv')
-        
-        if f_mig and st.button("🚀 Execute USN Migration", type="primary"):
-            df_mig = pd.read_csv(f_mig)
-            df_mig.columns = [str(c).strip().lower() for c in df_mig.columns]
-            
-            if 'temp_usn' not in df_mig.columns or 'official_usn' not in df_mig.columns:
-                st.error("❌ CSV must contain exact headers: 'temp_usn' and 'official_usn'.")
-            else:
-                with st.spinner("Migrating student records across the database..."):
-                    success_count = 0
-                    error_count = 0
-                    error_logs = []
-                    migrations = df_mig.to_dict('records')
-                    progress_bar = st.progress(0)
-                    
-                    for idx, row in enumerate(migrations):
-                        old_usn = str(row['temp_usn']).strip().upper()
-                        new_usn = str(row['official_usn']).strip().upper()
-                        
-                        try:
-                            old_stu_res = supabase.table("master_students").select("*").eq("usn", old_usn).execute()
-                            if not old_stu_res.data:
-                                error_count += 1
-                                error_logs.append(f"{old_usn}: Not found.")
-                                continue
-                                
-                            new_stu_data = old_stu_res.data[0].copy()
-                            new_stu_data['usn'] = new_usn
-                            new_stu_data['admission_number'] = old_usn
-                            
-                            supabase.table("master_students").upsert(new_stu_data).execute()
-                            
-                            supabase.table("course_registrations").update({"usn": new_usn}).eq("usn", old_usn).execute()
-                            supabase.table("student_results").update({"usn": new_usn}).eq("usn", old_usn).execute()
-                            
-                            try: supabase.table("course_registration_online").update({"usn": new_usn}).eq("usn", old_usn).execute()
-                            except: pass
-                            
-                            try: supabase.table("cash_receipts").update({"usn": new_usn}).eq("usn", old_usn).execute()
-                            except: pass
-                            
-                            try: supabase.table("marks_audit_log").update({"usn": new_usn}).eq("usn", old_usn).execute()
-                            except: pass
-                                
-                            supabase.table("master_students").delete().eq("usn", old_usn).execute()
-                            success_count += 1
-                            
-                        except Exception as e:
-                            error_count += 1
-                            error_logs.append(f"{old_usn} -> {new_usn}: {str(e)}")
-                            
-                        progress_bar.progress((idx + 1) / len(migrations))
-                        
-                    if success_count > 0:
-                        st.success(f"✅ Successfully migrated {success_count} students to their official USNs!")
-                    if error_count > 0:
-                        st.error(f"⚠️ Failed to migrate {error_count} records.")
-                        with st.expander("View Error Logs"):
-                            for err in error_logs: st.write(err)
-
-    with st_tabs[3]:
-        st.subheader("Student Status Management")
-        st.warning("Marking a student as 'DETAINED' or 'DISCONTINUED' will freeze their profile and prevent them from appearing in future registrations, OMR generation, and seating allotments.")
-        
-        col_m1, col_m2 = st.columns(2)
-        
-        with col_m1:
-            st.markdown("**Single Student Update**")
-            search_usn = st.text_input("Enter USN").strip().upper()
-            
-            if search_usn:
-                stu_res = supabase.table("master_students").select("usn, full_name, status").eq("usn", search_usn).execute()
-                
-                if stu_res.data:
-                    student = stu_res.data[0]
-                    raw_status = student.get('status')
-                    current_status = str(raw_status).strip().upper() if raw_status else "ACTIVE"
-                    
-                    if current_status not in ["ACTIVE", "DETAINED", "DISCONTINUED"]:
-                        current_status = "ACTIVE"
-                        
-                    st.info(f"👤 **{student['full_name']}** | Current Status: **{current_status}**")
-                    
-                    with st.form("status_update_form"):
-                        valid_options = ["ACTIVE", "DETAINED", "DISCONTINUED"]
-                        new_status = st.selectbox("Update Status To:", valid_options, index=valid_options.index(current_status))
-                        
-                        if st.form_submit_button("Apply Status Change"):
-                            supabase.table("master_students").update({"status": new_status}).eq("usn", search_usn).execute()
-                            st.success(f"Status for {search_usn} updated to {new_status}!")
-                else:
-                    st.error("Student not found in database.")
-
-        with col_m2:
-            st.markdown("**Bulk Status Update**")
-            st.caption("Upload a CSV to process Detained lists quickly.")
-            with st.expander("View CSV Template Guide"):
-                st.code("usn,status\n1AM24CS001,DETAINED\n1AM24AI015,DISCONTINUED")
-                
-            f_stat = st.file_uploader("Upload Status CSV (usn, status)", type='csv')
-            if f_stat and st.button("Execute Bulk Update"):
-                df_stat = pd.read_csv(f_stat)
-                df_stat.columns = [str(c).strip().lower() for c in df_stat.columns]
-                
-                if 'usn' not in df_stat.columns or 'status' not in df_stat.columns:
-                    st.error("❌ CSV must contain exact headers: 'usn' and 'status'.")
-                else:
-                    with st.spinner("Updating statuses..."):
-                        updates = df_stat.to_dict('records')
-                        for row in updates:
-                            clean_usn = str(row['usn']).strip().upper()
-                            clean_status = str(row['status']).strip().upper()
-                            if clean_status in ["ACTIVE", "DETAINED", "DISCONTINUED"]:
-                                supabase.table("master_students").update({"status": clean_status}).eq("usn", clean_usn).execute()
-                    st.success(f"✅ Successfully processed {len(updates)} status updates.")
 
 # ==========================================
 # 3. ACADEMIC MASTER (COURSES & BRANCHES)
@@ -727,8 +594,8 @@ with tabs[3]:
     with ac_tabs[0]:
         c_b1, c_b2 = st.columns(2)
         with c_b1:
-            f_br = st.file_uploader("Upload CSV (branch_code, branch_name, program_type)", type='csv')
-            if f_br and st.button("Upload Branches"):
+            f_br = st.file_uploader("Upload CSV (branch_code, branch_name, program_type)", type='csv', key="main_br_upload")
+            if f_br and st.button("Upload Branches", key="main_br_btn"):
                 df = pd.read_csv(f_br)
                 expected = ['branch_code', 'branch_name', 'program_type']
                 data = clean_data_for_db(df, expected)
@@ -741,7 +608,7 @@ with tabs[3]:
                     st.success(f"Added {len(final_data)} branches.")
                 except Exception as e: st.error(f"Error: {e}")
         with c_b2:
-            with st.form("branch_manual"):
+            with st.form("branch_manual_form"):
                 b_c = st.text_input("Branch Code (e.g. CS)")
                 b_n = st.text_input("Branch Name (e.g. Computer Science)")
                 b_p = st.selectbox("Program Type", ["UG", "PG", "PHD"])
@@ -771,9 +638,9 @@ with tabs[3]:
             
             f_crs = st.file_uploader(
                 "Upload Scheme CSV (course_code, title, branch_code, semester_id, credits, max_cie, max_see, total_marks, course_type, scheme_batch, offering_department, specialization)", 
-                type='csv'
+                type='csv', key="main_crs_upload"
             )
-            if f_crs and st.button("Upload Scheme"):
+            if f_crs and st.button("Upload Scheme", key="main_crs_btn"):
                 df = pd.read_csv(f_crs)
                 df.columns = [str(c).strip().lower() for c in df.columns]
                 
@@ -810,7 +677,7 @@ with tabs[3]:
                     st.error(f"🚨 RAW DATABASE ERROR: {e}")
                     
         with c_m2:
-            with st.form("course_manual"):
+            with st.form("course_manual_form"):
                 col1, col2 = st.columns(2)
                 cc = col1.text_input("Course Code")
                 ct = col2.text_input("Title")
@@ -865,7 +732,7 @@ with tabs[3]:
         st.markdown("### 📥 Export Master Syllabus for Department Reference")
         st.caption("Download the complete schema for offline review or distribution.")
         
-        if st.button("🚀 Generate Master Syllabus CSV", type="primary"):
+        if st.button("🚀 Generate Master Syllabus CSV", type="primary", key="main_syl_export"):
             with st.spinner("Fetching comprehensive curriculum..."):
                 try:
                     res = supabase.table("master_courses").select("*").execute()
@@ -882,7 +749,8 @@ with tabs[3]:
                             label="⬇️ Download Master_Courses_Schema.csv",
                             data=csv,
                             file_name=f"Master_Courses_Schema_{datetime.date.today()}.csv",
-                            mime="text/csv"
+                            mime="text/csv",
+                            key="main_syl_dl"
                         )
                     else:
                         st.warning("No courses found in the database.")
@@ -914,7 +782,7 @@ with tabs[4]:
 
     st.write("### Prepare Offline Backup")
 
-    if st.button("🚀 Generate Master Database Backup", type="primary"):
+    if st.button("🚀 Generate Master Database Backup", type="primary", key="main_bkp_btn"):
         tables_to_backup = [
             "master_students", "master_courses", "master_branches", "master_fees",
             "exam_cycles", "exam_timetable", "course_registrations",
@@ -953,7 +821,8 @@ with tabs[4]:
                 file_name=zip_filename,
                 mime="application/zip",
                 type="primary",
-                use_container_width=True
+                use_container_width=True,
+                key="main_bkp_dl"
             )
             
         except Exception as e:
