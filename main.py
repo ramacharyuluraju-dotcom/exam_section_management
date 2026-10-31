@@ -432,6 +432,7 @@ with tabs[2]:
                     else:
                         st.error("Full Name and Department/Branch are mandatory.")
 
+    # 🟢 FULLY UPGRADED USN MIGRATION TOOL
     with st_tabs[2]:
         st.subheader("Temp-to-Official USN Migration Tool")
         st.info("When VTU releases official USNs, upload a CSV mapping the Temporary Admission Numbers to the Official USNs.")
@@ -471,9 +472,21 @@ with tabs[2]:
                             new_stu_data['admission_number'] = old_usn
                             
                             supabase.table("master_students").upsert(new_stu_data).execute()
+                            
+                            # STANDARD COE MIGRATIONS
                             supabase.table("course_registrations").update({"usn": new_usn}).eq("usn", old_usn).execute()
                             supabase.table("student_results").update({"usn": new_usn}).eq("usn", old_usn).execute()
                             
+                            # STAGING & FINANCE MIGRATIONS (Fixes BRS Portals)
+                            try:
+                                supabase.table("course_registration_online").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            except: pass
+                            
+                            try:
+                                supabase.table("cash_receipts").update({"usn": new_usn}).eq("usn", old_usn).execute()
+                            except: pass
+                            
+                            # AUDIT LOG MIGRATIONS
                             try:
                                 supabase.table("marks_audit_log").update({"usn": new_usn}).eq("usn", old_usn).execute()
                             except: pass
