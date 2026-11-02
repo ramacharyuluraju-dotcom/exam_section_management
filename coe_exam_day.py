@@ -737,7 +737,7 @@ def gen_hybrid_bundles(df_seating, date_post, sess_post, cycle_id, cycle_name, a
                 })
                 
                 excel_bytes = create_locked_bundle(chunk, cc, course_name, b_group, i+1, n_chunks, cycle_name, assets)
-                zf.writestr(f"Excel_Bundles/{cc}/{bundle_id}_{b_group}.xlsx", excel_bytes)
+                zf.writestr(f"Excel_Bundles/{bundle_id}_{b_group}_{cc}.xlsx", excel_bytes)
                 
         pdf_bytes = gen_barcode_bundle_covers(cover_sheet_data, cycle_name, assets)
         zf.writestr(f"QR_Envelope_Covers_{date_post}.pdf", pdf_bytes)
@@ -908,7 +908,6 @@ with tab2:
         st.subheader("Hybrid Database & Excel Bundling")
         st.write("Generates formulated Excel Files for your current process, printable QR Code covers, AND writes everything to the database for the upcoming Web App.")
         
-        # 🟢 FETCH BUNDLES ONLY FOR COURSES IN THIS SESSION
         session_courses = post_seating['Subject Code'].unique().tolist()
         existing_bundles = supabase.table("evaluation_bundles").select("bundle_id").eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).in_("course_code", session_courses).execute()
         
@@ -916,11 +915,9 @@ with tab2:
             st.success(f"✅ {len(existing_bundles.data)} secure bundles have already been created for this session in the database!")
             st.warning("If you need to regenerate the Excel sheets or QR codes, you can delete the existing bundles for this session below.")
             
-            # 🟢 NEW REDO BUTTON
             if st.button("⚠️ Delete Existing Bundles & Regenerate", type="secondary"):
                 with st.spinner("Deleting existing bundles from database..."):
                     try:
-                        # ON DELETE CASCADE cleans up the evaluation_scripts automatically
                         supabase.table("evaluation_bundles").delete().eq("cycle_id", selected_cycle_id).eq("exam_date", date_post).in_("course_code", session_courses).execute()
                         st.success("✅ Existing bundles deleted successfully! Please click 'Generate Hybrid Bundles' to recreate them.")
                         st.rerun()
