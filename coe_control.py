@@ -85,33 +85,49 @@ def fetch_complete_bucket_map(bucket_name):
         except: break
     return file_map
 
+# 🟢 FIX: Worker now accepts admission_number as a fallback
 def download_photo_worker(args):
-    usn, file_map = args
-    clean_usn = re.sub(r'[^A-Z0-9]', '', usn.upper())
+    usn, admission_number, file_map = args
     
-    if clean_usn in file_map:
-        try:
-            res = supabase.storage.from_("StakeHolders_Photos").download(file_map[clean_usn])
-            if res:
-                img = PILImage.open(io.BytesIO(res))
-                if img.mode != 'RGB': img = img.convert('RGB')
-                clean_io = io.BytesIO()
-                img.save(clean_io, format='JPEG', quality=95)
-                clean_io.seek(0)
-                return usn, clean_io
-        except: pass
+    if usn:
+        clean_usn = re.sub(r'[^A-Z0-9]', '', str(usn).upper())
+        if clean_usn in file_map:
+            try:
+                res = supabase.storage.from_("StakeHolders_Photos").download(file_map[clean_usn])
+                if res:
+                    img = PILImage.open(io.BytesIO(res))
+                    if img.mode != 'RGB': img = img.convert('RGB')
+                    clean_io = io.BytesIO()
+                    img.save(clean_io, format='JPEG', quality=95)
+                    clean_io.seek(0)
+                    return usn, clean_io
+            except: pass
 
-    for ext in ['.webp', '.jpg', '.jpeg', '.png', '.WEBP', '.JPG', '.PNG']:
-        try:
-            res = supabase.storage.from_("StakeHolders_Photos").download(f"{clean_usn}{ext}")
-            if res:
-                img = PILImage.open(io.BytesIO(res))
-                if img.mode != 'RGB': img = img.convert('RGB')
-                clean_io = io.BytesIO()
-                img.save(clean_io, format='JPEG', quality=95)
-                clean_io.seek(0)
-                return usn, clean_io
-        except: pass
+        for ext in ['.webp', '.jpg', '.jpeg', '.png', '.WEBP', '.JPG', '.PNG']:
+            try:
+                res = supabase.storage.from_("StakeHolders_Photos").download(f"{clean_usn}{ext}")
+                if res:
+                    img = PILImage.open(io.BytesIO(res))
+                    if img.mode != 'RGB': img = img.convert('RGB')
+                    clean_io = io.BytesIO()
+                    img.save(clean_io, format='JPEG', quality=95)
+                    clean_io.seek(0)
+                    return usn, clean_io
+            except: pass
+            
+    if admission_number:
+        clean_admin = re.sub(r'[^A-Z0-9]', '', str(admission_number).upper())
+        if clean_admin in file_map:
+            try:
+                res = supabase.storage.from_("StakeHolders_Photos").download(file_map[clean_admin])
+                if res:
+                    img = PILImage.open(io.BytesIO(res))
+                    if img.mode != 'RGB': img = img.convert('RGB')
+                    clean_io = io.BytesIO()
+                    img.save(clean_io, format='JPEG', quality=95)
+                    clean_io.seek(0)
+                    return usn, clean_io
+            except: pass
             
     return usn, None
 
@@ -626,8 +642,15 @@ with tabs[1]:
                 status.text(f"Processing Batch {i//BATCH_SIZE + 1} ({min(i+BATCH_SIZE, total)}/{total} students)...")
                 
                 batch_photos = {}
+                # 🟢 FIX: Pack admission_number into thread arguments
+                batch_photo_args = []
+                for u in batch_usns:
+                    stu_tmp = next((s for s in all_students if s['usn'] == u), None)
+                    adm = stu_tmp.get('admission_number') if stu_tmp else None
+                    batch_photo_args.append((u, adm, photo_file_map))
+                    
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                    futures = {executor.submit(download_photo_worker, (u, photo_file_map)): u for u in batch_usns}
+                    futures = {executor.submit(download_photo_worker, args): args[0] for args in batch_photo_args}
                     for future in concurrent.futures.as_completed(futures):
                         u, p_stream = future.result()
                         if p_stream: batch_photos[u] = p_stream
@@ -636,6 +659,8 @@ with tabs[1]:
                     stu = next((s for s in all_students if s['usn'] == u), None)
                     if not stu: continue
                     raw_subs = course_map.get(u, [])
+                    
+                    # 🟢 Photo map uses USN as the key natively
                     photo_stream = batch_photos.get(u)
                     
                     unique_subs = []
@@ -654,7 +679,6 @@ with tabs[1]:
                     
                     app_id = generate_app_id(u, selected_cycle_id)
                     
-                    # 🟢 Skip Application Page for Summer & Make-up Cycles
                     if not is_special_cycle:
                         draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                         c.showPage()
@@ -692,16 +716,18 @@ with tabs[2]:
                         if res: system_assets[k] = io.BytesIO(res)
                     except: pass
                 
-                _, photo_stream = download_photo_worker((target_usn, fetch_complete_bucket_map("StakeHolders_Photos")))
-                timetable_map = fetch_timetable_map(selected_cycle_id)
-                eligibility_map = fetch_course_eligibility_map()
-                branch_map = fetch_branches_map()
-
                 stu_res = supabase.table("master_students").select("*").eq("usn", target_usn).execute()
                 if not stu_res.data:
                     st.error(f"❌ Student {target_usn} not found.")
                     st.stop()
                 stu = stu_res.data[0]
+                
+                # 🟢 FIX: Single fetch explicitly grabs admission_number as fallback
+                _, photo_stream = download_photo_worker((target_usn, stu.get('admission_number'), fetch_complete_bucket_map("StakeHolders_Photos")))
+                
+                timetable_map = fetch_timetable_map(selected_cycle_id)
+                eligibility_map = fetch_course_eligibility_map()
+                branch_map = fetch_branches_map()
 
                 cycle_res = supabase.table("exam_cycles").select("*").eq("cycle_id", selected_cycle_id).single().execute()
                 curr_cycle = cycle_res.data
@@ -754,7 +780,6 @@ with tabs[2]:
                     buf = io.BytesIO(); c = canvas.Canvas(buf, pagesize=A4)
                     app_id = generate_app_id(target_usn, selected_cycle_id)
                     
-                    # 🟢 Skip Application Page for Summer & Make-up Cycles
                     if not is_special_cycle:
                         draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                         c.showPage()
