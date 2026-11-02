@@ -22,7 +22,6 @@ def fetch_all_records(table_name, select_query="*", filters=None):
     all_data = []
     start, step = 0, 1000
     while True:
-        # 🟢 FIX: Ensure query builder order is correct to prevent Supabase dropping rows
         query = supabase.table(table_name).select(select_query)
         if filters:
             for col, val in filters.items(): 
@@ -36,17 +35,22 @@ def fetch_all_records(table_name, select_query="*", filters=None):
     return all_data
 
 @st.cache_data(ttl=3600)
-def fetch_student_photo(usn):
-    """Securely fetches photo bytes using the native Supabase Python SDK."""
-    clean_usn = str(usn).strip().upper()
-    
-    for ext in ['.jpg', '.jpeg', '.png', '.webp', '.JPG', '.PNG', '.JPEG', '.WEBP']:
-        try:
-            res = supabase.storage.from_("StakeHolders_Photos").download(f"{clean_usn}{ext}")
-            if res:
-                return res
-        except Exception:
-            continue
+def fetch_student_photo(usn, admission_number=None):
+    """Securely fetches photo bytes, falling back to admission_number if USN is migrated."""
+    ids_to_check = [str(usn).strip().upper()]
+    if admission_number and pd.notna(admission_number):
+        ids_to_check.append(str(admission_number).strip().upper())
+        
+    for current_id in ids_to_check:
+        if not current_id or current_id == 'NAN': continue
+        
+        for ext in ['.jpg', '.jpeg', '.png', '.webp', '.JPG', '.PNG', '.JPEG', '.WEBP']:
+            try:
+                res = supabase.storage.from_("StakeHolders_Photos").download(f"{current_id}{ext}")
+                if res:
+                    return res
+            except Exception:
+                continue
     return None
 
 # ==========================================
@@ -65,7 +69,6 @@ with t1:
     st.subheader("University Demographics & Exam Status")
     
     with st.spinner("Compiling institutional data..."):
-        # 🟢 PANDAS GUARDRAIL: Fetch all students, then filter locally to bypass Supabase API quirks!
         raw_students = fetch_all_records("master_students", "usn, branch_code, status")
         df_st = pd.DataFrame(raw_students)
         
@@ -253,7 +256,8 @@ with t3:
                 col_img, col_det, col_met = st.columns([1, 2, 1.5])
                 
                 with col_img:
-                    photo_bytes = fetch_student_photo(search_usn)
+                    # 🟢 FIX: Pass the admission number fallback into the photo fetcher
+                    photo_bytes = fetch_student_photo(search_usn, profile.get('admission_number'))
                     if photo_bytes:
                         st.image(photo_bytes, use_container_width=True)
                     else:
@@ -325,7 +329,6 @@ with t3:
                     
                     for sem, group in sorted(df_res.groupby('Course Sem')):
                         with st.expander(f"🎓 Semester {int(sem)} History", expanded=True):
-                            # 🟢 FIX: Sort strictly by cycle_id chronologically, then course_code alphabetically
                             group = group.sort_values(by=['cycle_id', 'course_code'])
                             
                             latest_sem_attempts = group.drop_duplicates(subset=['course_code'], keep='last')
