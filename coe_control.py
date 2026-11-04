@@ -85,7 +85,6 @@ def fetch_complete_bucket_map(bucket_name):
         except: break
     return file_map
 
-# 🟢 FIX: Worker now accepts admission_number as a fallback
 def download_photo_worker(args):
     usn, admission_number, file_map = args
     
@@ -599,38 +598,23 @@ with tabs[1]:
             c_ay = curr_cycle.get('academic_year')
             c_sem_type = curr_cycle.get('semester_type')
             c_type = curr_cycle.get('exam_type', '')
-            is_special_cycle = ("Summer" in c_type or "Make-up" in c_type)
             
             course_map = {}
             
-            if is_special_cycle:
-                all_regs = fetch_all_records("course_registrations", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
-                for r in all_regs:
-                    usn = r['usn']
-                    if usn not in course_map: course_map[usn] = []
-                    mc = r.get('master_courses') or {}
-                    title = mc.get('title', "Unknown Title")
-                    sem = r.get('semester') or mc.get('semester_id', '-')
-                    course_map[usn].append({"code": r['course_code'], "title": title, "sem": sem})
-            else:
-                apps = fetch_all_records("exam_applications", "usn", "cycle_id", selected_cycle_id)
-                valid_usns = set([a['usn'] for a in apps])
-                
-                if valid_usns:
-                    all_term_regs = fetch_all_records("course_registrations", "usn, course_code, semester, semester_type, master_courses(title, semester_id)", "academic_year", c_ay)
-                    for r in all_term_regs:
-                        if r.get('semester_type') == c_sem_type and r['usn'] in valid_usns:
-                            usn = r['usn']
-                            if usn not in course_map: course_map[usn] = []
-                            mc = r.get('master_courses') or {}
-                            title = mc.get('title', "Unknown Title")
-                            sem = r.get('semester') or mc.get('semester_id', '-')
-                            course_map[usn].append({"code": r['course_code'], "title": title, "sem": sem})
+            # 🟢 REVERTED: Now pulls strictly from exam_applications for both Summer and Regular cycles
+            apps = fetch_all_records("exam_applications", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
+            for r in apps:
+                usn = r['usn']
+                if usn not in course_map: course_map[usn] = []
+                mc = r.get('master_courses') or {}
+                title = mc.get('title', "Unknown Title")
+                sem = r.get('semester') or mc.get('semester_id', '-')
+                course_map[usn].append({"code": r['course_code'], "title": title, "sem": sem})
                             
             usns = list(course_map.keys())
 
         if not usns:
-            st.warning(f"No valid student registrations found for {active_cycle_name}.")
+            st.warning(f"No valid exam applications found for {active_cycle_name}.")
         else:
             progress_bar = st.progress(0); status = st.empty()
             final_pdf_buffer = io.BytesIO(); c = canvas.Canvas(final_pdf_buffer, pagesize=A4)
@@ -642,7 +626,6 @@ with tabs[1]:
                 status.text(f"Processing Batch {i//BATCH_SIZE + 1} ({min(i+BATCH_SIZE, total)}/{total} students)...")
                 
                 batch_photos = {}
-                # 🟢 FIX: Pack admission_number into thread arguments
                 batch_photo_args = []
                 for u in batch_usns:
                     stu_tmp = next((s for s in all_students if s['usn'] == u), None)
@@ -660,7 +643,6 @@ with tabs[1]:
                     if not stu: continue
                     raw_subs = course_map.get(u, [])
                     
-                    # 🟢 Photo map uses USN as the key natively
                     photo_stream = batch_photos.get(u)
                     
                     unique_subs = []
@@ -679,10 +661,11 @@ with tabs[1]:
                     
                     app_id = generate_app_id(u, selected_cycle_id)
                     
-                    if not is_special_cycle:
-                        draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
-                        c.showPage()
+                    # 🟢 Draws Application Page
+                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
+                    c.showPage()
                     
+                    # 🟢 Draws Hall Ticket (Student & College copy)
                     HALF_A4 = 841.89 / 2
                     draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     
@@ -722,7 +705,6 @@ with tabs[2]:
                     st.stop()
                 stu = stu_res.data[0]
                 
-                # 🟢 FIX: Single fetch explicitly grabs admission_number as fallback
                 _, photo_stream = download_photo_worker((target_usn, stu.get('admission_number'), fetch_complete_bucket_map("StakeHolders_Photos")))
                 
                 timetable_map = fetch_timetable_map(selected_cycle_id)
@@ -731,24 +713,16 @@ with tabs[2]:
 
                 cycle_res = supabase.table("exam_cycles").select("*").eq("cycle_id", selected_cycle_id).single().execute()
                 curr_cycle = cycle_res.data
-                c_ay = curr_cycle.get('academic_year')
-                c_sem_type = curr_cycle.get('semester_type')
-                c_type = curr_cycle.get('exam_type', '')
-                is_special_cycle = ("Summer" in c_type or "Make-up" in c_type)
+                active_cycle_name = curr_cycle.get('cycle_name', 'Unknown Cycle')
 
-                if is_special_cycle:
-                    sub_res = supabase.table("course_registrations")\
-                        .select("course_code, semester, master_courses(title, semester_id)")\
-                        .eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
-                else:
-                    app_check = supabase.table("exam_applications").select("usn").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
-                    if not app_check.data:
-                        st.error(f"❌ Student {target_usn} has not been imported into this Exam Cycle yet.")
-                        st.stop()
-                        
-                    sub_res = supabase.table("course_registrations")\
-                        .select("course_code, semester, master_courses(title, semester_id)")\
-                        .eq("usn", target_usn).eq("academic_year", c_ay).eq("semester_type", c_sem_type).execute()
+                # 🟢 REVERTED: Both Summer and Regular now MUST pass through exam_applications
+                app_check = supabase.table("exam_applications").select("course_code, semester, master_courses(title, semester_id)").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
+                
+                if not app_check.data:
+                    st.error(f"❌ Student {target_usn} does not have an approved Exam Application for {active_cycle_name}.")
+                    st.stop()
+                    
+                sub_res = app_check
                 
                 raw_subs = []
                 for r in sub_res.data:
@@ -780,10 +754,11 @@ with tabs[2]:
                     buf = io.BytesIO(); c = canvas.Canvas(buf, pagesize=A4)
                     app_id = generate_app_id(target_usn, selected_cycle_id)
                     
-                    if not is_special_cycle:
-                        draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
-                        c.showPage()
+                    # 🟢 Draw Application
+                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
+                    c.showPage()
                     
+                    # 🟢 Draw Hall Ticket
                     HALF_A4 = 841.89 / 2
                     draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     c.setDash(4, 4)
