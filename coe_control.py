@@ -598,18 +598,34 @@ with tabs[1]:
             c_ay = curr_cycle.get('academic_year')
             c_sem_type = curr_cycle.get('semester_type')
             c_type = curr_cycle.get('exam_type', '')
+            is_special_cycle = ("Summer" in c_type or "Make-up" in c_type)
             
+            # 🟢 FIX: Secure Local Mapping (Bypasses Supabase PostgREST JOIN errors entirely)
+            all_courses_res = supabase.table("master_courses").select("course_code, title, semester_id").execute()
+            master_course_dict = {c['course_code']: c for c in (all_courses_res.data or [])}
+
             course_map = {}
             
-            # 🟢 REVERTED: Now pulls strictly from exam_applications for both Summer and Regular cycles
-            apps = fetch_all_records("exam_applications", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
-            for r in apps:
-                usn = r['usn']
-                if usn not in course_map: course_map[usn] = []
-                mc = r.get('master_courses') or {}
-                title = mc.get('title', "Unknown Title")
-                sem = r.get('semester') or mc.get('semester_id', '-')
-                course_map[usn].append({"code": r['course_code'], "title": title, "sem": sem})
+            if is_special_cycle:
+                all_regs = fetch_all_records("course_registrations", "usn, course_code, semester", "cycle_id", selected_cycle_id)
+                for r in all_regs:
+                    usn = r['usn']
+                    if usn not in course_map: course_map[usn] = []
+                    cc = r['course_code']
+                    mc = master_course_dict.get(cc, {})
+                    title = mc.get('title', "Unknown Title")
+                    sem = r.get('semester') or mc.get('semester_id', '-')
+                    course_map[usn].append({"code": cc, "title": title, "sem": sem})
+            else:
+                apps = fetch_all_records("exam_applications", "usn, course_code, semester", "cycle_id", selected_cycle_id)
+                for r in apps:
+                    usn = r['usn']
+                    if usn not in course_map: course_map[usn] = []
+                    cc = r['course_code']
+                    mc = master_course_dict.get(cc, {})
+                    title = mc.get('title', "Unknown Title")
+                    sem = r.get('semester') or mc.get('semester_id', '-')
+                    course_map[usn].append({"code": cc, "title": title, "sem": sem})
                             
             usns = list(course_map.keys())
 
@@ -661,11 +677,11 @@ with tabs[1]:
                     
                     app_id = generate_app_id(u, selected_cycle_id)
                     
-                    # 🟢 Draws Application Page
+                    # 🟢 Draw Application Page
                     draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                     c.showPage()
                     
-                    # 🟢 Draws Hall Ticket (Student & College copy)
+                    # 🟢 Draw Hall Ticket
                     HALF_A4 = 841.89 / 2
                     draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     
@@ -714,22 +730,34 @@ with tabs[2]:
                 cycle_res = supabase.table("exam_cycles").select("*").eq("cycle_id", selected_cycle_id).single().execute()
                 curr_cycle = cycle_res.data
                 active_cycle_name = curr_cycle.get('cycle_name', 'Unknown Cycle')
+                c_type = curr_cycle.get('exam_type', '')
+                is_special_cycle = ("Summer" in c_type or "Make-up" in c_type)
 
-                # 🟢 REVERTED: Both Summer and Regular now MUST pass through exam_applications
-                app_check = supabase.table("exam_applications").select("course_code, semester, master_courses(title, semester_id)").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
-                
-                if not app_check.data:
-                    st.error(f"❌ Student {target_usn} does not have an approved Exam Application for {active_cycle_name}.")
-                    st.stop()
+                # 🟢 FIX: Secure Local Mapping
+                if is_special_cycle:
+                    app_check = supabase.table("course_registrations").select("course_code, semester").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
+                    if not app_check.data:
+                        st.error(f"❌ Student {target_usn} does not have Summer/Make-up registrations for {active_cycle_name}.")
+                        st.stop()
+                else:
+                    app_check = supabase.table("exam_applications").select("course_code, semester").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
+                    if not app_check.data:
+                        st.error(f"❌ Student {target_usn} does not have an approved Exam Application for {active_cycle_name}.")
+                        st.stop()
                     
-                sub_res = app_check
+                sub_res = app_check.data
+                
+                course_codes = [r['course_code'] for r in sub_res]
+                crs_res = supabase.table("master_courses").select("course_code, title, semester_id").in_("course_code", course_codes).execute() if course_codes else None
+                master_course_dict = {c['course_code']: c for c in (crs_res.data if crs_res else [])}
                 
                 raw_subs = []
-                for r in sub_res.data:
-                    mc = r.get('master_courses') or {}
+                for r in sub_res:
+                    cc = r['course_code']
+                    mc = master_course_dict.get(cc, {})
                     title = mc.get('title', "Unknown Title")
                     sem = r.get('semester') or mc.get('semester_id', '-')
-                    raw_subs.append({"code": r['course_code'], "title": title, "sem": sem})
+                    raw_subs.append({"code": cc, "title": title, "sem": sem})
                     
                 unique_subs = []
                 seen_codes = set()
@@ -754,7 +782,7 @@ with tabs[2]:
                     buf = io.BytesIO(); c = canvas.Canvas(buf, pagesize=A4)
                     app_id = generate_app_id(target_usn, selected_cycle_id)
                     
-                    # 🟢 Draw Application
+                    # 🟢 Draw Application Page
                     draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                     c.showPage()
                     
