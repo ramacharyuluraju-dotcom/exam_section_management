@@ -605,7 +605,7 @@ with tabs[1]:
 
             course_map = {}
             
-            # 🟢 FIX: Gatekeeper Logic. Check exam_applications purely for approval, then fetch subjects from course_registrations.
+            # 🟢 FIX: Secure Local Mapping (Bypasses Supabase PostgREST JOIN errors entirely)
             apps = fetch_all_records("exam_applications", "usn", filter_col="cycle_id", filter_val=selected_cycle_id)
             approved_usns = set([a['usn'] for a in apps])
             
@@ -637,7 +637,7 @@ with tabs[1]:
             usns = list(course_map.keys())
 
         if not usns:
-            st.warning(f"No approved exam applications found for {active_cycle_name}.")
+            st.warning(f"No valid exam applications found for {active_cycle_name}.")
         else:
             progress_bar = st.progress(0); status = st.empty()
             final_pdf_buffer = io.BytesIO(); c = canvas.Canvas(final_pdf_buffer, pagesize=A4)
@@ -742,12 +742,13 @@ with tabs[2]:
                 c_type = curr_cycle.get('exam_type', '')
                 is_special_cycle = ("Summer" in c_type or "Make-up" in c_type)
 
-                # 🟢 FIX: Gatekeeper Logic for Single Student
+                # 🟢 FIX: Secure Local Mapping (Selects only 'usn', bypassing schema errors)
                 app_check = supabase.table("exam_applications").select("usn").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
+                
                 if not app_check.data:
                     st.error(f"❌ Student {target_usn} does not have an approved Exam Application for {active_cycle_name}.")
                     st.stop()
-
+                    
                 if is_special_cycle:
                     sub_res = supabase.table("course_registrations").select("course_code, semester").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
                 else:
@@ -793,8 +794,9 @@ with tabs[2]:
                     app_id = generate_app_id(target_usn, selected_cycle_id)
                     
                     # 🟢 Draw Application Page
-                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
-                    c.showPage()
+                    if not is_special_cycle:
+                        draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
+                        c.showPage()
                     
                     # 🟢 Draw Hall Ticket
                     HALF_A4 = 841.89 / 2
