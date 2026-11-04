@@ -600,37 +600,44 @@ with tabs[1]:
             c_type = curr_cycle.get('exam_type', '')
             is_special_cycle = ("Summer" in c_type or "Make-up" in c_type)
             
-            # 🟢 FIX: Secure Local Mapping (Bypasses Supabase PostgREST JOIN errors entirely)
             all_courses_res = supabase.table("master_courses").select("course_code, title, semester_id").execute()
             master_course_dict = {c['course_code']: c for c in (all_courses_res.data or [])}
 
             course_map = {}
             
-            if is_special_cycle:
-                all_regs = fetch_all_records("course_registrations", "usn, course_code, semester", "cycle_id", selected_cycle_id)
-                for r in all_regs:
-                    usn = r['usn']
-                    if usn not in course_map: course_map[usn] = []
-                    cc = r['course_code']
-                    mc = master_course_dict.get(cc, {})
-                    title = mc.get('title', "Unknown Title")
-                    sem = r.get('semester') or mc.get('semester_id', '-')
-                    course_map[usn].append({"code": cc, "title": title, "sem": sem})
-            else:
-                apps = fetch_all_records("exam_applications", "usn, course_code, semester", "cycle_id", selected_cycle_id)
-                for r in apps:
-                    usn = r['usn']
-                    if usn not in course_map: course_map[usn] = []
-                    cc = r['course_code']
-                    mc = master_course_dict.get(cc, {})
-                    title = mc.get('title', "Unknown Title")
-                    sem = r.get('semester') or mc.get('semester_id', '-')
-                    course_map[usn].append({"code": cc, "title": title, "sem": sem})
+            # 🟢 FIX: Gatekeeper Logic. Check exam_applications purely for approval, then fetch subjects from course_registrations.
+            apps = fetch_all_records("exam_applications", "usn", filter_col="cycle_id", filter_val=selected_cycle_id)
+            approved_usns = set([a['usn'] for a in apps])
+            
+            if approved_usns:
+                if is_special_cycle:
+                    all_regs = fetch_all_records("course_registrations", "usn, course_code, semester", "cycle_id", selected_cycle_id)
+                    for r in all_regs:
+                        usn = r['usn']
+                        if usn in approved_usns:
+                            if usn not in course_map: course_map[usn] = []
+                            cc = r['course_code']
+                            mc = master_course_dict.get(cc, {})
+                            title = mc.get('title', "Unknown Title")
+                            sem = r.get('semester') or mc.get('semester_id', '-')
+                            course_map[usn].append({"code": cc, "title": title, "sem": sem})
+                else:
+                    all_term_regs = fetch_all_records("course_registrations", "usn, course_code, semester, semester_type", "academic_year", c_ay)
+                    for r in all_term_regs:
+                        if r.get('semester_type') == c_sem_type:
+                            usn = r['usn']
+                            if usn in approved_usns:
+                                if usn not in course_map: course_map[usn] = []
+                                cc = r['course_code']
+                                mc = master_course_dict.get(cc, {})
+                                title = mc.get('title', "Unknown Title")
+                                sem = r.get('semester') or mc.get('semester_id', '-')
+                                course_map[usn].append({"code": cc, "title": title, "sem": sem})
                             
             usns = list(course_map.keys())
 
         if not usns:
-            st.warning(f"No valid exam applications found for {active_cycle_name}.")
+            st.warning(f"No approved exam applications found for {active_cycle_name}.")
         else:
             progress_bar = st.progress(0); status = st.empty()
             final_pdf_buffer = io.BytesIO(); c = canvas.Canvas(final_pdf_buffer, pagesize=A4)
@@ -730,29 +737,32 @@ with tabs[2]:
                 cycle_res = supabase.table("exam_cycles").select("*").eq("cycle_id", selected_cycle_id).single().execute()
                 curr_cycle = cycle_res.data
                 active_cycle_name = curr_cycle.get('cycle_name', 'Unknown Cycle')
+                c_ay = curr_cycle.get('academic_year')
+                c_sem_type = curr_cycle.get('semester_type')
                 c_type = curr_cycle.get('exam_type', '')
                 is_special_cycle = ("Summer" in c_type or "Make-up" in c_type)
 
-                # 🟢 FIX: Secure Local Mapping
+                # 🟢 FIX: Gatekeeper Logic for Single Student
+                app_check = supabase.table("exam_applications").select("usn").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
+                if not app_check.data:
+                    st.error(f"❌ Student {target_usn} does not have an approved Exam Application for {active_cycle_name}.")
+                    st.stop()
+
                 if is_special_cycle:
-                    app_check = supabase.table("course_registrations").select("course_code, semester").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
-                    if not app_check.data:
-                        st.error(f"❌ Student {target_usn} does not have Summer/Make-up registrations for {active_cycle_name}.")
-                        st.stop()
+                    sub_res = supabase.table("course_registrations").select("course_code, semester").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
                 else:
-                    app_check = supabase.table("exam_applications").select("course_code, semester").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
-                    if not app_check.data:
-                        st.error(f"❌ Student {target_usn} does not have an approved Exam Application for {active_cycle_name}.")
-                        st.stop()
+                    sub_res = supabase.table("course_registrations").select("course_code, semester").eq("usn", target_usn).eq("academic_year", c_ay).eq("semester_type", c_sem_type).execute()
                     
-                sub_res = app_check.data
-                
-                course_codes = [r['course_code'] for r in sub_res]
+                if not sub_res.data:
+                    st.error(f"❌ Student {target_usn} has no registered courses to print.")
+                    st.stop()
+                    
+                course_codes = [r['course_code'] for r in sub_res.data]
                 crs_res = supabase.table("master_courses").select("course_code, title, semester_id").in_("course_code", course_codes).execute() if course_codes else None
                 master_course_dict = {c['course_code']: c for c in (crs_res.data if crs_res else [])}
                 
                 raw_subs = []
-                for r in sub_res:
+                for r in sub_res.data:
                     cc = r['course_code']
                     mc = master_course_dict.get(cc, {})
                     title = mc.get('title', "Unknown Title")
