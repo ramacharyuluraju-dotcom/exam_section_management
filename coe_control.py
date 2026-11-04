@@ -450,6 +450,7 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
     
     valid_subs = [s for s in subjects if eligibility_map.get(s['code'], False)]
     
+    # 🟢 CHANGED THRESHOLD: 10 or more subjects now trigger the side-by-side layout
     if len(valid_subs) >= 10:
         mid = (len(valid_subs) + 1) // 2
         left_subs = valid_subs[:mid]
@@ -499,6 +500,7 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
         tg.drawOn(c, 30, y - gh)
 
     else:
+        # SINGLE TABLE LOGIC (1 to 9 subjects)
         grid_data = [["Date", "Session", "Sem", "Course Code", "Invigilator Sign"]]
         
         for s in valid_subs:
@@ -511,8 +513,10 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
                 grid_data.append(["", "", "", "", ""])
 
         total_rows = len(grid_data)
-        if total_rows <= 8: row_h = 18   
-        else: row_h = 15   
+        if total_rows <= 8:
+            row_h = 18   
+        else:
+            row_h = 15   
 
         tg = Table(grid_data, colWidths=[75, 120, 35, 85, 220], rowHeights=row_h)
         tg.setStyle(TableStyle([
@@ -590,54 +594,29 @@ with tabs[1]:
             fee_res = supabase.table("master_fees").select("*").execute()
             fees = {f['fee_type']: f['amount'] for f in fee_res.data}
 
-            raw_students = fetch_all_records("master_students", columns="*")
-            all_students = [s for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE']
+            all_students = fetch_all_records("master_students")
             
-            cycle_res = supabase.table("exam_cycles").select("*").eq("cycle_id", selected_cycle_id).single().execute()
-            curr_cycle = cycle_res.data
-            c_ay = curr_cycle.get('academic_year')
-            c_sem_type = curr_cycle.get('semester_type')
-            c_type = curr_cycle.get('exam_type', '')
-            is_special_cycle = ("Summer" in c_type or "Make-up" in c_type)
+            # 🟢 REVERTED TO SOURCE 10 LOGIC: Direct fetch from course_registrations by cycle_id
+            all_regs = fetch_all_records("course_registrations", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
             
-            all_courses_res = supabase.table("master_courses").select("course_code, title, semester_id").execute()
-            master_course_dict = {c['course_code']: c for c in (all_courses_res.data or [])}
-
             course_map = {}
-            
-            # 🟢 FIX: Secure Local Mapping (Bypasses Supabase PostgREST JOIN errors entirely)
-            apps = fetch_all_records("exam_applications", "usn", filter_col="cycle_id", filter_val=selected_cycle_id)
-            approved_usns = set([a['usn'] for a in apps])
-            
-            if approved_usns:
-                if is_special_cycle:
-                    all_regs = fetch_all_records("course_registrations", "usn, course_code, semester", "cycle_id", selected_cycle_id)
-                    for r in all_regs:
-                        usn = r['usn']
-                        if usn in approved_usns:
-                            if usn not in course_map: course_map[usn] = []
-                            cc = r['course_code']
-                            mc = master_course_dict.get(cc, {})
-                            title = mc.get('title', "Unknown Title")
-                            sem = r.get('semester') or mc.get('semester_id', '-')
-                            course_map[usn].append({"code": cc, "title": title, "sem": sem})
-                else:
-                    all_term_regs = fetch_all_records("course_registrations", "usn, course_code, semester, semester_type", "academic_year", c_ay)
-                    for r in all_term_regs:
-                        if r.get('semester_type') == c_sem_type:
-                            usn = r['usn']
-                            if usn in approved_usns:
-                                if usn not in course_map: course_map[usn] = []
-                                cc = r['course_code']
-                                mc = master_course_dict.get(cc, {})
-                                title = mc.get('title', "Unknown Title")
-                                sem = r.get('semester') or mc.get('semester_id', '-')
-                                course_map[usn].append({"code": cc, "title": title, "sem": sem})
-                            
+            for r in all_regs:
+                usn = r['usn']
+                if usn not in course_map: course_map[usn] = []
+                
+                mc = r.get('master_courses') or {}
+                title = mc.get('title', "Unknown Title")
+                
+                sem = r.get('semester')
+                if not sem:
+                    sem = mc.get('semester_id', '-')
+                    
+                course_map[usn].append({"code": r['course_code'], "title": title, "sem": sem})
+                
             usns = list(course_map.keys())
 
         if not usns:
-            st.warning(f"No valid exam applications found for {active_cycle_name}.")
+            st.warning("No student registrations found for this cycle.")
         else:
             progress_bar = st.progress(0); status = st.empty()
             final_pdf_buffer = io.BytesIO(); c = canvas.Canvas(final_pdf_buffer, pagesize=A4)
@@ -665,7 +644,6 @@ with tabs[1]:
                     stu = next((s for s in all_students if s['usn'] == u), None)
                     if not stu: continue
                     raw_subs = course_map.get(u, [])
-                    
                     photo_stream = batch_photos.get(u)
                     
                     unique_subs = []
@@ -676,6 +654,7 @@ with tabs[1]:
                             seen_codes.add(sub['code'])
                     
                     subs = sort_subjects_by_timetable(unique_subs, timetable_map)
+                    
                     db_branch_code = stu.get('branch_code', get_branch_code(u))
                     
                     b_info = branch_map.get(db_branch_code, {"program_type": "UG", "branch_name": db_branch_code})
@@ -683,12 +662,9 @@ with tabs[1]:
                     b_name_str = b_info.get("branch_name", db_branch_code)
                     
                     app_id = generate_app_id(u, selected_cycle_id)
-                    
-                    # 🟢 Draw Application Page
                     draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
                     c.showPage()
                     
-                    # 🟢 Draw Hall Ticket
                     HALF_A4 = 841.89 / 2
                     draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     
@@ -704,10 +680,11 @@ with tabs[1]:
                 batch_photos.clear() 
 
             c.save(); status.text("Bulk Generation Complete.")
-            st.download_button("📥 Download PDF Bundle", final_pdf_buffer.getvalue(), f"Bulk_HallTickets_{active_cycle_name}.pdf", "application/pdf")
+            st.download_button("📥 Download PDF Bundle", final_pdf_buffer.getvalue(), f"Bulk_Docs_{active_cycle_name}.pdf", "application/pdf")
 
 with tabs[2]:
     st.write("### Single Student Generator")
+    
     col1, col2 = st.columns([3, 1])
     target_usn = col1.text_input("Enter USN to Generate:").strip().upper()
     
@@ -727,7 +704,7 @@ with tabs[2]:
                     st.error(f"❌ Student {target_usn} not found.")
                     st.stop()
                 stu = stu_res.data[0]
-                
+
                 _, photo_stream = download_photo_worker((target_usn, stu.get('admission_number'), fetch_complete_bucket_map("StakeHolders_Photos")))
                 
                 timetable_map = fetch_timetable_map(selected_cycle_id)
@@ -737,38 +714,24 @@ with tabs[2]:
                 cycle_res = supabase.table("exam_cycles").select("*").eq("cycle_id", selected_cycle_id).single().execute()
                 curr_cycle = cycle_res.data
                 active_cycle_name = curr_cycle.get('cycle_name', 'Unknown Cycle')
-                c_ay = curr_cycle.get('academic_year')
-                c_sem_type = curr_cycle.get('semester_type')
-                c_type = curr_cycle.get('exam_type', '')
-                is_special_cycle = ("Summer" in c_type or "Make-up" in c_type)
 
-                # 🟢 FIX: Secure Local Mapping (Selects only 'usn', bypassing schema errors)
-                app_check = supabase.table("exam_applications").select("usn").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
+                # 🟢 REVERTED TO SOURCE 10 LOGIC: Direct fetch from course_registrations by cycle_id
+                sub_res = supabase.table("course_registrations")\
+                    .select("course_code, semester, master_courses(title, semester_id)")\
+                    .eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
                 
-                if not app_check.data:
-                    st.error(f"❌ Student {target_usn} does not have an approved Exam Application for {active_cycle_name}.")
-                    st.stop()
-                    
-                if is_special_cycle:
-                    sub_res = supabase.table("course_registrations").select("course_code, semester").eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
-                else:
-                    sub_res = supabase.table("course_registrations").select("course_code, semester").eq("usn", target_usn).eq("academic_year", c_ay).eq("semester_type", c_sem_type).execute()
-                    
                 if not sub_res.data:
-                    st.error(f"❌ Student {target_usn} has no registered courses to print.")
+                    st.error(f"❌ Student {target_usn} has no registered courses in the database for {active_cycle_name}.")
                     st.stop()
-                    
-                course_codes = [r['course_code'] for r in sub_res.data]
-                crs_res = supabase.table("master_courses").select("course_code, title, semester_id").in_("course_code", course_codes).execute() if course_codes else None
-                master_course_dict = {c['course_code']: c for c in (crs_res.data if crs_res else [])}
                 
                 raw_subs = []
                 for r in sub_res.data:
-                    cc = r['course_code']
-                    mc = master_course_dict.get(cc, {})
+                    mc = r.get('master_courses') or {}
                     title = mc.get('title', "Unknown Title")
-                    sem = r.get('semester') or mc.get('semester_id', '-')
-                    raw_subs.append({"code": cc, "title": title, "sem": sem})
+                    sem = r.get('semester')
+                    if not sem:
+                        sem = mc.get('semester_id', '-')
+                    raw_subs.append({"code": r['course_code'], "title": title, "sem": sem})
                     
                 unique_subs = []
                 seen_codes = set()
@@ -778,6 +741,7 @@ with tabs[2]:
                         seen_codes.add(sub['code'])
                         
                 subs = sort_subjects_by_timetable(unique_subs, timetable_map)
+                
                 db_branch_code = stu.get('branch_code', get_branch_code(target_usn))
                 
                 b_info = branch_map.get(db_branch_code, {"program_type": "UG", "branch_name": db_branch_code})
@@ -793,20 +757,20 @@ with tabs[2]:
                     buf = io.BytesIO(); c = canvas.Canvas(buf, pagesize=A4)
                     app_id = generate_app_id(target_usn, selected_cycle_id)
                     
-                    # 🟢 Draw Application Page
-                    if not is_special_cycle:
-                        draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
-                        c.showPage()
+                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
+                    c.showPage()
                     
-                    # 🟢 Draw Hall Ticket
                     HALF_A4 = 841.89 / 2
+                    
                     draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                    
                     c.setDash(4, 4)
                     c.line(20, HALF_A4, A4[0]-20, HALF_A4)
                     c.setDash([])
+                    
                     draw_hall_ticket_half(c, A4[0], 0, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
                     c.showPage(); c.save()
                     
-                    st.download_button(f"📥 Download Hall Ticket for {target_usn}", buf.getvalue(), f"{target_usn}_HallTicket.pdf")
+                    st.download_button(f"📥 Download Docs for {target_usn}", buf.getvalue(), f"{target_usn}_ExamDocs.pdf")
             except Exception as e:
                 st.error(f"Error: {e}")
