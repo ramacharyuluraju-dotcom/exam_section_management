@@ -632,6 +632,7 @@ with tabs[3]:
             *   **`PE`** (Professional Electives)
             *   **`OE`** (Open Electives)
             *   **`OMR`** (OMR-based evaluations)
+            *   **`ONLINE`** (Online courses like NPTEL/VTU — automatically sets Max CIE = 0 and Max SEE = 0; only Total Marks is used)
             
             **Specialization:** Include a `specialization` column for PG tracks (e.g., HR, Finance). Leave as 'GENERAL' if it applies to everyone.
             """)
@@ -666,7 +667,19 @@ with tabs[3]:
                 ]
                 data = clean_data_for_db(df, expected)
                 
-                unique_courses = {str(d.get('course_code')).strip(): d for d in data if d.get('course_code')}
+                unique_courses = {}
+                for d in data:
+                    c_code = str(d.get('course_code') or '').strip().upper()
+                    if not c_code:
+                        continue
+                    d['course_code'] = c_code
+                    if str(d.get('course_type') or '').strip().upper() == 'ONLINE':
+                        d['max_cie'] = 0
+                        d['max_see'] = 0
+                        if not d.get('total_marks') or float(d.get('total_marks', 0)) <= 0:
+                            d['total_marks'] = 100
+                    unique_courses[c_code] = d
+                    
                 final_data = list(unique_courses.values())
                 
                 try:
@@ -688,19 +701,23 @@ with tabs[3]:
                 cs = col1.number_input("Semester ID", 1, 10, 1)
                 ccr = col2.number_input("Credits", 0, 5, 4)
                 
-                ctype = col1.selectbox("Course Type", ["CORE", "LAB", "PROJECT", "NON CREDIT", "LATERAL", "PE", "OE", "OMR"])
+                ctype = col1.selectbox("Course Type", ["CORE", "LAB", "PROJECT", "NON CREDIT", "LATERAL", "PE", "OE", "OMR", "ONLINE"])
                 c_spec = col2.text_input("Specialization Track", value="GENERAL", help="e.g., HR, Finance. Leave as GENERAL if applicable to all.").strip().upper()
                 
                 c_scheme = col1.number_input("Scheme Batch (Year)", 20, 99, 25)
-                m_cie = col2.number_input("Max CIE Marks", 0, 100, 50)
+                m_cie = col2.number_input("Max CIE Marks (Auto-set to 0 for ONLINE)", 0, 100, 50)
                 
-                m_see = col1.number_input("Max SEE Marks", 0, 100, 50)
+                m_see = col1.number_input("Max SEE Marks (Auto-set to 0 for ONLINE)", 0, 100, 50)
                 t_marks = col2.number_input("Total Marks", 0, 200, 100)
                 
                 if st.form_submit_button("💾 Add/Update Course"):
                     try:
                         clean_branches = ", ".join([b.strip().upper() for b in cbc.split(",") if b.strip()])
                         clean_off_dept = c_off_dept.strip().upper() if c_off_dept else None
+                        
+                        final_m_cie = 0 if ctype == "ONLINE" else m_cie
+                        final_m_see = 0 if ctype == "ONLINE" else m_see
+                        final_t_marks = (t_marks if t_marks > 0 else 100) if ctype == "ONLINE" else t_marks
                         
                         payload = {
                             "course_code": cc.strip().upper(),
@@ -709,15 +726,18 @@ with tabs[3]:
                             "offering_department": clean_off_dept,
                             "semester_id": cs, 
                             "credits": ccr,
-                            "max_cie": m_cie,
-                            "max_see": m_see,
-                            "total_marks": t_marks,
+                            "max_cie": final_m_cie,
+                            "max_see": final_m_see,
+                            "total_marks": final_t_marks,
                             "course_type": ctype, 
                             "scheme_batch": c_scheme,
                             "specialization": c_spec if c_spec else "GENERAL"
                         }
                         supabase.table("master_courses").upsert(payload).execute()
-                        st.success("✅ Course saved.")
+                        if ctype == "ONLINE":
+                            st.success(f"✅ ONLINE Course saved with Max CIE = 0, Max SEE = 0, and Total Marks = {final_t_marks}.")
+                        else:
+                            st.success("✅ Course saved.")
                     except Exception as e:
                         st.error(f"🚨 RAW DATABASE ERROR: {e}")
                         
