@@ -205,9 +205,9 @@ def draw_header(c, w, y_start, assets, is_hall_ticket=False):
     return y_start - 70
 
 # ==========================================
-# 4. PDF ENGINE (DYNAMIC LAYOUT)
+# 4. PDF ENGINE (DYNAMIC LAYOUT + ODE SUPPORT)
 # ==========================================
-def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycle_name, photo_bytes_io, prog_type, db_branch_code, branch_name_str):
+def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycle_name, photo_bytes_io, prog_type, db_branch_code, branch_name_str, exam_type="Regular"):
     if assets.get("watermark"):
         c.saveState(); c.setFillAlpha(0.08)
         c.drawImage(ImageReader(assets["watermark"]), w/2 - 175, h/2 - 175, width=350, height=350, mask='auto', preserveAspectRatio=True)
@@ -269,84 +269,141 @@ def draw_application_page(c, w, h, student, subjects, fees, assets, app_id, cycl
     c.drawRightString(w - 30, y, f"Application Date: {datetime.date.today().strftime('%d-%m-%Y')}")
     y -= 15
 
-    regular_subs = []
-    arrear_subs = []
-    
-    for s in subjects:
-        sub_sem_str = str(s.get('sem', '-'))
-        sub_sem_num = get_sem_num(sub_sem_str)
-        if sub_sem_num < stu_sem_num:
-            arrear_subs.append(s)
-        else:
-            regular_subs.append(s)
-            
-    arrear_count = len(arrear_subs)
-    regular_count = len(regular_subs)
-    
+    is_ode_cycle = (
+        str(exam_type).strip().upper() == "ODE"
+        or "ODE" in str(cycle_name).upper()
+        or "ON-DEMAND" in str(cycle_name).upper()
+        or any(str(s.get('reg_type', '')).upper().startswith("ODE") for s in subjects)
+    )
+
     row_h = 16 if len(subjects) > 10 else None
     fontsize = 8 if len(subjects) > 10 else 9
 
-    if regular_count > 0:
-        c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Regular Courses"); y -= 5
-        reg_rows = [["Sem", "Course Code", "Course Title", "Type"]]
-        for s in regular_subs:
-            reg_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Regular"])
-            
-        t_reg = Table(reg_rows, colWidths=[40, 80, 335, 80], rowHeights=row_h)
-        t_reg.setStyle(TableStyle([
+    # 🟢 ODE APPLICATION & FEE TABLE LOGIC
+    if is_ode_cycle:
+        c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "On-Demand Examination (ODE) Courses"); y -= 5
+        ode_rows = [["Sem", "Course Code", "Course Title", "Attempt"]]
+        att1_count = 0
+        att2_count = 0
+
+        for s in subjects:
+            reg_t = str(s.get('reg_type', 'ODE_1')).upper()
+            if reg_t == "ODE_2":
+                att_label = "Attempt 2+"
+                att2_count += 1
+            else:
+                att_label = "Attempt 1"
+                att1_count += 1
+            ode_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), att_label])
+
+        t_ode = Table(ode_rows, colWidths=[40, 80, 335, 80], rowHeights=row_h)
+        t_ode.setStyle(TableStyle([
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
             ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
             ('ALIGN', (0,0), (0,-1), 'CENTER'),
             ('ALIGN', (3,0), (3,-1), 'CENTER'),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('FONTSIZE', (0,0), (-1,-1), fontsize), 
+            ('FONTSIZE', (0,0), (-1,-1), fontsize),
         ]))
-        t_reg.wrapOn(c, w, h)
-        _, th_reg = t_reg.wrap(w, h)
-        t_reg.drawOn(c, 30, y - th_reg)
-        y -= (th_reg + 10)
+        t_ode.wrapOn(c, w, h)
+        _, th_ode = t_ode.wrap(w, h)
+        t_ode.drawOn(c, 30, y - th_ode)
+        y -= (th_ode + 10)
 
-    if arrear_count > 0:
-        c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Arrear Courses"); y -= 5
-        arr_rows = [["Sem", "Course Code", "Course Title", "Type"]]
-        for s in arrear_subs:
-            arr_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Arrear"])
-            
-        t_arr = Table(arr_rows, colWidths=[40, 80, 335, 80], rowHeights=row_h)
-        t_arr.setStyle(TableStyle([
-            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
-            ('ALIGN', (0,0), (0,-1), 'CENTER'),
-            ('ALIGN', (3,0), (3,-1), 'CENTER'),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('FONTSIZE', (0,0), (-1,-1), fontsize), 
-        ]))
-        t_arr.wrapOn(c, w, h)
-        _, th_arr = t_arr.wrap(w, h)
-        t_arr.drawOn(c, 30, y - th_arr)
-        y -= (th_arr + 10)
+        c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "ODE Fee Details"); y -= 5
+        fee_att1 = att1_count * 6000.0
+        fee_att2 = att2_count * 3000.0
+        fee_app = 100.0
+        fee_gradecard = 600.0
+        total = fee_att1 + fee_att2 + fee_app + fee_gradecard
 
-    c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Fee Details"); y -= 5
-    
-    base_exam_fee = float(fees.get('Exam', 2000))
-    fee_exam = base_exam_fee if regular_count > 0 else 0.0  
-    
-    fee_arrear_per_sub = float(fees.get('Arrear', 0))
-    fee_arrear_total = fee_arrear_per_sub * arrear_count
-    
-    fee_penalty = float(fees.get('Penalty', 0))
-    fee_misc = float(fees.get('Misc', 400))
-    
-    total = fee_exam + fee_arrear_total + fee_penalty + fee_misc
-    
-    f_rows = [
-        ["Description", "Amount (Rs)"],
-        ["Regular Examination Fees", f"{fee_exam:.2f}"],
-        [f"Arrear Examination Fees ({arrear_count} x {fee_arrear_per_sub:.2f})", f"{fee_arrear_total:.2f}"],
-        ["Penalty Fees", f"{fee_penalty:.2f}"],
-        ["Application & Marks Card Fees", f"{fee_misc:.2f}"],
-        ["TOTAL AMOUNT", f"{total:.2f}"]
-    ]
+        f_rows = [
+            ["Description", "Amount (Rs)"],
+            [f"ODE First Attempt Fees ({att1_count} x 6000.00)", f"{fee_att1:.2f}"],
+            [f"ODE Subsequent Attempt Fees ({att2_count} x 3000.00)", f"{fee_att2:.2f}"],
+            ["ODE Application Fee", f"{fee_app:.2f}"],
+            ["ODE Grade Card Fee", f"{fee_gradecard:.2f}"],
+            ["TOTAL AMOUNT", f"{total:.2f}"]
+        ]
+
+    # 🟢 STANDARD REGULAR + ARREAR LOGIC
+    else:
+        regular_subs = []
+        arrear_subs = []
+        
+        for s in subjects:
+            sub_sem_str = str(s.get('sem', '-'))
+            sub_sem_num = get_sem_num(sub_sem_str)
+            reg_t = str(s.get('reg_type', '')).upper()
+            if reg_t == 'ARREAR' or sub_sem_num < stu_sem_num:
+                arrear_subs.append(s)
+            else:
+                regular_subs.append(s)
+                
+        arrear_count = len(arrear_subs)
+        regular_count = len(regular_subs)
+
+        if regular_count > 0:
+            c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Regular Courses"); y -= 5
+            reg_rows = [["Sem", "Course Code", "Course Title", "Type"]]
+            for s in regular_subs:
+                reg_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Regular"])
+                
+            t_reg = Table(reg_rows, colWidths=[40, 80, 335, 80], rowHeights=row_h)
+            t_reg.setStyle(TableStyle([
+                ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+                ('ALIGN', (0,0), (0,-1), 'CENTER'),
+                ('ALIGN', (3,0), (3,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('FONTSIZE', (0,0), (-1,-1), fontsize), 
+            ]))
+            t_reg.wrapOn(c, w, h)
+            _, th_reg = t_reg.wrap(w, h)
+            t_reg.drawOn(c, 30, y - th_reg)
+            y -= (th_reg + 10)
+
+        if arrear_count > 0:
+            c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Arrear Courses"); y -= 5
+            arr_rows = [["Sem", "Course Code", "Course Title", "Type"]]
+            for s in arrear_subs:
+                arr_rows.append([str(s.get('sem', '-')), s['code'], Paragraph(s['title'], getSampleStyleSheet()['Normal']), "Arrear"])
+                
+            t_arr = Table(arr_rows, colWidths=[40, 80, 335, 80], rowHeights=row_h)
+            t_arr.setStyle(TableStyle([
+                ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+                ('ALIGN', (0,0), (0,-1), 'CENTER'),
+                ('ALIGN', (3,0), (3,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('FONTSIZE', (0,0), (-1,-1), fontsize), 
+            ]))
+            t_arr.wrapOn(c, w, h)
+            _, th_arr = t_arr.wrap(w, h)
+            t_arr.drawOn(c, 30, y - th_arr)
+            y -= (th_arr + 10)
+
+        c.setFont("Helvetica-Bold", 10); c.drawString(30, y, "Fee Details"); y -= 5
+        
+        base_exam_fee = float(fees.get('Exam', 2000))
+        fee_exam = base_exam_fee if regular_count > 0 else 0.0  
+        
+        fee_arrear_per_sub = float(fees.get('Arrear', 0))
+        fee_arrear_total = fee_arrear_per_sub * arrear_count
+        
+        fee_penalty = float(fees.get('Penalty', 0))
+        fee_misc = float(fees.get('Misc', 400))
+        
+        total = fee_exam + fee_arrear_total + fee_penalty + fee_misc
+        
+        f_rows = [
+            ["Description", "Amount (Rs)"],
+            ["Regular Examination Fees", f"{fee_exam:.2f}"],
+            [f"Arrear Examination Fees ({arrear_count} x {fee_arrear_per_sub:.2f})", f"{fee_arrear_total:.2f}"],
+            ["Penalty Fees", f"{fee_penalty:.2f}"],
+            ["Application & Marks Card Fees", f"{fee_misc:.2f}"],
+            ["TOTAL AMOUNT", f"{total:.2f}"]
+        ]
     
     t3 = Table(f_rows, colWidths=[435, 100], rowHeights=16 if len(subjects) > 10 else None)
     t3.setStyle(TableStyle([
@@ -450,7 +507,6 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
     
     valid_subs = [s for s in subjects if eligibility_map.get(s['code'], False)]
     
-    # 🟢 CHANGED THRESHOLD: 10 or more subjects now trigger the side-by-side layout
     if len(valid_subs) >= 10:
         mid = (len(valid_subs) + 1) // 2
         left_subs = valid_subs[:mid]
@@ -500,7 +556,6 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
         tg.drawOn(c, 30, y - gh)
 
     else:
-        # SINGLE TABLE LOGIC (1 to 9 subjects)
         grid_data = [["Date", "Session", "Sem", "Course Code", "Invigilator Sign"]]
         
         for s in valid_subs:
@@ -562,7 +617,7 @@ def draw_hall_ticket_half(c, w, base_y, student, subjects, section, app_id, asse
 tabs = st.tabs(["💰 Fees", "🚀 Bulk Generator", "📄 Individual"])
 
 with tabs[0]:
-    st.info(f"Setting fees for cycle: **{active_cycle_name}**")
+    st.info(f"Setting standard fees for cycle: **{active_cycle_name}** (Note: ODE cycles automatically use ₹6,000 Attempt 1 / ₹3,000 Attempt 2+ / ₹100 App / ₹600 Grade Card)")
     with st.form("fees"):
         c1, c2 = st.columns(2)
         e = c1.number_input("Regular Fee", 2000.0)
@@ -576,6 +631,17 @@ with tabs[0]:
 
 with tabs[1]:
     st.subheader(f"Bulk Generator: {active_cycle_name}")
+    bulk_doc_mode = st.radio(
+        "Select Document Output Mode:",
+        [
+            "📄 Both (Application Form + Hall Ticket)",
+            "🎫 Hall Tickets Only",
+            "📝 Exam Applications Only"
+        ],
+        horizontal=True,
+        key="bulk_doc_mode"
+    )
+    
     if st.button("🚀 Generate All Documents (Single PDF)"):
         with st.spinner("Step 1: Indexing Data..."):
             system_assets = {"logo": None, "naac": None, "watermark": None}
@@ -591,13 +657,18 @@ with tabs[1]:
             eligibility_map = fetch_course_eligibility_map()
             branch_map = fetch_branches_map()
             
+            try:
+                cycle_res = supabase.table("exam_cycles").select("*").eq("cycle_id", selected_cycle_id).single().execute()
+                curr_cycle_type = cycle_res.data.get('exam_type', 'Regular') if cycle_res.data else 'Regular'
+            except:
+                curr_cycle_type = 'Regular'
+            
             fee_res = supabase.table("master_fees").select("*").execute()
             fees = {f['fee_type']: f['amount'] for f in fee_res.data}
 
             all_students = fetch_all_records("master_students")
             
-            # 🟢 REVERTED TO SOURCE 10 LOGIC: Direct fetch from course_registrations by cycle_id
-            all_regs = fetch_all_records("course_registrations", "usn, course_code, semester, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
+            all_regs = fetch_all_records("course_registrations", "usn, course_code, semester, registration_type, master_courses(title, semester_id)", "cycle_id", selected_cycle_id)
             
             course_map = {}
             for r in all_regs:
@@ -611,7 +682,12 @@ with tabs[1]:
                 if not sem:
                     sem = mc.get('semester_id', '-')
                     
-                course_map[usn].append({"code": r['course_code'], "title": title, "sem": sem})
+                course_map[usn].append({
+                    "code": r['course_code'],
+                    "title": title,
+                    "sem": sem,
+                    "reg_type": r.get('registration_type', 'REGULAR')
+                })
                 
             usns = list(course_map.keys())
 
@@ -662,18 +738,21 @@ with tabs[1]:
                     b_name_str = b_info.get("branch_name", db_branch_code)
                     
                     app_id = generate_app_id(u, selected_cycle_id)
-                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
-                    c.showPage()
                     
-                    HALF_A4 = 841.89 / 2
-                    draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                    if bulk_doc_mode in ["📄 Both (Application Form + Hall Ticket)", "📝 Exam Applications Only"]:
+                        draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str, exam_type=curr_cycle_type)
+                        c.showPage()
                     
-                    c.setDash(4, 4)
-                    c.line(20, HALF_A4, A4[0]-20, HALF_A4)
-                    c.setDash([])
-                    
-                    draw_hall_ticket_half(c, A4[0], 0, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
-                    c.showPage()
+                    if bulk_doc_mode in ["📄 Both (Application Form + Hall Ticket)", "🎫 Hall Tickets Only"]:
+                        HALF_A4 = 841.89 / 2
+                        draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                        
+                        c.setDash(4, 4)
+                        c.line(20, HALF_A4, A4[0]-20, HALF_A4)
+                        c.setDash([])
+                        
+                        draw_hall_ticket_half(c, A4[0], 0, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                        c.showPage()
                 
                 progress_bar.progress(min((i + BATCH_SIZE) / total, 1.0))
                 for stream in batch_photos.values(): stream.close()
@@ -684,6 +763,16 @@ with tabs[1]:
 
 with tabs[2]:
     st.write("### Single Student Generator")
+    single_doc_mode = st.radio(
+        "Select Document Output Mode:",
+        [
+            "📄 Both (Application Form + Hall Ticket)",
+            "🎫 Hall Tickets Only",
+            "📝 Exam Applications Only"
+        ],
+        horizontal=True,
+        key="single_doc_mode"
+    )
     
     col1, col2 = st.columns([3, 1])
     target_usn = col1.text_input("Enter USN to Generate:").strip().upper()
@@ -714,10 +803,10 @@ with tabs[2]:
                 cycle_res = supabase.table("exam_cycles").select("*").eq("cycle_id", selected_cycle_id).single().execute()
                 curr_cycle = cycle_res.data
                 active_cycle_name = curr_cycle.get('cycle_name', 'Unknown Cycle')
+                curr_cycle_type = curr_cycle.get('exam_type', 'Regular')
 
-                # 🟢 REVERTED TO SOURCE 10 LOGIC: Direct fetch from course_registrations by cycle_id
                 sub_res = supabase.table("course_registrations")\
-                    .select("course_code, semester, master_courses(title, semester_id)")\
+                    .select("course_code, semester, registration_type, master_courses(title, semester_id)")\
                     .eq("usn", target_usn).eq("cycle_id", selected_cycle_id).execute()
                 
                 if not sub_res.data:
@@ -731,7 +820,12 @@ with tabs[2]:
                     sem = r.get('semester')
                     if not sem:
                         sem = mc.get('semester_id', '-')
-                    raw_subs.append({"code": r['course_code'], "title": title, "sem": sem})
+                    raw_subs.append({
+                        "code": r['course_code'],
+                        "title": title,
+                        "sem": sem,
+                        "reg_type": r.get('registration_type', 'REGULAR')
+                    })
                     
                 unique_subs = []
                 seen_codes = set()
@@ -757,19 +851,22 @@ with tabs[2]:
                     buf = io.BytesIO(); c = canvas.Canvas(buf, pagesize=A4)
                     app_id = generate_app_id(target_usn, selected_cycle_id)
                     
-                    draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str)
-                    c.showPage()
+                    if single_doc_mode in ["📄 Both (Application Form + Hall Ticket)", "📝 Exam Applications Only"]:
+                        draw_application_page(c, A4[0], A4[1], stu, subs, fees, system_assets, app_id, active_cycle_name, photo_stream, prog_type, db_branch_code, b_name_str, exam_type=curr_cycle_type)
+                        c.showPage()
                     
-                    HALF_A4 = 841.89 / 2
-                    
-                    draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
-                    
-                    c.setDash(4, 4)
-                    c.line(20, HALF_A4, A4[0]-20, HALF_A4)
-                    c.setDash([])
-                    
-                    draw_hall_ticket_half(c, A4[0], 0, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
-                    c.showPage(); c.save()
+                    if single_doc_mode in ["📄 Both (Application Form + Hall Ticket)", "🎫 Hall Tickets Only"]:
+                        HALF_A4 = 841.89 / 2
+                        draw_hall_ticket_half(c, A4[0], HALF_A4, stu, subs, "STUDENT COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                        
+                        c.setDash(4, 4)
+                        c.line(20, HALF_A4, A4[0]-20, HALF_A4)
+                        c.setDash([])
+                        
+                        draw_hall_ticket_half(c, A4[0], 0, stu, subs, "COLLEGE COPY", app_id, system_assets, active_cycle_name, photo_stream, timetable_map, eligibility_map, db_branch_code, b_name_str)
+                        c.showPage()
+                        
+                    c.save()
                     
                     st.download_button(f"📥 Download Docs for {target_usn}", buf.getvalue(), f"{target_usn}_ExamDocs.pdf")
             except Exception as e:
