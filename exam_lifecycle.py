@@ -70,6 +70,8 @@ with tabs[0]:
             
             if current_cycle.get('exam_type') == "Regular + Arrear (Concurrent)":
                 st.info("💡 **Concurrent Cycle Active:** This cycle is managing both regular semester students and their previous semester backlogs. Ensure timetables and hall tickets account for both.")
+            elif current_cycle.get('exam_type') == "ODE":
+                st.info("⚡ **On-Demand Examination (ODE) Cycle Active:** Fees are automatically calculated at ₹6,000/subject (1st ODE Attempt) and ₹3,000/subject (Subsequent ODE Attempts) + ₹100 Application Fee + ₹600 Grade Card Fee.")
 
             # Calculate progress based on 12 steps now
             progress_val = current_status / 12
@@ -84,7 +86,7 @@ with tabs[0]:
 
             if current_status == 1:
                 st.markdown("### 📅 Step 1: Upload Exam Timetable")
-                st.info("Upload the CSV containing the schedule. If this is a concurrent cycle (e.g. Sem 2 Regular + Sem 1 Arrears), include ALL course codes in this single file.")
+                st.info("Upload the CSV containing the schedule. If this is a concurrent or ODE cycle, include ALL course codes in this single file.")
                 
                 with st.expander("View CSV Template Guide"):
                     st.write("Columns: `course_code, exam_date, session` (Morning/Afternoon)")
@@ -187,14 +189,13 @@ with tabs[0]:
 with tabs[1]:
     st.markdown("### 🆕 Initiate New Exam Session")
     
-    # 🟢 THE FIX: Catch the success message AFTER the page reloads
     if 'success_message' in st.session_state:
         st.success(st.session_state['success_message'])
         del st.session_state['success_message']
         
     cycle_category = st.radio(
         "Select Cycle Category", 
-        ["Standard Academic Cycle", "Special Event Cycle (Summer / Make-up)"],
+        ["Standard Academic Cycle", "Special Event Cycle (Summer / Make-up / ODE)"],
         horizontal=True
     )
     
@@ -237,7 +238,6 @@ with tabs[1]:
             if not c_name or not c_target_sems:
                 st.error("Please provide a name and select target semesters.")
             else:
-                # 🟢 THE FIX: Check for duplicates before inserting
                 dup_check = supabase.table("exam_cycles").select("cycle_id").eq("cycle_name", c_name.strip()).execute()
                 if dup_check.data:
                     st.error(f"❌ A cycle named '{c_name}' already exists! Please use a unique name.")
@@ -252,29 +252,36 @@ with tabs[1]:
                     }
                     try:
                         supabase.table("exam_cycles").insert(new_cycle).execute()
-                        # Save message to session state to survive the rerun
                         st.session_state['success_message'] = f"✅ Standard Cycle '{c_name}' ({c_prog_type}) initiated successfully!"
                         st.rerun()
                     except Exception as e: st.error(f"Database Error: {e}")
 
-    # --- SPECIAL EVENT CYCLE (SUMMER / MAKE-UP) ---
-    elif cycle_category == "Special Event Cycle (Summer / Make-up)":
-        st.info("Use this for ad-hoc events. You can instantly push these to the BRS portal for Department Online Registrations.")
+    # --- SPECIAL EVENT CYCLE (SUMMER / MAKE-UP / ODE) ---
+    elif cycle_category == "Special Event Cycle (Summer / Make-up / ODE)":
+        st.info("Use this for ad-hoc events (Summer, Make-up, or On-Demand Examinations). You can instantly push these to the BRS portal for Department Online Registrations.")
         
-        e_name = st.text_input("Event Name", placeholder="e.g., Summer Semester 2026")
+        e_name = st.text_input("Event Name", placeholder="e.g., On-Demand Examinations(ODE)- November 2026")
         
         col_e1, col_e2, col_e3, col_e4 = st.columns(4)
-        e_ay = col_e1.text_input("Academic Year", value="2025-26", key="e_ay")
+        e_ay = col_e1.text_input("Academic Year", value="2026-27", key="e_ay")
         e_prog_type = col_e2.selectbox("Program", ["UG", "PG", "BOTH"], key="e_prog")
-        e_type = col_e3.selectbox("Event Type", ["Summer", "Make-up"])
-        e_sem_type = col_e4.selectbox("Semester Type", ["SUMMER", "ODD", "EVEN", "BOTH"])
+        
+        # 🟢 Added ODE as a dedicated Event Type
+        e_type = col_e3.selectbox("Event Type", ["Summer", "Make-up", "ODE"], key="e_type_sel")
+        
+        sem_type_options = ["SUMMER", "ODD", "EVEN", "BOTH"]
+        default_sem_idx = 3 if e_type == "ODE" else 0
+        e_sem_type = col_e4.selectbox("Semester Type", sem_type_options, index=default_sem_idx, key="e_sem_type_sel")
+        
+        if e_type == "ODE":
+            st.success("⚡ **ODE Fee Rules Active:** ₹6,000/subject (Attempt 1) | ₹3,000/subject (Attempt 2+) + ₹100 Application Fee + ₹600 Grade Card Fee.")
         
         e_sem_options = list(range(1, 11)) if e_prog_type != "PG" else list(range(1, 5))
         e_target_sems = st.multiselect("Select Target Semesters", options=e_sem_options, default=e_sem_options, key="e_sems")
         
         parent_cycle_id = None
-        if e_type == "Make-up":
-            st.markdown("🔗 **Link to Parent Exam Cycle**")
+        if e_type in ["Make-up", "ODE"]:
+            st.markdown("🔗 **Link to Parent Exam Cycle (Optional)**")
             try:
                 existing_cycles = supabase.table("exam_cycles").select("cycle_id, cycle_name").execute().data
                 if existing_cycles:
@@ -291,7 +298,6 @@ with tabs[1]:
             if not e_name or not e_target_sems:
                 st.error("Please provide an event name and select target semesters.")
             else:
-                # 🟢 THE FIX: Check for duplicates before inserting
                 dup_check = supabase.table("exam_cycles").select("cycle_id").eq("cycle_name", e_name.strip()).execute()
                 if dup_check.data:
                     st.error(f"❌ An event named '{e_name}' already exists! Please use a unique name.")
@@ -306,7 +312,6 @@ with tabs[1]:
                     }
                     try:
                         supabase.table("exam_cycles").insert(new_event).execute()
-                        # Save message to session state to survive the rerun
                         st.session_state['success_message'] = f"✅ {e_type} Event '{e_name}' ({e_prog_type}) initiated! (BRS Portal Active: {push_to_brs})"
                         st.rerun()
                     except Exception as e: st.error(f"Database Error: {e}")
@@ -360,7 +365,6 @@ with tabs[3]:
     try:
         all_branches = fetch_all_records("master_branches", "branch_code, program_type")
         
-        # 🟢 FIX: Filter out non-departments from the promotion UI
         ignore_branches = ['BS', 'HM', 'COMMON', 'FIRST_YEAR', 'MATH', 'ENG', 'PHY', 'CHE', 'GEN']
         
         ug_branches = [b['branch_code'] for b in all_branches if b.get('program_type') == 'UG' and str(b['branch_code']).upper() not in ignore_branches]
@@ -368,7 +372,6 @@ with tabs[3]:
     except Exception:
         ug_branches, pg_branches = [], []
 
-    # 🟢 NEW: 3 Tabs (Added End of Program Tab)
     promo_tabs = st.tabs(["⏩ Odd to Even Promotion", "🚧 Even to Odd (Vertical Progression)", "🎓 Graduation & Course Completion"])
 
     # --- ODD TO EVEN PROMOTION ---
@@ -542,14 +545,13 @@ with tabs[3]:
                         del st.session_state['promo_preview'] 
                         st.rerun()
 
-    # --- 🟢 NEW: GRADUATION / COURSE COMPLETION ---
+    # --- GRADUATION / COURSE COMPLETION ---
     with promo_tabs[2]:
         st.write("Process students who have completed their final semester. Students with no backlogs become **ALUMNI**, while those with pending arrears become **COURSE_COMPLETED**.")
         
         e_col1, e_col2, e_col3 = st.columns(3)
         e_prog = e_col1.selectbox("Program Type", ["UG", "PG"], key="end_prog")
         
-        # Default Sem 8 for UG, Sem 4 for PG
         default_sem = 8 if e_prog == "UG" else 4
         e_sem = e_col2.number_input("Final Semester", value=default_sem, min_value=2, max_value=10)
         
@@ -561,15 +563,12 @@ with tabs[3]:
                 st.error("Please select at least one branch.")
             else:
                 with st.spinner("Analyzing academic histories for graduation..."):
-                    
-                    # Fetch ACTIVE students in final semester
                     raw_students = fetch_all_records("master_students", filters={"current_sem": str(e_sem)})
                     students = [s for s in raw_students if str(s.get('status', 'ACTIVE')).strip().upper() == 'ACTIVE' and s.get('branch_code') in e_branches]
                     
                     if not students:
                         st.warning(f"No ACTIVE {e_prog} students found in Semester {e_sem}.")
                     else:
-                        # Fetch all results to determine ALUMNI vs COURSE_COMPLETED
                         all_results = fetch_all_records("student_results", "usn, course_code, is_pass, cycle_id")
                         all_results.sort(key=lambda x: int(x.get('cycle_id', 0)))
                         
@@ -585,23 +584,15 @@ with tabs[3]:
                         for s in students:
                             usn = s['usn']
                             student_courses = latest_results.get(usn, {})
-                            
-                            # Count subjects that are NOT passed
                             active_backlogs = sum(1 for passed in student_courses.values() if not passed)
                             
                             if active_backlogs == 0 and len(student_courses) > 0:
-                                # Passed everything!
                                 alumni_payload.append({"usn": usn, "status": "ALUMNI"})
                             else:
-                                # Has backlogs
                                 cc_payload.append({"usn": usn, "status": "COURSE_COMPLETED"})
                         
-                        # Execute DB updates
                         update_payload = alumni_payload + cc_payload
                         for i in range(0, len(update_payload), 1000):
-                            # Updating just the status column for these USNs
-                            # We must include the existing data to satisfy the upsert, 
-                            # so we merge the new status into the student's existing record dict
                             batch = []
                             for row in update_payload[i:i+1000]:
                                 target_usn = row['usn']
