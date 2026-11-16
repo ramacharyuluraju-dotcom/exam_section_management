@@ -3,143 +3,565 @@ import pandas as pd
 import io
 import zipfile
 from docxtpl import DocxTemplate
+from docx import Document
+from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from jinja2 import Template
 
-st.set_page_config(page_title="COE Appointment Packager", page_icon="📦", layout="wide")
+# Optional ReportLab import for direct A4 PDF label sheet generation
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    HAS_REPORTLAB = True
+except ImportError:
+    HAS_REPORTLAB = False
 
-st.title("📦 COE Appointment Packager")
-st.markdown("Generates personalized **Appointment Orders** and **QP Templates**, bundling them into ready-to-email `.zip` folders for dispatch.")
+st.set_page_config(page_title="COE Appointment & Address Packager", page_icon="📦", layout="wide")
+
+st.title("📦 COE Appointment & Envelope Address Packager")
+st.markdown(
+    "Generates personalized **Appointment Orders**, **QP Templates**, and **Printable Envelope Address Cut-Out Sheets** "
+    "from your Mail Merge CSV."
+)
 
 # --- FILE UPLOADS ---
 st.sidebar.header("Upload Files")
 uploaded_csv = st.sidebar.file_uploader("1. Upload Mail Merge Data (.csv)", type=["csv"])
 uploaded_appointment_template = st.sidebar.file_uploader("2. Upload Appointment Order Template (.docx)", type=["docx"])
 uploaded_qp_template = st.sidebar.file_uploader("3. Upload QP Format Template (.docx)", type=["docx"])
-uploaded_attachments = st.sidebar.file_uploader("4. Upload Static Attachments (Remuneration Bill, Declaration, etc.)", accept_multiple_files=True)
+uploaded_attachments = st.sidebar.file_uploader(
+    "4. Upload Static Attachments (Remuneration Bill, Declaration, etc.)",
+    accept_multiple_files=True
+)
 
-if uploaded_csv and uploaded_appointment_template and uploaded_qp_template:
+
+# --- HELPER: BUILD NORMALIZED CONTEXT FROM CSV ROW ---
+def build_row_context(row, index=0):
+    raw_context = {
+        str(k).strip().replace(' ', '_'): ('' if pd.isna(v) else str(v).strip())
+        for k, v in row.to_dict().items()
+    }
+    context = {**raw_context}
+
+    # Case-insensitive lookup map for flexible CSV column matching
+    lower_map = {k.lower(): v for k, v in context.items() if v}
+
+    def pick_first(*keys, default=""):
+        for k in keys:
+            if k in context and context[k]:
+                return context[k]
+            if k.lower() in lower_map:
+                return lower_map[k.lower()]
+        return default
+
+    # Smart bridging for templates & address labels
+    context['Setter_Name'] = pick_first('Setter_Name', 'Name', 'Faculty_Name', 'Examiner_Name', default=f"Setter_{index + 1}")
+    context['Name'] = context['Setter_Name']
+    context['Course_Code'] = pick_first('Course_Code', 'Course', 'Sub_Code', 'Subject_Code', default="")
+    context['Course_Title'] = pick_first('Course_Title', 'Course_Name', 'Subject_Name', 'Subject', default="")
+    context['Course_Name'] = context['Course_Title']
+    context['Academic_Year'] = pick_first('Academic_Year', 'AY', default="")
+    context['AY'] = context['Academic_Year']
+
+    if 'ODD_EVEN' in context:
+        context['Odd_Even'] = context['ODD_EVEN']
+        context['Semester_Type'] = context['ODD_EVEN']
+
+    # Address-specific smart fields
+    context['Designation'] = pick_first('Designation', 'Role', 'Post', default="")
+    context['Department'] = pick_first('Department', 'Dept', 'Branch', 'Offering_Department', default="")
+    context['College'] = pick_first(
+        'College', 'College_Name', 'Institute', 'Institution', 'Organization', 'University', default=""
+    )
+    context['Address'] = pick_first(
+        'Address', 'Postal_Address', 'College_Address', 'Communication_Address', 'Residential_Address', 'Street', default=""
+    )
+    context['City'] = pick_first('City', 'Place', 'Location', 'District', default="")
+    context['Pincode'] = pick_first('Pincode', 'Pin', 'Pin_Code', 'Zip', default="")
+    context['Phone'] = pick_first('Phone', 'Mobile', 'Mobile_No', 'Contact', 'Contact_No', 'Phone_No', default="")
+    context['Ref_No'] = pick_first('Ref_No', 'Reference_No', 'Order_No', default="")
+
+    return context
+
+
+# --- HELPER: SET XML BORDERS & CELL MARGINS IN PYTHON-DOCX ---
+def style_docx_address_cell(cell, top_pt=6, bottom_pt=6, left_pt=8, right_pt=8):
+    tcPr = cell._tc.get_or_add_tcPr()
+
+    # 1. Outer dashed/solid cut border around the address box
+    tcBorders = OxmlElement('w:tcBorders')
+    for border_name in ['top', 'left', 'bottom', 'right']:
+        border = OxmlElement(f'w:{border_name}')
+        border.set(qn('w:val'), 'dashed')
+        border.set(qn('w:sz'), '8')  # 1 pt width
+        border.set(qn('w:space'), '0')
+        border.set(qn('w:color'), '1E293B')
+        tcBorders.append(border)
+    tcPr.append(tcBorders)
+
+    # 2. Inner cell padding so text never touches the scissor cut line
+    tcMar = OxmlElement('w:tcMar')
+    for side, pt_val in [('top', top_pt), ('bottom', bottom_pt), ('left', left_pt), ('right', right_pt)]:
+        node = OxmlElement(f'w:{side}')
+        node.set(qn('w:w'), str(int(pt_val * 20)))  # dxa (1 pt = 20 dxa)
+        node.set(qn('w:type'), 'dxa')
+        tcMar.append(node)
+    tcPr.append(tcMar)
+
+
+# --- HELPER: GENERATE WORD (.DOCX) ADDRESS CUT-OUT GRID ---
+def generate_address_labels_docx(contexts, to_template_str, from_text, header_badge, boxes_per_page=8):
+    doc = Document()
+
+    # Configure narrow A4 page margins (0.4 in) to maximize box size
+    for section in doc.sections:
+        section.page_width = Inches(8.27)
+        section.page_height = Inches(11.69)
+        section.top_margin = Inches(0.4)
+        section.bottom_margin = Inches(0.4)
+        section.left_margin = Inches(0.4)
+        section.right_margin = Inches(0.4)
+
+    rows_per_page = boxes_per_page // 2
+    row_height_in = 10.6 / rows_per_page
+    jinja_tpl = Template(to_template_str)
+
+    # Process in chunks of `boxes_per_page`
+    for page_start in range(0, len(contexts), boxes_per_page):
+        page_items = contexts[page_start:page_start + boxes_per_page]
+        num_rows = (len(page_items) + 1) // 2
+
+        table = doc.add_table(rows=num_rows, cols=2)
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.autofit = False
+
+        for r_idx in range(num_rows):
+            row = table.rows[r_idx]
+            row.height = Inches(row_height_in)
+
+            for c_idx in range(2):
+                item_idx = r_idx * 2 + c_idx
+                cell = row.cells[c_idx]
+                cell.width = Inches(3.7)
+                cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+                if item_idx >= len(page_items):
+                    # Leave trailing odd cell blank without border
+                    continue
+
+                ctx = page_items[item_idx]
+                style_docx_address_cell(cell)
+
+                # Clear default empty paragraph
+                p_top = cell.paragraphs[0]
+                p_top.paragraph_format.space_before = Pt(0)
+                p_top.paragraph_format.space_after = Pt(4)
+
+                # Top Header Strip (CONFIDENTIAL + Course Code / Ref)
+                tag_right = ctx.get('Course_Code') or ctx.get('Ref_No') or ''
+                header_line = header_badge.strip()
+                if tag_right:
+                    header_line = f"{header_line}   |   [{tag_right}]" if header_line else f"[{tag_right}]"
+
+                if header_line:
+                    run_hdr = p_top.add_run(header_line)
+                    run_hdr.bold = True
+                    run_hdr.font.name = 'Arial'
+                    run_hdr.font.size = Pt(8.5)
+                    run_hdr.font.color.rgb = RGBColor(30, 58, 138)
+
+                # TO: Address Body
+                rendered_to = jinja_tpl.render(**ctx)
+                to_lines = [line.strip() for line in rendered_to.splitlines() if line.strip()]
+
+                p_to = cell.add_paragraph()
+                p_to.paragraph_format.space_before = Pt(2)
+                p_to.paragraph_format.space_after = Pt(6)
+                p_to.paragraph_format.line_spacing = 1.15
+
+                run_to_label = p_to.add_run("TO:\n")
+                run_to_label.bold = True
+                run_to_label.font.name = 'Arial'
+                run_to_label.font.size = Pt(9.5)
+
+                for l_i, line in enumerate(to_lines):
+                    run_line = p_to.add_run(line + ("\n" if l_i < len(to_lines) - 1 else ""))
+                    run_line.font.name = 'Arial'
+                    if l_i == 0:
+                        run_line.bold = True
+                        run_line.font.size = Pt(10.5)
+                    else:
+                        run_line.font.size = Pt(9.5)
+
+                # FROM: Return Address Footer
+                if from_text.strip():
+                    p_from = cell.add_paragraph()
+                    p_from.paragraph_format.space_before = Pt(4)
+                    p_from.paragraph_format.space_after = Pt(0)
+                    p_from.paragraph_format.line_spacing = 1.1
+                    run_from = p_from.add_run("─" * 38 + "\n" + from_text.strip())
+                    run_from.font.name = 'Arial'
+                    run_from.font.size = Pt(8)
+                    run_from.font.color.rgb = RGBColor(71, 85, 105)
+
+        if page_start + boxes_per_page < len(contexts):
+            doc.add_page_break()
+
+    out_stream = io.BytesIO()
+    doc.save(out_stream)
+    out_stream.seek(0)
+    return out_stream
+
+
+# --- HELPER: GENERATE A4 PDF ADDRESS CUT-OUT GRID (REPORTLAB) ---
+def generate_address_labels_pdf(contexts, to_template_str, from_text, header_badge, boxes_per_page=8):
+    if not HAS_REPORTLAB:
+        return None
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=10 * mm,
+        rightMargin=10 * mm,
+        topMargin=10 * mm,
+        bottomMargin=10 * mm
+    )
+
+    styles = getSampleStyleSheet()
+    hdr_style = ParagraphStyle(
+        'HdrStyle', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=8, leading=10, textColor=colors.HexColor('#1e3a8a')
+    )
+    to_style = ParagraphStyle(
+        'ToStyle', parent=styles['Normal'], fontName='Helvetica', fontSize=9.5, leading=12.5, textColor=colors.black
+    )
+    from_style = ParagraphStyle(
+        'FromStyle', parent=styles['Normal'], fontName='Helvetica', fontSize=7.5, leading=9.5, textColor=colors.HexColor('#334155')
+    )
+
+    rows_per_page = boxes_per_page // 2
+    box_width = 93 * mm
+    box_height = (275 * mm) / rows_per_page
+    jinja_tpl = Template(to_template_str)
+
+    def esc_xml(s):
+        return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+    table_rows = []
+    current_row = []
+
+    for ctx in contexts:
+        cell_flowables = []
+        tag_right = ctx.get('Course_Code') or ctx.get('Ref_No') or ''
+        header_line = header_badge.strip()
+        if tag_right:
+            header_line = f"{header_line} &nbsp;&nbsp;|&nbsp;&nbsp; [{tag_right}]" if header_line else f"[{tag_right}]"
+
+        if header_line:
+            cell_flowables.append(Paragraph(f"✂ {header_line}", hdr_style))
+            cell_flowables.append(Spacer(1, 1.5 * mm))
+
+        rendered_to = jinja_tpl.render(**ctx)
+        to_lines = [esc_xml(line.strip()) for line in rendered_to.splitlines() if line.strip()]
+        if to_lines:
+            to_lines[0] = f"<b>{to_lines[0]}</b>"
+        to_html = "<b>TO:</b><br/>" + "<br/>".join(to_lines)
+        cell_flowables.append(Paragraph(to_html, to_style))
+
+        if from_text.strip():
+            cell_flowables.append(Spacer(1, 2 * mm))
+            from_lines = [esc_xml(line.strip()) for line in from_text.strip().splitlines() if line.strip()]
+            if from_lines:
+                from_lines[0] = f"<b>{from_lines[0]}</b>"
+            from_html = "________________________________________<br/>" + "<br/>".join(from_lines)
+            cell_flowables.append(Paragraph(from_html, from_style))
+
+        current_row.append(cell_flowables)
+        if len(current_row) == 2:
+            table_rows.append(current_row)
+            current_row = []
+
+    if len(current_row) == 1:
+        current_row.append([])
+        table_rows.append(current_row)
+
+    row_heights = [box_height] * len(table_rows)
+    grid_table = Table(table_rows, colWidths=[box_width, box_width], rowHeights=row_heights)
+    grid_table.setStyle(TableStyle([
+        ('GRID', (0, 0), (-1, -1), 0.8, colors.HexColor('#1e293b'), None, (3, 3)),  # Dashed scissor cut lines
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+    ]))
+
+    doc.build([grid_table])
+    buffer.seek(0)
+    return buffer
+
+
+# ==============================================================================
+# MAIN WORKFLOW
+# ==============================================================================
+if uploaded_csv:
     try:
         # 1. Safely read and clean the CSV file to strictly prevent Pandas ParserErrors
-        file_content = uploaded_csv.read().decode("utf-8")
+        file_content = uploaded_csv.read().decode("utf-8", errors="replace")
         if file_content.startswith("data:text/csv"):
-            file_content = file_content.split(",", 1)[1] # Instantly strip corrupted URI header
-            
+            file_content = file_content.split(",", 1)[1]
+
         df = pd.read_csv(io.StringIO(file_content), on_bad_lines='skip', engine='python')
-        
-        st.subheader("Data Preview")
+
+        st.subheader("1. Data Preview")
         st.dataframe(df, use_container_width=True)
-        
-        st.info("""
-        **How variables work:**
-        Every column header in your CSV is now a usable variable in your Word documents! 
-        For example, if your CSV has a column named `Last_date`, you can type `{{ Last_date }}` anywhere in either `.docx` file.
-        """)
 
-        # --- EXECUTION ---
-        st.subheader("Package Files")
-        st.write("Click below to generate a zip file containing individual setter packages.")
-        
-        if st.button("🚀 Generate Setter Packages", type="primary"):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
+        detected_cols = [str(c).strip().replace(' ', '_') for c in df.columns]
+        st.info(
+            f"**Detected CSV Variables ({len(detected_cols)}):** "
+            + ", ".join([f"`{{{{ {c} }}}}`" for c in detected_cols])
+        )
+
+        # Build contexts for all rows in CSV
+        all_row_contexts = [build_row_context(row, idx) for idx, row in df.iterrows()]
+
+        # ======================================================================
+        # SECTION 2: ENVELOPE ADDRESS LABEL GENERATOR (PRINT, CUT & PASTE BOXES)
+        # ======================================================================
+        st.divider()
+        st.subheader("🏷️ 2. Printable Envelope Address Packaging (Cut & Paste Boxes)")
+        st.markdown(
+            "Generates a **2-column A4 grid of bordered address boxes** ready to print, cut along the dashed lines, "
+            "and paste onto dispatch envelopes."
+        )
+
+        col_cfg1, col_cfg2, col_cfg3 = st.columns([1.2, 1.2, 1])
+        with col_cfg1:
+            default_to_template = (
+                "{{ Setter_Name }}\n"
+                "{% if Designation %}{{ Designation }}{% if Department %}, Dept. of {{ Department }}{% endif %}\n{% endif %}"
+                "{% if College %}{{ College }}\n{% endif %}"
+                "{% if Address %}{{ Address }}\n{% endif %}"
+                "{% if City %}{{ City }}{% if Pincode %} - {{ Pincode }}{% endif %}\n{% endif %}"
+                "{% if Phone %}Ph: {{ Phone }}{% endif %}"
+            )
+            to_template_input = st.text_area(
+                "TO Address Box Template (uses your CSV column names):",
+                value=default_to_template,
+                height=145,
+                help="You can type any {{ Column_Name }} from your CSV here."
+            )
+
+        with col_cfg2:
+            default_from_address = (
+                "FROM: The Controller of Examinations\n"
+                "AMC Engineering College (Autonomous)\n"
+                "18th KM, Bannerghatta Main Road, Bengaluru - 560083"
+            )
+            from_address_input = st.text_area(
+                "FROM Return Address (printed at bottom of each box):",
+                value=default_from_address,
+                height=100
+            )
+            header_badge_input = st.text_input(
+                "Top Header Stamp inside Box:",
+                value="CONFIDENTIAL — EXAMINATION WORK"
+            )
+
+        with col_cfg3:
+            boxes_per_page = st.selectbox(
+                "Boxes per A4 Sheet:",
+                options=[8, 10, 6],
+                index=0,
+                format_func=lambda x: f"{x} Boxes per A4 Sheet (2 × {x // 2} Grid)"
+            )
+            only_valid_emails = st.checkbox(
+                "Only include rows with valid Email",
+                value=False,
+                help="Uncheck to print address boxes for all rows in the CSV even if Email is blank."
+            )
+
+            filtered_label_contexts = [
+                c for c in all_row_contexts
+                if not only_valid_emails or ("@" in str(c.get("Email", "")))
+            ]
+
+            st.metric("Total Address Boxes", len(filtered_label_contexts))
+
+        # Live Sample Preview of Box #1
+        if filtered_label_contexts:
+            sample_ctx = filtered_label_contexts[0]
             try:
-                # 1. Read templates and attachments into memory once
-                appointment_bytes = uploaded_appointment_template.read()
-                qp_bytes = uploaded_qp_template.read()
-                static_files = {att.name: att.read() for att in uploaded_attachments} if uploaded_attachments else {}
-                
-                # 2. Create the MASTER zip file in memory
-                master_zip_buffer = io.BytesIO()
-                
-                total_setters = len(df)
-                processed_count = 0
-                
-                with zipfile.ZipFile(master_zip_buffer, "w", zipfile.ZIP_DEFLATED) as master_zip:
-                    
-                    for index, row in df.iterrows():
-                        # Extract core info for naming files (Fallback if names differ in CSV)
-                        name = str(row.get('Setter_Name', row.get('Name', f'Setter_{index}'))).strip()
-                        email = str(row.get('Email', '')).strip()
-                        course = str(row.get('Course_Code', row.get('Course', f'Course_{index}'))).strip()
-                        
-                        if pd.isna(email) or "@" not in email:
-                            continue
-                            
-                        status_text.text(f"Packaging files for {name} ({course})...")
-                        
-                        # Convert row to dict, automatically replacing spaces in CSV headers with underscores
-                        raw_context = {str(k).strip().replace(' ', '_'): ('' if pd.isna(v) else str(v)) for k, v in row.to_dict().items()}
-                        
-                        context = {**raw_context}
-                        
-                        # --- SMART BRIDGING FOR MISMATCHED TEMPLATES ---
-                        if 'Name' in context and 'Setter_Name' not in context: 
-                            context['Setter_Name'] = context['Name']
-                        if 'Course_Name' in context and 'Course_Title' not in context: 
-                            context['Course_Title'] = context['Course_Name']
-                        elif 'Course_Title' in context and 'Course_Name' not in context: 
-                            context['Course_Name'] = context['Course_Title']
-                        if 'AY' in context and 'Academic_Year' not in context: 
-                            context['Academic_Year'] = context['AY']
-                        elif 'Academic_Year' in context and 'AY' not in context: 
-                            context['AY'] = context['Academic_Year']
-                        if 'ODD_EVEN' in context:
-                            context['Odd_Even'] = context['ODD_EVEN']
-                            context['Semester_Type'] = context['ODD_EVEN']
-                        
-                        # --- A. Generate Personalized Appointment Order ---
-                        doc_appt = DocxTemplate(io.BytesIO(appointment_bytes))
-                        doc_appt.render(context)
-                        appt_stream = io.BytesIO()
-                        doc_appt.save(appt_stream)
-                        
-                        # --- B. Generate Personalized QP Template ---
-                        doc_qp = DocxTemplate(io.BytesIO(qp_bytes))
-                        doc_qp.render(context)
-                        qp_stream = io.BytesIO()
-                        doc_qp.save(qp_stream)
-                        
-                        # --- C. Create Individual Setter Zip ---
-                        setter_zip_buffer = io.BytesIO()
-                        with zipfile.ZipFile(setter_zip_buffer, "w", zipfile.ZIP_DEFLATED) as setter_zip:
-                            safe_course = course.replace("/", "_").replace("\\", "_")
-                            safe_name = name.replace(" ", "_").replace("/", "_")
-                            
-                            # Add customized Word Docs
-                            setter_zip.writestr(f"Appointment_Order_{safe_course}_{safe_name}.docx", appt_stream.getvalue())
-                            setter_zip.writestr(f"QP_Format_{safe_course}_{safe_name}.docx", qp_stream.getvalue())
-                            
-                            # Add Static Attachments
-                            for file_name, file_data in static_files.items():
-                                setter_zip.writestr(file_name, file_data)
-                        
-                        # --- D. Add Setter Zip to Master Zip ---
-                        package_name = f"Confidential_{safe_course}_{safe_name}.zip"
-                        master_zip.writestr(package_name, setter_zip_buffer.getvalue())
-                        
-                        processed_count += 1
-                        progress_bar.progress(processed_count / total_setters)
+                sample_rendered = Template(to_template_input).render(**sample_ctx)
+                sample_lines = [l.strip() for l in sample_rendered.splitlines() if l.strip()]
+                with st.expander("👁️ Preview First Envelope Cut-Out Box", expanded=False):
+                    tag_preview = sample_ctx.get('Course_Code') or sample_ctx.get('Ref_No') or ''
+                    st.markdown(
+                        f"""
+                        <div style="border: 2px dashed #1e293b; padding: 14px 18px; border-radius: 4px; max-width: 440px; background: #ffffff; color: #0f172a; font-family: Arial, sans-serif;">
+                            <div style="font-size: 11px; font-weight: bold; color: #1e3a8a; margin-bottom: 6px;">
+                                ✂ {header_badge_input} {f'&nbsp;|&nbsp; [{tag_preview}]' if tag_preview else ''}
+                            </div>
+                            <div style="font-size: 13px; line-height: 1.45;">
+                                <strong>TO:</strong><br/>
+                                {'<br/>'.join([f'<strong>{sample_lines[0]}</strong>'] + sample_lines[1:]) if sample_lines else '<em>(Empty — check column names)</em>'}
+                            </div>
+                            <hr style="margin: 8px 0; border: none; border-top: 1px solid #cbd5e1;" />
+                            <div style="font-size: 11px; color: #475569; line-height: 1.35;">
+                                {'<br/>'.join(from_address_input.strip().splitlines())}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+            except Exception as tpl_err:
+                st.warning(f"Template syntax check: {tpl_err}")
 
-                status_text.text("Finalizing master package...")
-                master_zip_buffer.seek(0)
-                
-                progress_bar.progress(1.0)
-                status_text.empty()
-                st.success(f"✅ Successfully packaged {processed_count} appointment folders!")
-                
-                # 3. Provide Download Button
+            # Generate & Download Standalone Label Files
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                docx_labels_stream = generate_address_labels_docx(
+                    filtered_label_contexts,
+                    to_template_input,
+                    from_address_input,
+                    header_badge_input,
+                    boxes_per_page=boxes_per_page
+                )
                 st.download_button(
-                    label="⬇️ Download All Packages (Master ZIP)",
-                    data=master_zip_buffer,
-                    file_name="All_Setter_Packages.zip",
-                    mime="application/zip",
-                    type="primary",
+                    label=f"📄 Download Printable Address Labels (.docx) — {len(filtered_label_contexts)} Boxes",
+                    data=docx_labels_stream,
+                    file_name="Envelope_Address_Labels.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     use_container_width=True
                 )
-                
-            except Exception as e:
-                st.error(f"Failed during document generation: {str(e)}")
+
+            with btn_col2:
+                if HAS_REPORTLAB:
+                    pdf_labels_stream = generate_address_labels_pdf(
+                        filtered_label_contexts,
+                        to_template_input,
+                        from_address_input,
+                        header_badge_input,
+                        boxes_per_page=boxes_per_page
+                    )
+                    st.download_button(
+                        label=f"🖨️ Download Printable Address Labels (.pdf) — {len(filtered_label_contexts)} Boxes",
+                        data=pdf_labels_stream,
+                        file_name="Envelope_Address_Labels.pdf",
+                        mime="application/pdf",
+                        type="primary",
+                        use_container_width=True
+                    )
+                else:
+                    st.info("Tip: Run `pip install reportlab` if you also want direct PDF export alongside the Word (.docx) label sheet.")
+
+        # ======================================================================
+        # SECTION 3: INDIVIDUAL SETTER ZIP PACKAGER (EXISTING WORKFLOW + LABELS)
+        # ======================================================================
+        st.divider()
+        st.subheader("📦 3. Generate Individual Setter ZIP Packages")
+
+        if uploaded_appointment_template and uploaded_qp_template:
+            st.write("Generates personalized Appointment Orders & QP Templates per setter, plus the master Envelope Address Label sheet.")
+
+            if st.button("🚀 Generate Setter Packages & Address Sheet (Master ZIP)", type="primary"):
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                try:
+                    appointment_bytes = uploaded_appointment_template.read()
+                    qp_bytes = uploaded_qp_template.read()
+                    static_files = {att.name: att.read() for att in uploaded_attachments} if uploaded_attachments else {}
+
+                    master_zip_buffer = io.BytesIO()
+                    total_setters = len(df)
+                    processed_count = 0
+                    packaged_contexts = []
+
+                    with zipfile.ZipFile(master_zip_buffer, "w", zipfile.ZIP_DEFLATED) as master_zip:
+                        for index, row in df.iterrows():
+                            context = build_row_context(row, index)
+                            name = context['Setter_Name']
+                            email = str(row.get('Email', '')).strip()
+                            course = context['Course_Code'] or f"Course_{index + 1}"
+
+                            if pd.isna(email) or "@" not in email:
+                                continue
+
+                            status_text.text(f"Packaging files for {name} ({course})...")
+                            packaged_contexts.append(context)
+
+                            # A. Generate Personalized Appointment Order
+                            doc_appt = DocxTemplate(io.BytesIO(appointment_bytes))
+                            doc_appt.render(context)
+                            appt_stream = io.BytesIO()
+                            doc_appt.save(appt_stream)
+
+                            # B. Generate Personalized QP Template
+                            doc_qp = DocxTemplate(io.BytesIO(qp_bytes))
+                            doc_qp.render(context)
+                            qp_stream = io.BytesIO()
+                            doc_qp.save(qp_stream)
+
+                            # C. Create Individual Setter Zip
+                            setter_zip_buffer = io.BytesIO()
+                            with zipfile.ZipFile(setter_zip_buffer, "w", zipfile.ZIP_DEFLATED) as setter_zip:
+                                safe_course = course.replace("/", "_").replace("\\", "_")
+                                safe_name = name.replace(" ", "_").replace("/", "_")
+
+                                setter_zip.writestr(f"Appointment_Order_{safe_course}_{safe_name}.docx", appt_stream.getvalue())
+                                setter_zip.writestr(f"QP_Format_{safe_course}_{safe_name}.docx", qp_stream.getvalue())
+
+                                for file_name, file_data in static_files.items():
+                                    setter_zip.writestr(file_name, file_data)
+
+                            # D. Add Setter Zip to Master Zip
+                            package_name = f"Confidential_{safe_course}_{safe_name}.zip"
+                            master_zip.writestr(package_name, setter_zip_buffer.getvalue())
+
+                            processed_count += 1
+                            progress_bar.progress(min(1.0, processed_count / max(1, total_setters)))
+
+                        # E. Bundle the Printable Envelope Address Label Sheets at the root of the Master ZIP
+                        if packaged_contexts:
+                            docx_sheet = generate_address_labels_docx(
+                                packaged_contexts, to_template_input, from_address_input, header_badge_input, boxes_per_page
+                            )
+                            master_zip.writestr("00_PRINT_Envelope_Address_Labels.docx", docx_sheet.getvalue())
+
+                            if HAS_REPORTLAB:
+                                pdf_sheet = generate_address_labels_pdf(
+                                    packaged_contexts, to_template_input, from_address_input, header_badge_input, boxes_per_page
+                                )
+                                master_zip.writestr("00_PRINT_Envelope_Address_Labels.pdf", pdf_sheet.getvalue())
+
+                    status_text.text("Finalizing master package...")
+                    master_zip_buffer.seek(0)
+                    progress_bar.progress(1.0)
+                    status_text.empty()
+                    st.success(f"✅ Packaged {processed_count} appointment folders + Printable Envelope Address Sheets!")
+
+                    st.download_button(
+                        label="⬇️ Download All Packages + Address Labels (Master ZIP)",
+                        data=master_zip_buffer,
+                        file_name="All_Setter_Packages_With_Labels.zip",
+                        mime="application/zip",
+                        type="primary",
+                        use_container_width=True
+                    )
+
+                except Exception as e:
+                    st.error(f"Failed during document generation: {str(e)}")
+        else:
+            st.info("Upload the Appointment Order Template (.docx) and QP Format Template (.docx) in the sidebar when you are ready to generate the individual `.zip` packages.")
+
     except Exception as e:
         st.error(f"Failed to read the uploaded CSV file. Make sure it is a valid CSV. Error: {str(e)}")
 else:
-    st.warning("Please upload the CSV, the Appointment Order Template, and the QP Format Template in the sidebar to begin.")
+    st.warning("Please upload your Mail Merge CSV in the sidebar to begin (you can print envelope address labels immediately from just the CSV, or upload the .docx templates to generate full packages).")
