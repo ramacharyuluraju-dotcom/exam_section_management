@@ -7,70 +7,180 @@ from docxtpl import DocxTemplate
 import pandas as pd
 import streamlit as st
 
-# Note: st.set_page_config is removed because app.py handles it globally
+# Note: st.set_page_config is omitted because app.py handles it globally
 
 
 def sanitize_filename(value: str) -> str:
     """Removes characters that are invalid in file/folder names."""
     cleaned = re.sub(r'[<>:"/\\|?*]+', "_", str(value or "").strip())
-    cleaned = re.sub(r"\s+", "_", cleaned)
+    cleaned = re.sub(r"[\s_]+", "_", cleaned)
     return cleaned.strip("_") or "Unnamed"
 
 
-def extract_template_tags(uploaded_file) -> list[str]:
-    """Reads all undeclared {{ tags }} from an uploaded .docx template."""
-    if not uploaded_file:
+def normalize_code(value: str) -> str:
+    """Normalizes a subject code for reliable case- and space-insensitive matching."""
+    return re.sub(r"[^a-z0-9]", "", str(value or "").strip().lower())
+
+
+def split_subject_codes(raw_value: str) -> list[str]:
+    """Splits single or comma/semicolon/slash-separated subject codes cleanly."""
+    text = str(raw_value or "").strip()
+    if not text:
         return []
-    uploaded_file.seek(0)
-    doc = DocxTemplate(uploaded_file)
+    parts = re.split(r"[,;/\n]+", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def read_csv_safely(uploaded_csv) -> pd.DataFrame:
+    """Reads CSV with UTF-8-BOM / Latin-1 fallback and preserves all values as clean strings."""
+    raw_bytes = uploaded_csv.getvalue()
+    last_error = None
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin1"):
+        try:
+            df = pd.read_csv(
+                io.BytesIO(raw_bytes),
+                encoding=enc,
+                dtype=str,
+                keep_default_na=False,
+            )
+            df.columns = [str(c).strip().lstrip("\ufeff") for c in df.columns]
+            return df
+        except Exception as err:
+            last_error = err
+    raise ValueError(f"Could not decode CSV file: {last_error}")
+
+
+def extract_template_tags(docx_bytes: bytes | None, filename: str = "") -> list[str]:
+    """Reads all undeclared {{ tags }} from .docx bytes."""
+    if not docx_bytes:
+        return []
     try:
+        doc = DocxTemplate(io.BytesIO(docx_bytes))
         return sorted(list(doc.get_undeclared_template_variables()))
     except Exception as e:
-        st.error(f"Error reading tags from `{uploaded_file.name}`: {e}")
+        st.error(f"Error reading tags from `{filename}`: {e}")
         return []
 
 
-def render_docx_bytes(uploaded_file, context: dict) -> bytes:
-    """Renders a docxtpl template with the given context and returns raw bytes."""
-    uploaded_file.seek(0)
-    doc = DocxTemplate(uploaded_file)
-    doc.render(context)
+def render_docx_bytes(docx_bytes: bytes, context: dict) -> bytes:
+    """Renders a docxtpl template with XML autoescape enabled (prevents & / < / > corruption)."""
+    doc = DocxTemplate(io.BytesIO(docx_bytes))
+    doc.render(context, autoescape=True)
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
 
 
-def build_syllabus_lookup(uploaded_pdfs, folder_path_str: str) -> dict[str, dict]:
-    """
-    Builds a case-insensitive lookup:
-        normalized_subject_code (lowercase) -> {"name": filename, "bytes": raw_bytes}
-    Supports both browser-uploaded PDFs and a local folder path.
-    """
-    lookup = {}
+def register_syllabus_entry(
+    exact_map: dict,
+    norm_map: dict,
+    prefix_list: list[tuple[str, dict]],
+    filename: str,
+    pdf_bytes: bytes | None = None,
+    file_path: Path | None = None,
+) -> None:
+    """Registers a syllabus PDF into exact, normalized, and prefix lookup structures."""
+    stem = Path(filename).stem.strip()
+    entry = {"name": Path(filename).name, "bytes": pdf_bytes, "path": file_path}
+    exact_map[stem.lower()] = entry
+    norm_key = normalize_code(stem)
+    if norm_key:
+        norm_map[norm_key] = entry
+        prefix_list.append((norm_key, entry))
 
-    # 1. Load from local folder path if provided
+
+def build_syllabus_index(uploaded_items, folder_path_str: str) -> tuple[dict, dict, list]:
+    """
+    Indexes syllabus PDFs from:
+      1. A local folder path (recursively scans subfolders too)
+      2. Uploaded individual .pdf files AND/OR a .zip archive containing syllabus PDFs
+    """
+    exact_map: dict[str, dict] = {}
+    norm_map: dict[str, dict] = {}
+    prefix_list: list[tuple[str, dict]] = []
+
+    # 1. Local folder path (recursive)
     if folder_path_str and folder_path_str.strip():
         base_dir = Path(folder_path_str.strip()).expanduser()
         if base_dir.is_dir():
-            for entry in base_dir.iterdir():
-                if entry.is_file() and entry.suffix.lower() == ".pdf":
-                    key = entry.stem.strip().lower()
-                    lookup[key] = {"name": entry.name, "path": entry, "bytes": None}
+            for entry in sorted(base_dir.rglob("*")):
+                if entry.is_file() and entry.suffix.lower() == ".pdf" and not entry.name.startswith("._"):
+                    register_syllabus_entry(exact_map, norm_map, prefix_list, entry.name, file_path=entry)
 
-    # 2. Load from browser-uploaded PDFs (takes precedence if duplicate)
-    if uploaded_pdfs:
-        for pdf in uploaded_pdfs:
-            key = Path(pdf.name).stem.strip().lower()
-            lookup[key] = {"name": pdf.name, "path": None, "bytes": pdf.getvalue()}
+    # 2. Browser uploads (.pdf or .zip of PDFs) - overrides local if duplicate
+    if uploaded_items:
+        for item in uploaded_items:
+            fname = item.name
+            ext = Path(fname).suffix.lower()
+            if ext == ".pdf":
+                register_syllabus_entry(exact_map, norm_map, prefix_list, fname, pdf_bytes=item.getvalue())
+            elif ext == ".zip":
+                try:
+                    with zipfile.ZipFile(io.BytesIO(item.getvalue()), "r") as zf:
+                        for info in zf.infolist():
+                            if info.is_dir():
+                                continue
+                            inner_name = Path(info.filename).name
+                            if not inner_name or inner_name.startswith("._") or "__MACOSX" in info.filename:
+                                continue
+                            if Path(inner_name).suffix.lower() == ".pdf":
+                                register_syllabus_entry(
+                                    exact_map,
+                                    norm_map,
+                                    prefix_list,
+                                    inner_name,
+                                    pdf_bytes=zf.read(info.filename),
+                                )
+                except zipfile.BadZipFile:
+                    st.error(f"Uploaded syllabus archive `{fname}` is not a valid ZIP file.")
 
-    return lookup
+    return exact_map, norm_map, prefix_list
+
+
+def find_matching_syllabus(
+    subject_code: str,
+    exact_map: dict,
+    norm_map: dict,
+    prefix_list: list[tuple[str, dict]],
+) -> dict | None:
+    """
+    Matches a subject code against indexed syllabus PDFs:
+      1. Exact stem match (case-insensitive), e.g., 1BECC102 -> 1BECC102.pdf
+      2. Normalized alphanumeric match, e.g., 1BECC-102 -> 1BECC102.pdf
+      3. Prefix match, e.g., 1BECC102 -> 1BECC102_Syllabus.pdf
+    """
+    clean = str(subject_code or "").strip()
+    if not clean:
+        return None
+
+    low = clean.lower()
+    if low in exact_map:
+        return exact_map[low]
+
+    norm = normalize_code(clean)
+    if norm in norm_map:
+        return norm_map[norm]
+
+    if norm:
+        for stem_norm, entry in prefix_list:
+            if stem_norm.startswith(norm):
+                return entry
+
+    return None
 
 
 def get_syllabus_bytes(entry: dict) -> bytes:
-    """Returns PDF bytes from either memory or disk."""
+    """Returns PDF bytes from memory or disk."""
     if entry["bytes"] is not None:
         return entry["bytes"]
     return entry["path"].read_bytes()
+
+
+def format_syllabus_filename(original_name: str) -> str:
+    """Avoids double-prefixing Syllabus_ if the PDF name already starts with Syllabus."""
+    if original_name.lower().startswith("syllabus"):
+        return original_name
+    return f"Syllabus_{original_name}"
 
 
 def auto_pick_column(columns: list[str], keywords: tuple[str, ...], fallback: int = 0) -> int:
@@ -100,7 +210,7 @@ with col1:
     qp_format_file = st.file_uploader(
         "3. Upload QP Format Template (.docx) — Optional",
         type=["docx"],
-        help="Leave empty if you only want to generate Appointment Orders."
+        help="Leave empty if you only want to generate Appointment Orders.",
     )
 
 with col2:
@@ -108,29 +218,33 @@ with col2:
     static_files = st.file_uploader(
         "4. Upload Static Attachments (Remuneration Bill, Declaration, etc.)",
         accept_multiple_files=True,
-        help="These files will be included in every faculty member's kit."
+        help="These files will be included identically in every faculty member's kit.",
     )
 
 st.markdown("#### 5. Upload Syllabus PDFs (Dynamic — Matched by Subject Code)")
 syl_col1, syl_col2 = st.columns(2)
 with syl_col1:
     syllabus_uploads = st.file_uploader(
-        "Upload Syllabus PDFs (named by Subject Code, e.g., 1BECC102.pdf)",
-        type=["pdf"],
+        "Upload Syllabus PDFs or a ZIP of Syllabus PDFs (e.g., 1BECC102.pdf or Syllabus_Folder.zip)",
+        type=["pdf", "zip"],
         accept_multiple_files=True,
-        help="Select all syllabus PDFs at once. Each faculty member gets only the PDF matching their Subject Code."
+        help="Upload individual <SubjectCode>.pdf files or zip your entire syllabus folder and upload the .zip here.",
     )
 with syl_col2:
     syllabus_folder_path = st.text_input(
-        "Or Enter Local Syllabus Folder Path (Optional)",
+        "Or Enter Local Syllabus Folder Path (Optional — Local Runs Only)",
         placeholder="/Users/rajuramacharyalu/Documents/Syllabus_PDFs",
-        help="Useful when running locally on macOS/Windows with a large folder of <SubjectCode>.pdf files."
+        help="Recursively scans this local folder and its subfolders for <SubjectCode>.pdf files.",
     )
     if syllabus_folder_path.strip():
         folder_check = Path(syllabus_folder_path.strip()).expanduser()
         if folder_check.is_dir():
-            pdf_count = sum(1 for p in folder_check.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
-            st.caption(f"✅ Folder found ({pdf_count} PDF files detected)")
+            pdf_count = sum(
+                1
+                for p in folder_check.rglob("*")
+                if p.is_file() and p.suffix.lower() == ".pdf" and not p.name.startswith("._")
+            )
+            st.caption(f"✅ Folder found ({pdf_count} PDF files detected across folder & subfolders)")
         else:
             st.error(f"Folder not found: `{syllabus_folder_path}`")
 
@@ -140,48 +254,53 @@ with syl_col2:
 # ============================================================================
 if csv_file and appt_order_file:
     try:
-        df = pd.read_csv(csv_file)
+        df = read_csv_safely(csv_file)
         csv_columns = df.columns.tolist()
     except Exception as e:
         st.error(f"Error reading CSV: {e}")
         st.stop()
 
-    appt_tags = extract_template_tags(appt_order_file)
-    qp_tags = extract_template_tags(qp_format_file) if qp_format_file else []
-    all_tags = sorted(list(set(appt_tags + qp_tags)))
-
-    if not all_tags:
-        st.warning(
-            "No `{{ tags }}` were detected in the uploaded Word template(s). "
-            "Add Jinja tags like `{{ Faculty_Name }}` or `{{ Course_Code }}` to your `.docx` file."
-        )
+    if not csv_columns:
+        st.error("The uploaded CSV has no columns.")
         st.stop()
 
-    st.divider()
-    st.subheader("6. Map Word Template Tags to CSV Columns")
-    st.info(
-        f"Found **{len(all_tags)}** unique tag(s) across your uploaded template(s). "
-        "Verify the column mappings below."
-    )
+    appt_raw_bytes = appt_order_file.getvalue()
+    qp_raw_bytes = qp_format_file.getvalue() if qp_format_file else None
 
-    mapping = {}
-    map_cols = st.columns(3)
-    for i, tag in enumerate(all_tags):
-        with map_cols[i % 3]:
-            default_idx = 0
-            tag_norm = tag.lower().replace("_", "").replace(" ", "")
-            for idx, col in enumerate(csv_columns):
-                col_norm = col.lower().replace("_", "").replace(" ", "")
-                if col_norm == tag_norm:
-                    default_idx = idx
-                    break
+    appt_tags = extract_template_tags(appt_raw_bytes, appt_order_file.name)
+    qp_tags = extract_template_tags(qp_raw_bytes, qp_format_file.name) if qp_raw_bytes else []
+    all_tags = sorted(list(set(appt_tags + qp_tags)))
 
-            mapping[tag] = st.selectbox(
-                f"Word Tag: **`{tag}`**",
-                options=csv_columns,
-                index=default_idx,
-                key=f"map_{tag}"
-            )
+    mapping: dict[str, str] = {}
+    if all_tags:
+        st.divider()
+        st.subheader("6. Map Word Template Tags to CSV Columns")
+        st.info(
+            f"Found **{len(all_tags)}** unique tag(s) across your uploaded template(s). "
+            "Verify the column mappings below."
+        )
+
+        map_cols = st.columns(3)
+        for i, tag in enumerate(all_tags):
+            with map_cols[i % 3]:
+                default_idx = 0
+                tag_norm = normalize_code(tag)
+                for idx, col in enumerate(csv_columns):
+                    if normalize_code(col) == tag_norm:
+                        default_idx = idx
+                        break
+
+                mapping[tag] = st.selectbox(
+                    f"Word Tag: **`{tag}`**",
+                    options=csv_columns,
+                    index=default_idx,
+                    key=f"map_{tag}",
+                )
+    else:
+        st.warning(
+            "No `{{ tags }}` were detected in the uploaded Word template(s). "
+            "Documents will still be copied as-is into each faculty kit."
+        )
 
     st.divider()
     st.subheader("7. Naming, Syllabus Matching & Packaging Options")
@@ -191,14 +310,14 @@ if csv_file and appt_order_file:
         faculty_name_col = st.selectbox(
             "Faculty Name / Identifier Column (for folder & file naming)",
             options=csv_columns,
-            index=auto_pick_column(csv_columns, ("name", "faculty", "setter", "staff"))
+            index=auto_pick_column(csv_columns, ("name", "faculty", "setter", "staff")),
         )
 
     with opt_col2:
         subject_code_col = st.selectbox(
             "Subject / Course Code Column (for Syllabus PDF matching)",
             options=csv_columns,
-            index=auto_pick_column(csv_columns, ("course code", "subject code", "sub code", "code"))
+            index=auto_pick_column(csv_columns, ("course code", "subject code", "sub code", "code")),
         )
 
     with opt_col3:
@@ -206,40 +325,54 @@ if csv_file and appt_order_file:
             "ZIP Packaging Structure",
             options=[
                 "Folder per Faculty (inside 1 Master ZIP)",
-                "Individual ZIP per Faculty (inside 1 Master ZIP)"
+                "Individual ZIP per Faculty (inside 1 Master ZIP)",
             ],
             help=(
                 "'Folder per Faculty' creates clean subfolders. "
                 "'Individual ZIP per Faculty' creates ready-to-email .zip attachments for each setter."
-            )
+            ),
         )
 
-    # Build Syllabus Lookup & Show Live Match Status
-    syllabus_lookup = build_syllabus_lookup(syllabus_uploads, syllabus_folder_path)
-    has_syllabus_source = len(syllabus_lookup) > 0
+    # Build Syllabus Lookup Index
+    exact_map, norm_map, prefix_list = build_syllabus_index(syllabus_uploads, syllabus_folder_path)
+    has_syllabus_source = len(exact_map) > 0
 
     st.markdown("#### Review / Edit Mail Merge Data")
     edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
+    # Filter out completely blank rows from data_editor
+    valid_df = edited_df[
+        edited_df.apply(lambda r: any(str(v).strip() != "" for v in r), axis=1)
+    ].copy()
+
     # Pre-flight Syllabus Match Preview
     if has_syllabus_source:
-        codes_in_csv = [
-            str(val).strip()
-            for val in edited_df[subject_code_col].tolist()
-            if not pd.isna(val) and str(val).strip()
-        ]
-        matched_count = sum(1 for c in codes_in_csv if c.lower() in syllabus_lookup)
-        missing_preview = sorted({c for c in codes_in_csv if c.lower() not in syllabus_lookup})
+        all_codes = []
+        matched_rows = 0
+        missing_preview = set()
+
+        for _, row in valid_df.iterrows():
+            row_codes = split_subject_codes(row.get(subject_code_col, ""))
+            if not row_codes:
+                continue
+            row_all_matched = True
+            for c in row_codes:
+                all_codes.append(c)
+                if not find_matching_syllabus(c, exact_map, norm_map, prefix_list):
+                    missing_preview.add(c)
+                    row_all_matched = False
+            if row_all_matched:
+                matched_rows += 1
 
         m1, m2, m3 = st.columns(3)
-        m1.metric("Total Faculty Rows", len(edited_df))
-        m2.metric("Syllabus PDFs Loaded", len(syllabus_lookup))
-        m3.metric("Matched Rows", f"{matched_count} / {len(codes_in_csv)}")
+        m1.metric("Total Faculty Rows", len(valid_df))
+        m2.metric("Syllabus PDFs Loaded", len(exact_map))
+        m3.metric("Fully Matched Rows", f"{matched_rows} / {len(valid_df)}")
 
         if missing_preview:
             st.warning(
                 f"⚠️ No syllabus PDF found for **{len(missing_preview)}** subject code(s): "
-                + ", ".join(missing_preview)
+                + ", ".join(sorted(missing_preview))
             )
         else:
             st.success("✅ All subject codes in the CSV match a syllabus PDF!")
@@ -249,96 +382,110 @@ if csv_file and appt_order_file:
     st.divider()
 
     if st.button("🚀 Generate Faculty Kits (.zip)", type="primary"):
-        with st.spinner("Generating documents, attaching static files, and matching syllabus PDFs..."):
-            master_zip_buffer = io.BytesIO()
-            missing_syllabi = set()
-            matched_syllabi_count = 0
-            generated_rows = 0
+        if valid_df.empty:
+            st.error("No non-empty rows found in the CSV table.")
+        else:
+            with st.spinner("Generating documents, attaching static files, and matching syllabus PDFs..."):
+                master_zip_buffer = io.BytesIO()
+                missing_syllabi = set()
+                matched_syllabi_count = 0
+                generated_rows = 0
 
-            # Pre-read static attachment bytes once so we don't re-read streams inside the loop
-            static_payloads = []
-            if static_files:
-                for sf in static_files:
-                    static_payloads.append((sf.name, sf.getvalue()))
+                static_payloads = [(sf.name, sf.getvalue()) for sf in (static_files or [])]
 
-            with zipfile.ZipFile(master_zip_buffer, "w", zipfile.ZIP_DEFLATED) as master_zip:
-                for index, row in edited_df.iterrows():
-                    # Build docxtpl context
-                    context = {}
-                    for tag in all_tags:
-                        val = row[mapping[tag]]
-                        context[tag] = "" if pd.isna(val) else val
+                with zipfile.ZipFile(master_zip_buffer, "w", zipfile.ZIP_DEFLATED) as master_zip:
+                    for row_num, (_, row) in enumerate(valid_df.iterrows(), start=1):
+                        context = {
+                            tag: str(row.get(mapping[tag], "")).strip()
+                            for tag in all_tags
+                        }
 
-                    raw_fac = "" if pd.isna(row[faculty_name_col]) else str(row[faculty_name_col]).strip()
-                    raw_code = "" if pd.isna(row[subject_code_col]) else str(row[subject_code_col]).strip()
+                        raw_fac = str(row.get(faculty_name_col, "")).strip()
+                        raw_code_cell = str(row.get(subject_code_col, "")).strip()
+                        row_codes = split_subject_codes(raw_code_cell)
 
-                    safe_fac = sanitize_filename(raw_fac)
-                    safe_code = sanitize_filename(raw_code)
-                    kit_label = f"{index + 1:02d}_{safe_code}_{safe_fac}"
+                        safe_fac = sanitize_filename(raw_fac)
+                        safe_code = sanitize_filename(row_codes[0] if row_codes else raw_code_cell)
+                        kit_label = f"{row_num:02d}_{safe_code}_{safe_fac}"
 
-                    # 1. Render Appointment Order (.docx)
-                    appt_bytes = render_docx_bytes(appt_order_file, context)
-                    appt_filename = f"Appointment_Order_{safe_code}_{safe_fac}.docx"
+                        # 1. Render Appointment Order (.docx)
+                        appt_bytes = render_docx_bytes(appt_raw_bytes, context)
+                        appt_filename = f"Appointment_Order_{safe_code}_{safe_fac}.docx"
 
-                    # 2. Render QP Format (.docx) if uploaded
-                    qp_bytes = None
-                    qp_filename = f"QP_Format_{safe_code}.docx"
-                    if qp_format_file:
-                        qp_bytes = render_docx_bytes(qp_format_file, context)
+                        # 2. Render QP Format (.docx) if uploaded
+                        qp_bytes = None
+                        qp_filename = f"QP_Format_{safe_code}.docx"
+                        if qp_raw_bytes:
+                            qp_bytes = render_docx_bytes(qp_raw_bytes, context)
 
-                    # 3. Look up matching Syllabus PDF
-                    syl_entry = syllabus_lookup.get(raw_code.lower()) if (has_syllabus_source and raw_code) else None
-                    syl_bytes = None
-                    syl_filename = None
-                    if syl_entry:
-                        syl_bytes = get_syllabus_bytes(syl_entry)
-                        syl_filename = f"Syllabus_{syl_entry['name']}"
-                        matched_syllabi_count += 1
-                    elif has_syllabus_source and raw_code:
-                        missing_syllabi.add(raw_code)
+                        # 3. Look up matching Syllabus PDF(s)
+                        matched_pdfs: list[tuple[str, bytes]] = []
+                        if has_syllabus_source:
+                            seen_pdf_names = set()
+                            for code in row_codes:
+                                syl_entry = find_matching_syllabus(code, exact_map, norm_map, prefix_list)
+                                if syl_entry:
+                                    syl_fname = format_syllabus_filename(syl_entry["name"])
+                                    if syl_fname not in seen_pdf_names:
+                                        matched_pdfs.append((syl_fname, get_syllabus_bytes(syl_entry)))
+                                        seen_pdf_names.add(syl_fname)
+                                        matched_syllabi_count += 1
+                                else:
+                                    missing_syllabi.add(code)
 
-                    # 4. Write into Master ZIP (either as subfolder or individual nested ZIP)
-                    if packaging_mode == "Folder per Faculty (inside 1 Master ZIP)":
-                        master_zip.writestr(f"{kit_label}/{appt_filename}", appt_bytes)
-                        if qp_bytes:
-                            master_zip.writestr(f"{kit_label}/{qp_filename}", qp_bytes)
-                        if syl_bytes:
-                            master_zip.writestr(f"{kit_label}/{syl_filename}", syl_bytes)
-                        for s_name, s_bytes in static_payloads:
-                            master_zip.writestr(f"{kit_label}/{s_name}", s_bytes)
-                    else:
-                        inner_buf = io.BytesIO()
-                        with zipfile.ZipFile(inner_buf, "w", zipfile.ZIP_DEFLATED) as inner_zip:
-                            inner_zip.writestr(appt_filename, appt_bytes)
+                        # 4. Write into Master ZIP
+                        if packaging_mode == "Folder per Faculty (inside 1 Master ZIP)":
+                            master_zip.writestr(f"{kit_label}/{appt_filename}", appt_bytes)
                             if qp_bytes:
-                                inner_zip.writestr(qp_filename, qp_bytes)
-                            if syl_bytes:
-                                inner_zip.writestr(syl_filename, syl_bytes)
+                                master_zip.writestr(f"{kit_label}/{qp_filename}", qp_bytes)
+                            for syl_fname, syl_bytes in matched_pdfs:
+                                master_zip.writestr(f"{kit_label}/{syl_fname}", syl_bytes)
                             for s_name, s_bytes in static_payloads:
-                                inner_zip.writestr(s_name, s_bytes)
-                        master_zip.writestr(f"{kit_label}.zip", inner_buf.getvalue())
+                                master_zip.writestr(f"{kit_label}/{s_name}", s_bytes)
+                        else:
+                            inner_buf = io.BytesIO()
+                            with zipfile.ZipFile(inner_buf, "w", zipfile.ZIP_DEFLATED) as inner_zip:
+                                inner_zip.writestr(appt_filename, appt_bytes)
+                                if qp_bytes:
+                                    inner_zip.writestr(qp_filename, qp_bytes)
+                                for syl_fname, syl_bytes in matched_pdfs:
+                                    inner_zip.writestr(syl_fname, syl_bytes)
+                                for s_name, s_bytes in static_payloads:
+                                    inner_zip.writestr(s_name, s_bytes)
+                            master_zip.writestr(f"{kit_label}.zip", inner_buf.getvalue())
 
-                    generated_rows += 1
+                        generated_rows += 1
 
-            st.success(
-                f"✅ Generated **{generated_rows}** faculty kit(s)"
-                + (f" | Attached **{matched_syllabi_count}** matched syllabus PDF(s)" if has_syllabus_source else "")
-                + (f" | Included **{len(static_payloads)}** static attachment(s) per kit" if static_payloads else "")
-                + "."
+                # Store in session_state so download button click doesn't wipe out results on rerun
+                st.session_state["generated_kit_zip"] = master_zip_buffer.getvalue()
+                st.session_state["generated_kit_summary"] = {
+                    "rows": generated_rows,
+                    "matched_syllabi": matched_syllabi_count,
+                    "has_syllabus_source": has_syllabus_source,
+                    "static_count": len(static_payloads),
+                    "missing_syllabi": sorted(missing_syllabi),
+                }
+
+    if "generated_kit_zip" in st.session_state:
+        summary = st.session_state["generated_kit_summary"]
+        st.success(
+            f"✅ Generated **{summary['rows']}** faculty kit(s)"
+            + (f" | Attached **{summary['matched_syllabi']}** matched syllabus PDF(s)" if summary["has_syllabus_source"] else "")
+            + (f" | Included **{summary['static_count']}** static attachment(s) per kit" if summary["static_count"] else "")
+            + "."
+        )
+        if summary["missing_syllabi"]:
+            st.warning(
+                "⚠️ The following subject code(s) had no matching syllabus PDF and were skipped: "
+                + ", ".join(summary["missing_syllabi"])
             )
+        st.download_button(
+            label="📥 Download All Faculty Kits (.zip)",
+            data=st.session_state["generated_kit_zip"],
+            file_name="Faculty_Appointment_Kits.zip",
+            mime="application/zip",
+            type="primary",
+        )
 
-            if missing_syllabi:
-                st.warning(
-                    "⚠️ The following subject code(s) had no matching `<SubjectCode>.pdf` and were skipped for syllabus attachment: "
-                    + ", ".join(sorted(missing_syllabi))
-                )
-
-            st.download_button(
-                label="📥 Download All Faculty Kits (.zip)",
-                data=master_zip_buffer.getvalue(),
-                file_name="Faculty_Appointment_Kits.zip",
-                mime="application/zip",
-                type="primary"
-            )
 elif csv_file or appt_order_file:
     st.info("Upload both **1. Mail Merge Data (.csv)** and **2. Appointment Order Template (.docx)** to continue.")
