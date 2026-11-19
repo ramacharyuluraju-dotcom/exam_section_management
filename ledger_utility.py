@@ -33,17 +33,36 @@ except Exception:
 st.title("📦 COE Appointment & Envelope Address Packager")
 st.markdown(
     "Generates personalized **Appointment Orders**, **QP Templates**, **Subject-Matched Syllabus Copies**, "
-    "and **Printable Envelope Address Cut-Out Sheets** from your Mail Merge CSV."
+    "**Printable Envelope Address Cut-Out Sheets**, and a **Google Sheets Dispatch Manifest** from your Mail Merge CSV."
 )
 
 
 # ==============================================================================
-# HELPERS: SYLLABUS INDEXING, CSV DECODING & SANITIZATION
+# HELPERS: PATH RESOLUTION, SYLLABUS INDEXING, CSV DECODING & SANITIZATION
 # ==============================================================================
+def resolve_local_folder(raw_path: str | None) -> Path | None:
+    """Cleans pasted quotes and macOS escaped spaces before resolving a local folder path."""
+    if not raw_path:
+        return None
+    cleaned = raw_path.strip().strip('"').strip("'").replace("\\ ", " ")
+    return Path(cleaned).expanduser() if cleaned else None
+
+
 def sanitize_filename(value: str) -> str:
     cleaned = re.sub(r'[<>:"/\\|?*]+', "_", str(value or "").strip())
     cleaned = re.sub(r"[\s_]+", "_", cleaned)
     return cleaned.strip("_") or "Unnamed"
+
+
+def make_unique_zip_name(base_name: str, used_names_lower: set[str]) -> str:
+    """Prevents filename collisions when two rows share the same Course_Code and Setter_Name."""
+    candidate = f"{base_name}.zip"
+    counter = 2
+    while candidate.lower() in used_names_lower:
+        candidate = f"{base_name}_{counter}.zip"
+        counter += 1
+    used_names_lower.add(candidate.lower())
+    return candidate
 
 
 def normalize_code(value: str) -> str:
@@ -95,12 +114,11 @@ def build_syllabus_index(uploaded_items, folder_path_str):
     norm_map = {}
     prefix_list = []
 
-    if folder_path_str and folder_path_str.strip():
-        base_dir = Path(folder_path_str.strip()).expanduser()
-        if base_dir.is_dir():
-            for entry in sorted(base_dir.rglob("*")):
-                if entry.is_file() and entry.suffix.lower() == ".pdf" and not entry.name.startswith("._"):
-                    register_syllabus_entry(exact_map, norm_map, prefix_list, entry.name, file_path=entry)
+    base_dir = resolve_local_folder(folder_path_str)
+    if base_dir and base_dir.is_dir():
+        for entry in sorted(base_dir.rglob("*")):
+            if entry.is_file() and entry.suffix.lower() == ".pdf" and not entry.name.startswith("._"):
+                register_syllabus_entry(exact_map, norm_map, prefix_list, entry.name, file_path=entry)
 
     if uploaded_items:
         for item in uploaded_items:
@@ -160,6 +178,26 @@ def format_syllabus_filename(original_name: str) -> str:
     return f"Syllabus_{original_name}"
 
 
+def build_dispatch_manifest_csv(manifest_rows: list[dict]) -> bytes:
+    """Generates UTF-8-BOM CSV bytes ready to import directly into Google Sheets for Apps Script."""
+    columns = [
+        "Sl_No",
+        "Setter_Name",
+        "Email",
+        "Course_Code",
+        "Course_Title",
+        "Department",
+        "College",
+        "Ref_No",
+        "Syllabus_Attached",
+        "Zip_Filename",
+        "Dispatch_Status",
+        "Dispatch_Log",
+    ]
+    manifest_df = pd.DataFrame(manifest_rows, columns=columns)
+    return manifest_df.to_csv(index=False).encode("utf-8-sig")
+
+
 # ==============================================================================
 # SIDEBAR: FILE UPLOADS (SECTIONS 1 TO 5)
 # ==============================================================================
@@ -178,7 +216,7 @@ st.sidebar.subheader("5. Syllabus PDFs (Subject-Code Matched)")
 syllabus_mode = st.sidebar.radio(
     "Provide Syllabus PDFs via:",
     options=["Folder Path (Recommended)", "Upload PDFs / ZIP"],
-    help="Folder Path is fastest when running locally with many <SubjectCode>.pdf files.",
+    help="Folder Path is fastest when running locally with many <SubjectCode>.pdf files. Use Upload PDFs / ZIP on Streamlit Cloud.",
 )
 
 syllabus_folder_path = None
@@ -191,8 +229,8 @@ if syllabus_mode == "Folder Path (Recommended)":
         help="Folder containing PDFs named by subject code (e.g., 1BECC102.pdf). Subfolders are scanned automatically.",
     )
     if syllabus_folder_path and syllabus_folder_path.strip():
-        folder_check = Path(syllabus_folder_path.strip()).expanduser()
-        if folder_check.is_dir():
+        folder_check = resolve_local_folder(syllabus_folder_path)
+        if folder_check and folder_check.is_dir():
             pdf_count = sum(
                 1
                 for p in folder_check.rglob("*")
@@ -200,7 +238,7 @@ if syllabus_mode == "Folder Path (Recommended)":
             )
             st.sidebar.success(f"Found {pdf_count} syllabus PDF(s)")
         else:
-            st.sidebar.error("Folder path not found.")
+            st.sidebar.error("Folder path not found. (If running on Streamlit Cloud, switch to 'Upload PDFs / ZIP'.)")
 else:
     uploaded_syllabus_files = st.sidebar.file_uploader(
         "Upload Syllabus PDFs or a .zip folder",
@@ -644,10 +682,10 @@ if uploaded_csv:
                     st.info("Tip: Run `pip install reportlab` if you also want direct PDF export alongside the Word (.docx) label sheet.")
 
         # ======================================================================
-        # SECTION 3: INDIVIDUAL SETTER ZIP PACKAGER (+ MATCHED SYLLABUS + LABELS)
+        # SECTION 3: INDIVIDUAL SETTER ZIP PACKAGER (+ SYLLABUS + MANIFEST + LABELS)
         # ======================================================================
         st.divider()
-        st.subheader("📦 3. Generate Individual Setter ZIP Packages")
+        st.subheader("📦 3. Generate Individual Setter ZIP Packages & Dispatch Manifest")
 
         # Syllabus Pre-Flight Match Summary
         if include_syllabus:
@@ -693,10 +731,11 @@ if uploaded_csv:
             st.write(
                 "Generates personalized Appointment Orders, QP Templates, Static Attachments, "
                 + ("**Subject-Matched Syllabus PDFs**, " if syllabus_ready else "")
+                + "**`00_GoogleSheet_Dispatch_Manifest.csv`** (for Google Apps Script bulk email), "
                 + "and the master Envelope Address Label sheets."
             )
 
-            if st.button("🚀 Generate Setter Packages & Address Sheet (Master ZIP)", type="primary"):
+            if st.button("🚀 Generate Setter Packages, Manifest & Address Sheet (Master ZIP)", type="primary"):
                 progress_bar = st.progress(0)
                 status_text = st.empty()
 
@@ -710,7 +749,9 @@ if uploaded_csv:
                     processed_count = 0
                     matched_syllabus_count = 0
                     missing_syllabi = set()
+                    used_zip_names = set()
                     packaged_contexts = []
+                    manifest_rows = []
 
                     with zipfile.ZipFile(master_zip_buffer, "w", zipfile.ZIP_DEFLATED) as master_zip:
                         for index, row in df.iterrows():
@@ -741,6 +782,7 @@ if uploaded_csv:
                             setter_zip_buffer = io.BytesIO()
                             safe_course = sanitize_filename(course)
                             safe_name = sanitize_filename(name)
+                            attached_syllabus_names = []
 
                             with zipfile.ZipFile(setter_zip_buffer, "w", zipfile.ZIP_DEFLATED) as setter_zip:
                                 setter_zip.writestr(f"Appointment_Order_{safe_course}_{safe_name}.docx", appt_stream.getvalue())
@@ -756,6 +798,7 @@ if uploaded_csv:
                                             if syl_fname not in seen_pdf_names:
                                                 setter_zip.writestr(syl_fname, get_syllabus_bytes(syl_entry))
                                                 seen_pdf_names.add(syl_fname)
+                                                attached_syllabus_names.append(syl_fname)
                                                 matched_syllabus_count += 1
                                         else:
                                             missing_syllabi.add(code)
@@ -763,14 +806,35 @@ if uploaded_csv:
                                 for file_name, file_data in static_files.items():
                                     setter_zip.writestr(file_name, file_data)
 
-                            # D. Add Setter Zip to Master Zip
-                            package_name = f"Confidential_{safe_course}_{safe_name}.zip"
+                            # D. Add uniquely named Setter Zip to Master Zip
+                            package_name = make_unique_zip_name(f"Confidential_{safe_course}_{safe_name}", used_zip_names)
                             master_zip.writestr(package_name, setter_zip_buffer.getvalue())
 
                             processed_count += 1
+
+                            # Record exact manifest entry for Google Sheets + Apps Script
+                            manifest_rows.append({
+                                "Sl_No": processed_count,
+                                "Setter_Name": name,
+                                "Email": email,
+                                "Course_Code": context["Course_Code"],
+                                "Course_Title": context["Course_Title"],
+                                "Department": context["Department"],
+                                "College": context["College"],
+                                "Ref_No": context["Ref_No"],
+                                "Syllabus_Attached": ", ".join(attached_syllabus_names) if attached_syllabus_names else "None",
+                                "Zip_Filename": package_name,
+                                "Dispatch_Status": "",
+                                "Dispatch_Log": "",
+                            })
+
                             progress_bar.progress(min(1.0, processed_count / max(1, total_setters)))
 
-                        # E. Bundle the Printable Envelope Address Label Sheets at the root of the Master ZIP
+                        # E. Bundle Google Sheets Dispatch Manifest CSV at root of Master ZIP
+                        manifest_csv_bytes = build_dispatch_manifest_csv(manifest_rows)
+                        master_zip.writestr("00_GoogleSheet_Dispatch_Manifest.csv", manifest_csv_bytes)
+
+                        # F. Bundle Printable Envelope Address Label Sheets at root of Master ZIP
                         if packaged_contexts:
                             docx_sheet = generate_address_labels_docx(
                                 packaged_contexts, to_template_input, from_address_input, header_badge_input, boxes_per_page
@@ -788,6 +852,7 @@ if uploaded_csv:
                     status_text.empty()
 
                     st.session_state["ledger_master_zip"] = master_zip_buffer.getvalue()
+                    st.session_state["ledger_manifest_csv"] = manifest_csv_bytes
                     st.session_state["ledger_master_summary"] = {
                         "processed": processed_count,
                         "matched_syllabi": matched_syllabus_count,
@@ -803,21 +868,32 @@ if uploaded_csv:
                 st.success(
                     f"✅ Packaged **{s['processed']}** appointment folders"
                     + (f" + **{s['matched_syllabi']}** matched syllabus PDF(s)" if s["syllabus_ready"] else "")
-                    + " + Printable Envelope Address Sheets!"
+                    + " + Google Sheets Dispatch Manifest + Printable Envelope Address Sheets!"
                 )
                 if s["missing_syllabi"]:
                     st.warning(
                         "⚠️ No matching syllabus PDF found for subject code(s): "
                         + ", ".join(s["missing_syllabi"])
                     )
-                st.download_button(
-                    label="⬇️ Download All Packages + Address Labels (Master ZIP)",
-                    data=st.session_state["ledger_master_zip"],
-                    file_name="All_Setter_Packages_With_Labels.zip",
-                    mime="application/zip",
-                    type="primary",
-                    use_container_width=True,
-                )
+
+                dl_col1, dl_col2 = st.columns([1.4, 1])
+                with dl_col1:
+                    st.download_button(
+                        label="⬇️ Download All Packages + Manifest + Labels (Master ZIP)",
+                        data=st.session_state["ledger_master_zip"],
+                        file_name="All_Setter_Packages_With_Labels.zip",
+                        mime="application/zip",
+                        type="primary",
+                        use_container_width=True,
+                    )
+                with dl_col2:
+                    st.download_button(
+                        label="📊 Download Dispatch Manifest Only (.csv)",
+                        data=st.session_state["ledger_manifest_csv"],
+                        file_name="00_GoogleSheet_Dispatch_Manifest.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
         else:
             st.info("Upload the Appointment Order Template (.docx) and QP Format Template (.docx) in the sidebar when you are ready to generate the individual `.zip` packages.")
 
