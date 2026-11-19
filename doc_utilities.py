@@ -12,6 +12,13 @@ import streamlit as st
 # Note: st.set_page_config is omitted because app.py handles it globally
 
 
+def clean_cell(value) -> str:
+    """Safely converts a DataFrame cell to a stripped string without turning None/NaN into 'None'."""
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
 def sanitize_filename(value: str) -> str:
     """Removes characters that are invalid in file/folder names."""
     cleaned = re.sub(r'[<>:"/\\|?*]+', "_", str(value or "").strip())
@@ -24,9 +31,9 @@ def normalize_code(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").strip().lower())
 
 
-def split_subject_codes(raw_value: str) -> list[str]:
+def split_subject_codes(raw_value) -> list[str]:
     """Splits single or comma/semicolon/slash-separated subject codes cleanly."""
-    text = str(raw_value or "").strip()
+    text = clean_cell(raw_value)
     if not text:
         return []
     parts = re.split(r"[,;/\n]+", text)
@@ -233,7 +240,7 @@ with col2:
 
 st.divider()
 
-# ---------- SYLLABUS SECTION ----------
+# ---------- SECTION 5: SYLLABUS PDFs ----------
 st.subheader("5. Syllabus PDFs (Optional)")
 
 syllabus_mode = st.radio(
@@ -273,17 +280,37 @@ else:
 has_syllabus_input = bool(
     (syllabus_folder and syllabus_folder.strip()) or uploaded_syllabus_files
 )
+
+# Sync checkbox automatically when a syllabus source is first provided
+if "prev_has_syllabus_input" not in st.session_state:
+    st.session_state["prev_has_syllabus_input"] = False
+if has_syllabus_input and not st.session_state["prev_has_syllabus_input"]:
+    st.session_state["include_syllabus_chk"] = True
+elif not has_syllabus_input:
+    st.session_state["include_syllabus_chk"] = False
+st.session_state["prev_has_syllabus_input"] = has_syllabus_input
+
 include_syllabus = st.checkbox(
     "Include matching syllabus PDFs in the final ZIP",
-    value=has_syllabus_input,
+    key="include_syllabus_chk",
     disabled=not has_syllabus_input,
 )
 
+# ============================================================================
+# SECTIONS 6 & 7 (HEADERS ALWAYS VISIBLE)
+# ============================================================================
+st.divider()
+st.subheader("6. Map Word Template Tags to CSV Columns")
 
-# ============================================================================
-# TAG MAPPING, MATCH PREVIEW & GENERATION
-# ============================================================================
-if csv_file and appointment_template:
+if not (csv_file and appointment_template):
+    st.info(
+        "Upload both **1. Mail Merge Data (.csv)** and **2. Appointment Order Template (.docx)** "
+        "above to unlock tag mapping."
+    )
+    st.divider()
+    st.subheader("7. Naming, Syllabus Matching & ZIP Structure")
+    st.info("Once Step 6 is loaded, your editable preview table, syllabus match check, and ZIP generator will appear here.")
+else:
     try:
         df = read_csv_safely(csv_file)
         csv_columns = df.columns.tolist()
@@ -304,8 +331,6 @@ if csv_file and appointment_template:
 
     mapping: dict[str, str] = {}
     if all_tags:
-        st.divider()
-        st.subheader("6. Map Word Template Tags to CSV Columns")
         st.info(
             f"Detected **{len(all_tags)}** unique `{{{{ tag }}}}` placeholder(s). "
             "Confirm each tag maps to the right CSV column."
@@ -369,7 +394,7 @@ if csv_file and appointment_template:
     edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
     valid_df = edited_df[
-        edited_df.apply(lambda r: any(str(v).strip() != "" for v in r), axis=1)
+        edited_df.apply(lambda r: any(clean_cell(v) != "" for v in r), axis=1)
     ].copy()
 
     # Build Syllabus Index & Live Pre-flight Check
@@ -427,19 +452,18 @@ if csv_file and appointment_template:
                 generated_rows = 0
 
                 with zipfile.ZipFile(master_zip_buffer, "w", zipfile.ZIP_DEFLATED) as master_zip:
-                    # In Shared Folder mode, place common static files once in Static_Attachments/
                     if zip_layout == "Shared Syllabus/ Folder + Documents/ Folder" and static_payloads:
                         for s_name, s_bytes in static_payloads:
                             master_zip.writestr(f"Static_Attachments/{s_name}", s_bytes)
 
                     for row_num, (_, row) in enumerate(valid_df.iterrows(), start=1):
                         context = {
-                            tag: str(row.get(mapping[tag], "")).strip()
+                            tag: clean_cell(row.get(mapping[tag], ""))
                             for tag in all_tags
                         }
 
-                        raw_fac = str(row.get(faculty_name_col, "")).strip()
-                        raw_code_cell = str(row.get(subject_code_col, "")).strip()
+                        raw_fac = clean_cell(row.get(faculty_name_col, ""))
+                        raw_code_cell = clean_cell(row.get(subject_code_col, ""))
                         row_codes = split_subject_codes(raw_code_cell)
 
                         safe_fac = sanitize_filename(raw_fac)
@@ -452,7 +476,6 @@ if csv_file and appointment_template:
                         qp_bytes = render_docx_bytes(qp_raw_bytes, context) if qp_raw_bytes else None
                         qp_filename = f"QP_Format_{safe_code}_{safe_fac}.docx"
 
-                        # Resolve matched syllabus PDF(s) for this row
                         row_syllabi: list[tuple[str, str, bytes]] = []
                         if syllabus_ready:
                             seen_for_row = set()
@@ -468,7 +491,6 @@ if csv_file and appointment_template:
                                 else:
                                     missing_syllabi.add(code)
 
-                        # Write to ZIP according to chosen layout
                         if zip_layout == "Shared Syllabus/ Folder + Documents/ Folder":
                             master_zip.writestr(f"Documents/{appt_filename}", appt_bytes)
                             if qp_bytes:
@@ -489,7 +511,7 @@ if csv_file and appointment_template:
                             for s_name, s_bytes in static_payloads:
                                 master_zip.writestr(f"{kit_label}/{s_name}", s_bytes)
 
-                        else:  # Individual ZIP per Faculty
+                        else:
                             inner_buf = io.BytesIO()
                             with zipfile.ZipFile(inner_buf, "w", zipfile.ZIP_DEFLATED) as inner_zip:
                                 inner_zip.writestr(appt_filename, appt_bytes)
@@ -536,6 +558,3 @@ if csv_file and appointment_template:
             mime="application/zip",
             type="primary",
         )
-
-elif csv_file or appointment_template:
-    st.info("Upload both **1. Mail Merge Data (.csv)** and **2. Appointment Order Template (.docx)** to continue.")
