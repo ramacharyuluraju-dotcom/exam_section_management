@@ -723,63 +723,129 @@ with reg_tabs[4]:
         else: st.write("No records found.")
 
 # ==========================================
-# 6. PHOTO BACKUP UTILITY
+# 6. PHOTO BACKUP UTILITY (MULTI-THREADED + DISK-BACKED)
 # ==========================================
 with reg_tabs[5]:
     st.header("📸 Student Photo Server Backup")
-    st.info("Grabs all student photos from your Supabase cloud and packages them into a single ZIP file.")
+    st.info("Downloads photos concurrently using 15 parallel workers and streams directly to disk to prevent timeouts and memory crashes.")
     BUCKET_NAME = "StakeHolders_Photos"
-    
-    if st.button("🚀 Prepare Photo Backup (ZIP)", type="primary"):
+
+    col_pb1, col_pb2 = st.columns([2, 1])
+    prefix_filter = col_pb1.text_input(
+        "Filter by USN / Batch Prefix (Optional — leave blank for ALL photos)",
+        placeholder="e.g., 1AM25 or 1AM24CS",
+        key="photo_bkp_prefix"
+    ).strip().upper()
+    worker_count = col_pb2.slider("Parallel Download Threads", min_value=5, max_value=25, value=15, key="photo_bkp_threads")
+
+    if st.button("🚀 Prepare Photo Backup (ZIP)", type="primary", key="prep_photo_bkp_btn"):
         status_text = st.empty()
         progress_bar = st.progress(0)
         status_text.info(f"📡 Scanning Supabase bucket '{BUCKET_NAME}'...")
-        
+
         try:
             import requests
-            supabase_url = supabase.supabase_url
-            supabase_key = supabase.supabase_key
-            base_url_string = str(supabase_url).rstrip('/')
-            api_url = f"{base_url_string}/storage/v1/object/list/{BUCKET_NAME}"
-            
-            headers = {"Authorization": f"Bearer {supabase_key}", "apikey": supabase_key, "Content-Type": "application/json"}
-            all_files, current_offset, batch_limit = [], 0, 1000  
-            
+            import tempfile
+            from urllib.parse import quote
+
+            base_url_string = str(supabase.supabase_url).rstrip('/')
+            supabase_key = str(supabase.supabase_key)
+            list_api_url = f"{base_url_string}/storage/v1/object/list/{BUCKET_NAME}"
+
+            headers = {
+                "Authorization": f"Bearer {supabase_key}",
+                "apikey": supabase_key,
+                "Content-Type": "application/json"
+            }
+
+            all_files, current_offset, batch_limit = [], 0, 1000
             while True:
-                response = requests.post(api_url, headers=headers, json={"prefix": "", "limit": batch_limit, "offset": current_offset})
-                if response.status_code != 200: raise Exception(f"API Error: {response.text}")
+                response = requests.post(
+                    list_api_url,
+                    headers=headers,
+                    json={"prefix": "", "limit": batch_limit, "offset": current_offset},
+                    timeout=30
+                )
+                if response.status_code != 200:
+                    raise Exception(f"API Error: {response.text}")
                 batch = response.json()
-                if not batch: break
+                if not batch:
+                    break
                 all_files.extend(batch)
-                if len(batch) < batch_limit: break
+                if len(batch) < batch_limit:
+                    break
                 current_offset += batch_limit
-                
-            if not all_files:
-                status_text.warning("⚠️ No files found in the bucket.")
+
+            valid_files = [
+                f['name'] for f in all_files
+                if f.get('name') and not f.get('name').startswith('.')
+            ]
+
+            if prefix_filter:
+                valid_files = [fn for fn in valid_files if fn.upper().startswith(prefix_filter)]
+
+            if not valid_files:
+                status_text.warning("⚠️ No matching photos found in the bucket.")
             else:
-                valid_files = [f for f in all_files if f.get('name') and not f.get('name').startswith('.')]
                 total_files = len(valid_files)
-                status_text.info(f"✅ Found {total_files} photos. Zipping them up now...")
-                
-                zip_buffer = io.BytesIO()
+                status_text.info(f"✅ Found {total_files} photos. Downloading in parallel ({worker_count} threads)...")
+
+                # Persistent HTTP session with connection pooling
+                session = requests.Session()
+                adapter = requests.adapters.HTTPAdapter(pool_connections=worker_count, pool_maxsize=worker_count, max_retries=2)
+                session.mount("https://", adapter)
+                session.headers.update({
+                    "Authorization": f"Bearer {supabase_key}",
+                    "apikey": supabase_key
+                })
+
+                def fetch_single_photo(fname):
+                    dl_url = f"{base_url_string}/storage/v1/object/{BUCKET_NAME}/{quote(fname)}"
+                    resp = session.get(dl_url, timeout=20)
+                    if resp.status_code == 200:
+                        return fname, resp.content
+                    return fname, None
+
+                # Stream ZIP to disk instead of holding everything in RAM
+                tmp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+                tmp_zip_path = tmp_zip.name
+                tmp_zip.close()
+
                 success_count, error_count = 0, 0
-                
-                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for index, file_info in enumerate(valid_files, start=1):
-                        file_name = file_info.get('name')
-                        try:
-                            file_bytes = supabase.storage.from_(BUCKET_NAME).download(file_name)
-                            zf.writestr(file_name, file_bytes)
-                            success_count += 1
-                        except Exception:
-                            error_count += 1
-                        progress_bar.progress(index / total_files)
-                        status_text.markdown(f"**Progress:** Zipping photo {index} of {total_files}...")
-                
-                status_text.success("🎉 ZIP file created successfully!")
-                st.download_button(label="📥 Download All Photos (ZIP)", data=zip_buffer.getvalue(), file_name="Student_Photos_Backup.zip", mime="application/zip", type="primary")
+                with zipfile.ZipFile(tmp_zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+                        futures = {executor.submit(fetch_single_photo, fn): fn for fn in valid_files}
+                        for idx, future in enumerate(concurrent.futures.as_completed(futures), start=1):
+                            fname, content = future.result()
+                            if content:
+                                zf.writestr(fname, content)
+                                success_count += 1
+                            else:
+                                error_count += 1
+
+                            # Update UI every 25 files (or on completion) to avoid WebSocket lag
+                            if idx % 25 == 0 or idx == total_files:
+                                progress_bar.progress(idx / total_files)
+                                status_text.markdown(f"**Progress:** Downloaded & packed {idx} of {total_files} photos...")
+
+                session.close()
+                st.session_state['photo_bkp_zip_path'] = tmp_zip_path
+                st.session_state['photo_bkp_zip_name'] = f"Student_Photos_{prefix_filter or 'ALL'}_{datetime.date.today()}.zip"
+                status_text.success(f"🎉 Backup ready! Packed {success_count} photos ({error_count} skipped).")
+
         except Exception as e:
             status_text.error(f"🚨 Critical Error: {e}")
+
+    if st.session_state.get('photo_bkp_zip_path') and os.path.exists(st.session_state['photo_bkp_zip_path']):
+        with open(st.session_state['photo_bkp_zip_path'], "rb") as f_zip:
+            st.download_button(
+                label=f"📥 Download {st.session_state['photo_bkp_zip_name']}",
+                data=f_zip,
+                file_name=st.session_state['photo_bkp_zip_name'],
+                mime="application/zip",
+                type="primary",
+                key="dl_photo_bkp_zip_btn"
+            )
 
 # ==========================================
 # 7. ARREAR EXTRACTOR
